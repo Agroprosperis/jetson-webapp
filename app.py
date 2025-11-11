@@ -1,14 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-RF video app — uses existing MediaMTX for Original via WebRTC (WHEP) + MJPEG for Workflow.
-States: idle, starting, running, stopping. Control/UI and stream servers are split to avoid deadlocks.
-
-Run:
-  python app-v4.py --workflow-id "$WORKFLOW_ID" --workspace-id "$WORKSPACE_ID" \
-    --inference-server-url http://127.0.0.1:9001 --api-key "$ROBOFLOW_API_KEY" \
-    --http-port 8081 --image-field rendered_output_hq
-"""
 import os
 for _k in ("OMP_NUM_THREADS","OPENBLAS_NUM_THREADS","MKL_NUM_THREADS","NUMEXPR_NUM_THREADS"):
     os.environ.setdefault(_k,"1")
@@ -27,15 +18,9 @@ import csv
 import cgi
 import subprocess
 
-_TJ = None
-try:
-    from turbojpeg import TurboJPEG  # type: ignore
-    _TJ = TurboJPEG()
-except Exception:
-    _TJ = None
-
 from inference_sdk import InferenceHTTPClient  # type: ignore
 from inference.core.utils.image_utils import load_image  # type: ignore
+
 
 LOGGER = logging.getLogger("rf-app")
 
@@ -83,7 +68,6 @@ def _adjust_for_docker(vref: Any) -> Any:
     p = urlparse(vref)
     LOGGER.debug("[adjust] Parsed: scheme=%s, netloc=%s, hostname=%s, port=%s, path=%s, query=%s",
                  p.scheme, p.netloc, p.hostname, p.port, p.path, p.query)
-    LOGGER.debug("[adjust] On Linux, no adjustment for --network host")
     return vref
 
 
@@ -105,21 +89,8 @@ def _extract_pipeline_id(resp: Any) -> Optional[str]:
 
 def _list_ids(client: InferenceHTTPClient) -> List[str]:
     try:
-        LOGGER.debug("[list_ids] Requesting existing pipelines")
         resp = client.list_inference_pipelines()
-        LOGGER.debug(f"[list_ids] existing pipelines raw={resp}")
-        if isinstance(resp, dict):
-            lst = resp.get("pipelines", [])
-        else:
-            lst = resp or []
-        out = []
-        for p in lst:
-            if isinstance(p, dict):
-                v = p.get("pipeline_id") or p.get("id")
-                if isinstance(v, str) and v:
-                    out.append(v)
-            elif isinstance(p, str) and p:
-                out.append(p)
+        out = resp.get("pipelines", [])
         LOGGER.debug("[list_ids] Found pipelines: %s", out)
         return out
     except Exception as e:
@@ -128,7 +99,7 @@ def _list_ids(client: InferenceHTTPClient) -> List[str]:
 
 
 def _await_new_pipeline(client: InferenceHTTPClient, before: set, timeout_s=10.0, every=0.25) -> Optional[str]:
-    t0=time.time(); last=None
+    t0=time.time()
     while time.time()-t0<timeout_s:
         try:
             after=set(_list_ids(client))
@@ -136,7 +107,6 @@ def _await_new_pipeline(client: InferenceHTTPClient, before: set, timeout_s=10.0
             if new:
                 LOGGER.debug("[await] Found new pipeline: %s", new[0])
                 return new[0]
-            last=after
         except Exception as e:
             LOGGER.debug("[mgr] await_new_pipeline exception: %s", e)
         time.sleep(every)
@@ -147,7 +117,6 @@ def _await_new_pipeline(client: InferenceHTTPClient, before: set, timeout_s=10.0
 def poll_worker(client: InferenceHTTPClient, pipeline_id: str, image_field: str,
                 shared: SharedFrame, stop_ev: threading.Event, excluded_fields: Optional[List[str]]=None) -> None:
     LOGGER.info("[poll] start pipeline_id=%s image_field=%s excluded=%s", pipeline_id, image_field, excluded_fields)
-    cands=[image_field,"preview","rendered_output_hq","rendered_output","image"]
     csv_path = f"{pipeline_id}.csv"
     header = ['timestamp', 'class', 'class_id', 'confidence', 'x', 'y', 'width', 'height', 'total_unique_objects_count']
     file_exists = os.path.exists(csv_path) and os.path.getsize(csv_path) > 0
@@ -158,43 +127,17 @@ def poll_worker(client: InferenceHTTPClient, pipeline_id: str, image_field: str,
     while not stop_ev.is_set():
         try:
             res = client.consume_inference_pipeline_result(pipeline_id=pipeline_id, excluded_fields=excluded_fields or [])
-            if not isinstance(res, dict):
-                LOGGER.warning("[poll] consumed non-dict res: type=%s value=%r", type(res), res)
+            outs = res.get("outputs", []) or []
+            if len(outs) == 0:
                 time.sleep(0.05)
                 continue
-            outs = res.get("outputs") or []
-            if not isinstance(outs, list):
-                LOGGER.warning("[poll] outputs not list: %r", outs)
-                time.sleep(0.05)
-                continue
-            if not outs:
-                LOGGER.info("[poll] no data")
-                time.sleep(0.01)
-                continue
+
             sres = outs[0]
-            if not isinstance(sres, dict):
-                LOGGER.warning("[poll] sres not dict: %r", sres)
-                time.sleep(0.05)
-                continue
-            if not sres:
-                LOGGER.info("[poll] no data")
-                time.sleep(0.01)
-                continue
-            LOGGER.debug("[poll] sres keys: %s", list(sres.keys()))
+            log_result = {k:v for k,v in sres.items() if k not in ['rendered_output_hq', 'draw_custom_label', 'detected_frames']}
+            LOGGER.debug(f"[poll] succeded: {log_result}")
+
             # Dump to CSV excluding b64 images
-            predictions = sres.get("predictions", [])
-            if isinstance(predictions, dict):
-                inner_predictions = predictions.get('predictions', [])
-                if isinstance(inner_predictions, list):
-                    predictions = inner_predictions
-                else:
-                    LOGGER.warning("[poll] inner predictions not list: %r", inner_predictions)
-                    time.sleep(0.05)
-                    continue
-            if not isinstance(predictions, list):
-                LOGGER.warning("[poll] predictions not list: %r", predictions)
-                time.sleep(0.05)
-                continue
+            predictions = sres.get("predictions", {}).get('predictions', [])
             total_unique_objects_count = sres.get("total_unique_objects_count", 0)
             if predictions:
                 timestamp = time.time()
@@ -213,21 +156,13 @@ def poll_worker(client: InferenceHTTPClient, pipeline_id: str, image_field: str,
                         w = bbox.get('width')
                         h = bbox.get('height')
                         writer.writerow([timestamp, cls, cls_id, conf, x, y, w, h, total_unique_objects_count])
-            val=None
-            for k in cands:
-                if k in sres: val=sres[k]; break
+            
+            val = sres['rendered_output_hq']
             if val is None:
-                LOGGER.warning("[poll] no image field in sres (tried %s) keys: %s", cands, list(sres.keys()))
+                LOGGER.warning("[poll] no image")
                 time.sleep(0.01)
                 continue
-            LOGGER.debug("[poll] Found val for key %s type %s", k, type(val))
-            if isinstance(val, dict):
-                LOGGER.debug("[poll] val dict keys: %s", list(val.keys()))
-                val = val.get('value') or val.get('image') or val.get('base64') or val.get('b64') or val
-            if not isinstance(val, str):
-                LOGGER.warning("[poll] val not str after extraction: type=%s val=%r", type(val), val)
-                time.sleep(0.01)
-                continue
+
             img,_ = load_image(val)
             if img is None:
                 LOGGER.warning("[poll] load_image failed for val=%r", val)
@@ -450,9 +385,6 @@ class StreamHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"\r\n"); self.wfile.flush()
 
     def _encode_jpeg(self, img: np.ndarray, q: int)->Optional[bytes]:
-        if _TJ is not None:
-            try: return _TJ.encode(img, quality=q)
-            except Exception as e: LOGGER.debug("TurboJPEG encode failed: %s", e)
         ok,enc=cv.imencode(".jpg", img, [int(cv.IMWRITE_JPEG_QUALITY),int(q),int(cv.IMWRITE_JPEG_OPTIMIZE),1])
         return enc.tobytes() if ok else None
 
@@ -987,13 +919,11 @@ def main():
             resp = requests.get(status_url, params={"api_key": args.api_key}, timeout=5)
             if resp.status_code == 200:
                 status_data = resp.json()
-                report = status_data.get("report", {})
-                sources_metadata = report.get("sources_metadata", [])
-                if sources_metadata:
+                sources_metadata = status_data.get("report", {}).get("sources_metadata", [])
+                if len(sources_metadata) > 0:
                     source_ref = sources_metadata[0].get("source_reference", "")
-                    if source_ref:
-                        vref = source_ref
-                        LOGGER.info("Fetched video_reference from pipeline status: %s", source_ref)
+                    vref = source_ref
+                    LOGGER.info("Fetched video_reference from pipeline status: %s", source_ref)
         except Exception as e:
             LOGGER.warning("Failed to fetch pipeline status for video_reference: %s", e)
         cfg = dict(video_reference=vref, image_field=args.image_field,
