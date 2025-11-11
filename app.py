@@ -1039,12 +1039,12 @@ def main():
     except KeyboardInterrupt:
         LOGGER.info("shutdown requested")
     finally:
-        try: ctrl_srv.shutdown(); ctrl_srv.server_close()
-        except Exception: pass
-        try: stream_srv.shutdown(); stream_srv.server_close()
-        except Exception: pass
+        for srv in [ctrl_srv, stream_srv]:
+            try: srv.shutdown(); srv.server_close()
+            except Exception: pass
         try: manager.stop_async(grace=True)
         except Exception: pass
+        
         if ControlHandler.ffmpeg_proc:
             try: ControlHandler.ffmpeg_proc.terminate()
             except Exception: pass
