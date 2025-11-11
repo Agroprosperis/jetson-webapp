@@ -105,7 +105,9 @@ def _extract_pipeline_id(resp: Any) -> Optional[str]:
 
 def _list_ids(client: InferenceHTTPClient) -> List[str]:
     try:
+        LOGGER.debug("[list_ids] Requesting existing pipelines")
         resp = client.list_inference_pipelines()
+        LOGGER.debug(f"[list_ids] existing pipelines raw={resp}")
         if isinstance(resp, dict):
             lst = resp.get("pipelines", [])
         else:
@@ -280,20 +282,30 @@ class PipelineManager:
                 mediamtx_api_base = self._base["mediamtx_api"].rstrip("/")
                 mediamtx_remove_api = mediamtx_api_base + f"/v3/config/paths/remove/{pathname}"
                 mediamtx_add_api = mediamtx_api_base + f"/v3/config/paths/add/{pathname}"
+                mediamtx_patch_api = mediamtx_api_base + f"/v3/config/paths/patch/{pathname}"
                 mtx_config = {"source": video_reference}
                 try:
-                    # Remove first to handle conflicts (ignore errors if not exists)
-                    requests.delete(mediamtx_remove_api, timeout=5)
-                    LOGGER.debug("[start] Attempted to remove existing path '%s' (if any)", pathname)
-                except Exception:
-                    pass  # Ignore if path doesn't exist or other errors
+                    # Remove first to handle conflicts (ignore errors)
+                    resp = requests.delete(mediamtx_remove_api, timeout=5)
+                    LOGGER.info("[start] Attempted to remove existing path '%s': status %s", pathname, resp.status_code)
+                except Exception as e:
+                    LOGGER.debug("[start] Ignore remove error for path '%s': %s", pathname, e)
                 try:
+                    LOGGER.info("[start] Attempting to add mediamtx path '%s'", mtx_config)
                     resp = requests.post(mediamtx_add_api, json=mtx_config, timeout=5)
                     if resp.status_code not in (200, 201):
-                        raise Exception(f"MediaMTX API returned {resp.status_code}: {resp.text}")
-                    LOGGER.info("[start] Added external RTSP path '%s' to MediaMTX", pathname)
+                        if resp.status_code == 400 and "already exists" in resp.text.lower():
+                            LOGGER.info("[start] Add failed due to existing, attempting patch")
+                            resp = requests.patch(mediamtx_patch_api, json=mtx_config, timeout=5)
+                            if resp.status_code not in (200, 201):
+                                raise Exception(f"MediaMTX PATCH returned {resp.status_code}: {resp.text}")
+                            LOGGER.info("[start] Patched existing RTSP path '%s' to MediaMTX: status %s", pathname, resp.status_code)
+                        else:
+                            raise Exception(f"MediaMTX ADD returned {resp.status_code}: {resp.text}")
+                    else:
+                        LOGGER.info("[start] Added external RTSP path '%s' to MediaMTX: status %s", pathname, resp.status_code)
                 except Exception as e:
-                    LOGGER.warning("[start] Failed to add path to MediaMTX: %s", e)
+                    LOGGER.warning("[start] Failed to add/patch path to MediaMTX: %s", e)
                     # Continue anyway, as workflow may still work (preview might fail)
 
         rbs=int(cfg.get("results_buffer_size",1))
@@ -369,9 +381,7 @@ class PipelineManager:
             mediamtx_remove_api = mediamtx_api_base + f"/v3/config/paths/remove/{pathname}"
             try:
                 resp = requests.delete(mediamtx_remove_api, timeout=5)
-                if resp.status_code not in (200, 204, 404):
-                    raise Exception(f"MediaMTX API returned {resp.status_code}: {resp.text}")
-                LOGGER.info("[stop] Removed external RTSP path '%s' from MediaMTX", pathname)
+                LOGGER.info("[stop] Removed external RTSP path '%s' from MediaMTX: status %s", pathname, resp.status_code)
             except Exception as e:
                 LOGGER.warning("[stop] Failed to remove path from MediaMTX: %s", e)
         self._pipeline_id=None
@@ -667,12 +677,12 @@ class ControlHandler(BaseHTTPRequestHandler):
                 b"  if(!video){alert('Enter RTSP URL');return;}"
                 b"  const rtsp_transport=document.getElementById('rtsp_transport').value;"
                 b"  try{"
-                b"    statusEl.textContent='status: starting original preview...';"
-                b"    await connectWHEP(video);"
                 b"    statusEl.textContent='status: starting workflow pipeline...';"
                 b"    const startRes=await fetch('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({video,rtsp_transport})});"
                 b"    if(!startRes.ok){ throw new Error('start failed: HTTP '+startRes.status); }"
                 b"    await refresh();"
+                b"    statusEl.textContent='status: starting original preview...';"
+                b"    await connectWHEP(video);"
                 b"  }catch(e){ statusEl.textContent='status: failed -> '+e; disconnectWHEP(); }"
                 b"};"
                 b"btnStop.onclick=async()=>{"
@@ -964,8 +974,7 @@ def main():
     LOGGER.info("Inference client initialized with url: %s", args.inference_server_url)
     wf_shared=SharedFrame()
     base_cfg = {"workspace_id": args.workspace_id, "workflow_id": args.workflow_id, "mediamtx_http": args.mediamtx_http, "mediamtx_api": args.mediamtx_api}
-    manager=PipelineManager(client=client, wf_shared=wf_shared,
-                            base_cfg=base_cfg)
+    manager=PipelineManager(client=client, wf_shared=wf_shared,base_cfg=base_cfg)
 
     existing = _list_ids(client)
     if existing:
