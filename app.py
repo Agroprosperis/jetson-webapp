@@ -937,7 +937,6 @@ def parse_args():
     p.add_argument("--api-key", required=True, type=str)
     p.add_argument("--workspace-id", required=True, type=str)
     p.add_argument("--workflow-id", required=True, type=str)
-    p.add_argument("--video", default="", type=str, help="rtsp://..., /path/file.mp4, or index like 0")
     p.add_argument("--rtsp-transport", choices=["tcp","udp"], default=None)
     p.add_argument("--image-field", default="rendered_output_hq", type=str)
     p.add_argument("--results-buffer-size", default=4, type=int)
@@ -982,19 +981,10 @@ def main():
         LOGGER.info("Attaching to existing pipeline: %s", pid)
         excluded = [s.strip() for s in args.exclude.split(",") if s.strip()]
         vref = ""
-        if args.video:
-            try: vref = int(args.video)
-            except Exception:
-                vref = args.video
-                if isinstance(vref, str) and vref.lower().startswith("rtsp://"):
-                    vref = _prepare_rtsp_url(vref, args.rtsp_transport)
-            vref = _adjust_for_docker(vref)
         # Fetch pipeline status to get video_reference
         status_url = f"{args.inference_server_url}/inference_pipelines/{pid}/status"
-        headers = {"Content-Type": "application/json"}
-        body = json.dumps({"api_key": args.api_key})
         try:
-            resp = requests.get(status_url, data=body, headers=headers, timeout=5)
+            resp = requests.get(status_url, params={"api_key": args.api_key}, timeout=5)
             if resp.status_code == 200:
                 status_data = resp.json()
                 report = status_data.get("report", {})
@@ -1021,19 +1011,6 @@ def main():
             manager._poll_th = th
             manager._poll_stop = stop_ev
         manager._set_state("running")
-    elif args.video:
-        try: vref=int(args.video)
-        except Exception:
-            vref=args.video
-            if isinstance(vref,str) and vref.lower().startswith("rtsp://"):
-                vref=_prepare_rtsp_url(vref, args.rtsp_transport)
-        vref = _adjust_for_docker(vref)
-        excluded=[s.strip() for s in args.exclude.split(",") if s.strip()]
-        cfg=dict(video_reference=vref,image_field=args.image_field,
-                 results_buffer_size=max(1,int(args.results_buffer_size)),
-                 batch_collection_timeout=float(args.batch_collection_timeout),
-                 excluded_fields=excluded, rtsp_transport=args.rtsp_transport)
-        manager.start_async(cfg)
 
     stream_srv=StreamServer(("0.0.0.0", int(args.stream_port)), StreamHandler, max_streams=int(args.stream_max))
     StreamHandler.wf_shared=wf_shared
