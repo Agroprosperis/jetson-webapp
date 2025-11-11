@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os
-for _k in ("OMP_NUM_THREADS","OPENBLAS_NUM_THREADS","MKL_NUM_THREADS","NUMEXPR_NUM_THREADS"):
-    os.environ.setdefault(_k,"1")
-
 import argparse, json, logging, sys, time, threading, traceback
 from logging.handlers import RotatingFileHandler
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -37,12 +34,6 @@ def setup_logging(level="INFO", log_file=None, max_bytes=5*1024*1024, backup_cou
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("requests").setLevel(logging.WARNING)
 
-try: cv.setNumThreads(1)
-except Exception: pass
-try:
-    if hasattr(cv,"ocl"): cv.ocl.setUseOpenCL(False)
-except Exception: pass
-
 
 class SharedFrame:
     def __init__(self): self._lock=threading.Lock(); self._img: Optional[np.ndarray]=None
@@ -59,16 +50,6 @@ def _prepare_rtsp_url(url: str, transport: Optional[str]) -> str:
     p = urlparse(url); q = dict(parse_qsl(p.query, keep_blank_values=True))
     q.setdefault("rtsp_transport", transport)
     return urlunparse(p._replace(query=urlencode(q)))
-
-
-def _adjust_for_docker(vref: Any) -> Any:
-    if not isinstance(vref, str) or not vref.lower().startswith("rtsp://"):
-        return vref
-    LOGGER.debug("[adjust] Input vref: %s", vref)
-    p = urlparse(vref)
-    LOGGER.debug("[adjust] Parsed: scheme=%s, netloc=%s, hostname=%s, port=%s, path=%s, query=%s",
-                 p.scheme, p.netloc, p.hostname, p.port, p.path, p.query)
-    return vref
 
 
 def _extract_pipeline_id(resp: Any) -> Optional[str]:
@@ -114,9 +95,9 @@ def _await_new_pipeline(client: InferenceHTTPClient, before: set, timeout_s=10.0
     return None
 
 
-def poll_worker(client: InferenceHTTPClient, pipeline_id: str, image_field: str,
+def poll_worker(client: InferenceHTTPClient, pipeline_id: str,
                 shared: SharedFrame, stop_ev: threading.Event, excluded_fields: Optional[List[str]]=None) -> None:
-    LOGGER.info("[poll] start pipeline_id=%s image_field=%s excluded=%s", pipeline_id, image_field, excluded_fields)
+    LOGGER.info("[poll] start pipeline_id=%s excluded=%s", pipeline_id, excluded_fields)
     csv_path = f"{pipeline_id}.csv"
     header = ['timestamp', 'class', 'class_id', 'confidence', 'x', 'y', 'width', 'height', 'total_unique_objects_count']
     file_exists = os.path.exists(csv_path) and os.path.getsize(csv_path) > 0
@@ -168,14 +149,12 @@ def poll_worker(client: InferenceHTTPClient, pipeline_id: str, image_field: str,
                 LOGGER.warning("[poll] load_image failed for val=%r", val)
                 time.sleep(0.01)
                 continue
-            LOGGER.debug("[poll] Loaded img shape %s", img.shape)
             if img.ndim==2: img=cv.cvtColor(img, cv.COLOR_GRAY2BGR)
             elif img.shape[2]==4: img=cv.cvtColor(img, cv.COLOR_BGRA2BGR)
             shared.set(img)
-            LOGGER.info("[poll] success - sres keys: %s", list(sres.keys()))
         except Exception as e:
             LOGGER.warning("[poll] exception: %s", e)
-            time.sleep(0.05)
+            time.sleep(0.01)
     shared.clear()
     LOGGER.info("[poll] stop")
 
@@ -207,12 +186,10 @@ class PipelineManager:
         LOGGER.info("[start] Using video_reference: %s", video_reference)
 
         # Detect and configure external RTSP in MediaMTX if necessary
-        is_external = False
         pathname = None
         if isinstance(video_reference, str) and video_reference.lower().startswith("rtsp://"):
             p = urlparse(video_reference)
             if p.hostname not in ("127.0.0.1", "localhost", "::1"):
-                is_external = True
                 pathname = p.path.strip("/").split("/")[-1] or "proxy"
                 mediamtx_api_base = self._base["mediamtx_api"].rstrip("/")
                 mediamtx_remove_api = mediamtx_api_base + f"/v3/config/paths/remove/{pathname}"
@@ -242,6 +219,13 @@ class PipelineManager:
                 except Exception as e:
                     LOGGER.warning("[start] Failed to add/patch path to MediaMTX: %s", e)
                     # Continue anyway, as workflow may still work (preview might fail)
+                # Override video_reference to local MediaMTX restream
+                local_vref = f"rtsp://127.0.0.1:8554/{pathname}"
+                rtsp_transport = cfg.get("rtsp_transport")
+                if rtsp_transport:
+                    local_vref = _prepare_rtsp_url(local_vref, rtsp_transport)
+                video_reference = local_vref
+                LOGGER.info("[start] Overridden video_reference to local MediaMTX restream: %s", video_reference)
 
         rbs=int(cfg.get("results_buffer_size",1))
         bct=float(cfg.get("batch_collection_timeout",0.03))
@@ -252,6 +236,12 @@ class PipelineManager:
             "results_buffer_size": max(1, rbs),
             "batch_collection_timeout": bct,
         }
+        # Parse pathname from final video_reference for cleanup
+        p = urlparse(video_reference)
+        if p.scheme.lower() == "rtsp" and p.hostname in ("127.0.0.1", "localhost", "::1"):
+            pathname = p.path.strip("/").split("/")[-1] or "proxy"
+            cfg["pathname"] = pathname
+            LOGGER.info("[start] Parsed pathname from video_reference: %s", pathname)
         LOGGER.info("[start] Exact API params for start_inference_pipeline_with_workflow: %s", json.dumps(api_params, indent=2))
         LOGGER.info("[start] Initiating pipeline start call...")
 
@@ -278,15 +268,16 @@ class PipelineManager:
             self._set_state("idle"); return
 
         stop_ev=threading.Event()
-        th=threading.Thread(target=poll_worker, name="Poller", daemon=True,
-                            kwargs=dict(client=self._client, pipeline_id=pid, image_field=cfg["image_field"],
-                                        shared=self._wf_shared, stop_ev=stop_ev, excluded_fields=cfg.get("excluded_fields")))
+        th=threading.Thread(
+            target=poll_worker, 
+            name="Poller", 
+            daemon=True,
+            kwargs=dict(client=self._client, pipeline_id=pid,shared=self._wf_shared, stop_ev=stop_ev, excluded_fields=cfg.get("excluded_fields"))
+        )
         th.start()
 
         with self._lock:
             self._pipeline_id=pid; self._cfg=dict(cfg); self._poll_th=th; self._poll_stop=stop_ev
-            self._cfg["is_external"] = is_external
-            self._cfg["pathname"] = pathname
 
         self._set_state("running")
 
@@ -310,13 +301,13 @@ class PipelineManager:
                     LOGGER.info("[mgr] pipeline id=%s already terminated", pid)
             except Exception as e:
                 LOGGER.warning("[mgr] terminate failed: %s", e)
-        # Clean up external path in MediaMTX if applicable
-        if self._cfg.get("is_external", False) and (pathname := self._cfg.get("pathname")):
+        # Clean up path in MediaMTX if pathname set
+        if (pathname := self._cfg.get("pathname")):
             mediamtx_api_base = self._base["mediamtx_api"].rstrip("/")
             mediamtx_remove_api = mediamtx_api_base + f"/v3/config/paths/remove/{pathname}"
             try:
                 resp = requests.delete(mediamtx_remove_api, timeout=5)
-                LOGGER.info("[stop] Removed external RTSP path '%s' from MediaMTX: status %s", pathname, resp.status_code)
+                LOGGER.info("[stop] Removed RTSP path '%s' from MediaMTX: status %s", pathname, resp.status_code)
             except Exception as e:
                 LOGGER.warning("[stop] Failed to remove path from MediaMTX: %s", e)
         self._pipeline_id=None
@@ -668,7 +659,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                 b"};"
                 b"window.addEventListener('load', async()=>{"
                 b"  await fetchCfg();"
-                b"  const base='http://'+location.hostname+':'+cfg.stream_port; imgWf.src=base+'/workflow.mjpg?fps=20';"
+                b"  const base='http://'+location.hostname+':'+cfg.stream_port; imgWf.src=base+'/workflow.mjpg';"
                 b"  let j = await refresh(); setInterval(refresh,1500);"
                 b"  if(state==='running' && j && j.config && 'video_reference' in j.config){"
                 b"    const video = j.config.video_reference || '';"
@@ -820,14 +811,11 @@ class ControlHandler(BaseHTTPRequestHandler):
                 if isinstance(vref,str) and vref.lower().startswith("rtsp://"):
                     vref = _prepare_rtsp_url(vref, rtsp_transport)
             LOGGER.debug("[api/start] vref after prepare: %s", vref)
-            vref = _adjust_for_docker(vref)
-            LOGGER.debug("[api/start] vref after adjust: %s", vref)
             st=self.manager.status()
-            image_field=(st.get("config") or {}).get("image_field") or "rendered_output_hq"
             rbs=(st.get("config") or {}).get("results_buffer_size") or 1
             bct=(st.get("config") or {}).get("batch_collection_timeout") or 0.03
             excluded=(st.get("config") or {}).get("excluded_fields") or []
-            cfg=dict(video_reference=vref,image_field=image_field,results_buffer_size=rbs,
+            cfg=dict(video_reference=vref,results_buffer_size=rbs,
                      batch_collection_timeout=bct,excluded_fields=excluded, original_video=video, rtsp_transport=rtsp_transport)
             self.manager.start_async(cfg)
             self._send_json({"ok":True,"accepted":True}, 202); return
@@ -870,7 +858,6 @@ def parse_args():
     p.add_argument("--workspace-id", required=True, type=str)
     p.add_argument("--workflow-id", required=True, type=str)
     p.add_argument("--rtsp-transport", choices=["tcp","udp"], default=None)
-    p.add_argument("--image-field", default="rendered_output_hq", type=str)
     p.add_argument("--results-buffer-size", default=4, type=int)
     p.add_argument("--batch-collection-timeout", default=0.05, type=float)
     p.add_argument("--http-port", default=8081, type=int)
@@ -926,13 +913,20 @@ def main():
                     LOGGER.info("Fetched video_reference from pipeline status: %s", source_ref)
         except Exception as e:
             LOGGER.warning("Failed to fetch pipeline status for video_reference: %s", e)
-        cfg = dict(video_reference=vref, image_field=args.image_field,
+        # Parse pathname and rtsp_transport from vref
+        p = urlparse(vref)
+        pathname = p.path.strip("/").split("/")[-1] or "proxy" if p.scheme.lower() == "rtsp" else None
+        q = dict(parse_qsl(p.query))
+        rtsp_transport = q.get("rtsp_transport")
+        cfg = dict(video_reference=vref,
                    results_buffer_size=max(1, int(args.results_buffer_size)),
                    batch_collection_timeout=float(args.batch_collection_timeout),
-                   excluded_fields=excluded, original_video=vref, rtsp_transport=args.rtsp_transport)
+                   excluded_fields=excluded, original_video=vref, rtsp_transport=rtsp_transport)
+        if pathname:
+            cfg["pathname"] = pathname
         stop_ev = threading.Event()
         th = threading.Thread(target=poll_worker, name="Poller", daemon=True,
-                              kwargs=dict(client=client, pipeline_id=pid, image_field=cfg["image_field"],
+                              kwargs=dict(client=client, pipeline_id=pid,
                                           shared=wf_shared, stop_ev=stop_ev, excluded_fields=cfg.get("excluded_fields")))
         th.start()
         with manager._lock:
