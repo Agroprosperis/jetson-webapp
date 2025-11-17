@@ -42,8 +42,8 @@ class ControlStream:
             "ffmpeg -nostdin "
             "-stream_loop -1 -re -fflags +genpts "
             f"-i {self._quote_shell(file_path_in_media)} "
-            "-vf format=yuv420p "
-            "-c:v libx264 -preset fast -crf 18 -bf 0 -g 60 -sc_threshold 0 -tune zerolatency "
+            "-vf scale=960:-2,format=yuv420p "
+            "-c:v libx264 -preset veryfast -b:v 4M -maxrate 4M -bufsize 8M -bf 0 -g 60 -sc_threshold 0 -tune zerolatency "
             "-an "
             f"-f rtsp -rtsp_transport tcp rtsp://{self.rtsp_output_host}:8554/{name}"
         )
