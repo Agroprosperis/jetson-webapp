@@ -1,0 +1,19 @@
+logLevel: info
+api: yes
+apiAddress: 0.0.0.0:9997
+
+rtsp: yes
+rtspAddress: :8554
+rtspTransports: [tcp,udp]
+
+hls: no
+
+webrtc: yes
+webrtcAddress: :8889
+webrtcEncryption: no
+webrtcIPsFromInterfaces: yes
+
+paths:
+  "~^pub-.+$":
+    source: publisher
+    overridePublisher: yes
