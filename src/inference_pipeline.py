@@ -5,6 +5,7 @@ import queue
 import logging
 import numpy as np
 import os
+import csv
 
 from datetime import datetime
 from profiler import Profiler
@@ -178,7 +179,11 @@ def inference_loop(
 def output_loop(result_queue: queue.Queue, stop_event: threading.Event, profiler: Profiler, args) -> None:
     input_writer = None
     output_writer = None
+    hq_writer = None          # local file writer for HQ video
+    csv_file = None           # NEW: CSV file handle
+    csv_writer = None         # NEW: CSV writer
     frame_count = 0
+    seen_track_ids = set()    # NEW: for total_unique_objects
 
     try:
         while not stop_event.is_set():
@@ -192,6 +197,7 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, profiler
 
             # Annotated frame
             vis = visualize_frame_with_supervision(frame, result, meta, args)
+
             frame = frame.copy()
             if frame.ndim == 2:  # grayscale RTSP stream, for example
                 frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
@@ -206,42 +212,142 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, profiler
                 vis = cv2.cvtColor(vis, cv2.COLOR_BGRA2BGR)
             vis = np.ascontiguousarray(vis, dtype=np.uint8)
 
+            # Increment frame counter early so CSV starts from frame=1
+            frame_count += 1
+
             # Lazy-init stream writers on first frame
             if output_writer is None:
                 h, w = frame.shape[:2]
-                print('Open output: ', h, w)
+                print("Open output: ", h, w)
 
-                in_pipeline = build_rtsp_out_gst(host=args.stream_host, port=args.stream_port, path=args.original_path, width=w, height=h, fps=args.fps)
-                out_pipeline = build_rtsp_out_gst(host=args.stream_host, port=args.stream_port, path=args.output_path, width=w, height=h, fps=args.fps)
+                in_pipeline = build_rtsp_out_gst(
+                    host=args.stream_host,
+                    port=args.stream_port,
+                    path=args.original_path,
+                    width=w,
+                    height=h,
+                    fps=args.fps,
+                )
+                out_pipeline = build_rtsp_out_gst(
+                    host=args.stream_host,
+                    port=args.stream_port,
+                    path=args.output_path,
+                    width=w,
+                    height=h,
+                    fps=args.fps,
+                )
 
-                input_writer = cv2.VideoWriter(in_pipeline, cv2.CAP_GSTREAMER, 0, args.fps, (w, h), True)
-                output_writer = cv2.VideoWriter(out_pipeline, cv2.CAP_GSTREAMER, 0, args.fps, (w, h), True)
+                input_writer = cv2.VideoWriter(
+                    in_pipeline, cv2.CAP_GSTREAMER, 0, args.fps, (w, h), True
+                )
+                output_writer = cv2.VideoWriter(
+                    out_pipeline, cv2.CAP_GSTREAMER, 0, args.fps, (w, h), True
+                )
 
                 if not input_writer.isOpened() or not output_writer.isOpened():
                     raise RuntimeError("Failed to open GStreamer RTSP output pipeline(s)")
+                
+                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                print(args)
+                
+                pipeline_id = getattr(args, "pipeline_id", "unknown")
+                hq_output_dir = getattr(args, "hq_output_dir", "/app")
+
+                os.makedirs(hq_output_dir, exist_ok=True)
+                hq_filename = f"output-hq-{pipeline_id}.mp4"
+                hq_path = os.path.join(hq_output_dir, hq_filename)
+
+                LOGGER.info("Saving HQ output to %s", hq_path)
+
+                hq_writer = cv2.VideoWriter(hq_path, fourcc, args.fps, (w, h), True)
+                if not hq_writer.isOpened():
+                    raise RuntimeError("Failed to open HQ file writer")
+
+                # NEW: CSV for per-frame stats
+                hq_csv_filename = f"output-hq-{pipeline_id}.csv"
+                hq_csv_path = os.path.join(hq_output_dir, hq_csv_filename)
+                LOGGER.info("Saving per-frame stats CSV to %s", hq_csv_path)
+
+                csv_file = open(hq_csv_path, "w", newline="", encoding="utf-8")
+                csv_writer = csv.writer(csv_file)
+                csv_writer.writerow(["frame", "total_unique_objects", "detections"])
+
+            # --- NEW: build CSV stats for this frame ---
+            total_unique_objects = 0
+            detections_serialized = ""
+
+            if result is not None:
+                boxes = getattr(result, "boxes", None)
+                if boxes is not None and len(boxes) > 0:
+                    xyxy = boxes.xyxy
+                    cls = getattr(boxes, "cls", None)
+                    conf = getattr(boxes, "conf", None)
+                    track_ids = getattr(boxes, "id", None)
+
+                    # Move to CPU / numpy where needed
+                    xyxy_np = xyxy.cpu().numpy()
+                    cls_np = cls.cpu().numpy() if cls is not None else None
+                    conf_np = conf.cpu().numpy() if conf is not None else None
+                    track_ids_np = track_ids.cpu().numpy() if track_ids is not None else None
+
+                    # Update unique objects counter using track IDs (BoT-SORT)
+                    if track_ids_np is not None:
+                        for tid in track_ids_np:
+                            seen_track_ids.add(int(tid))
+                    total_unique_objects = len(seen_track_ids)
+
+                    # Serialize detections as single string:
+                    # x0=..._y0=..._x1=..._y1=..._class=..._conf=...|...
+                    det_parts = []
+                    num_dets = xyxy_np.shape[0]
+                    for i in range(num_dets):
+                        x0, y0, x1, y1 = xyxy_np[i]
+                        cls_id = int(cls_np[i]) if cls_np is not None else -1
+                        conf_val = float(conf_np[i]) if conf_np is not None else 0.0
+                        det_parts.append(
+                            f"x0={int(x0)}_y0={int(y0)}_x1={int(x1)}_y1={int(y1)}_class={cls_id}_conf={conf_val:.3f}"
+                        )
+                    detections_serialized = "|".join(det_parts)
+
+            # If tracking is unavailable but we've already seen IDs earlier, keep count
+            if total_unique_objects == 0 and seen_track_ids:
+                total_unique_objects = len(seen_track_ids)
+
+            if csv_writer is not None:
+                csv_writer.writerow([frame_count, total_unique_objects, detections_serialized])
+            # --- END NEW ---
 
             if input_writer is not None:
-                #cv2.imwrite('/app/output-original.jpeg', frame)
                 input_writer.write(frame)
 
             if output_writer is not None:
-                print('Dumping output: ', h, w)
-                cv2.imwrite('/app/output-original.jpeg', vis)
+                # Save HQ output right before sending frame to output stream
+                if hq_writer is not None:
+                    hq_writer.write(vis)
+
                 output_writer.write(vis)
 
-            frame_count += 1
             if meta is not None and frame_count % args.print_every == 0:
                 inst_fps = meta.get("inst_fps", 0.0)
                 avg_fps = profiler.avg_fps()
                 LOGGER.info(
                     "[%6d] FPS inst/avg: %5.1f / %5.1f | capture: %6.2f ms infer: %6.2f ms | latency: %6.2f ms",
-                    frame_count, inst_fps, avg_fps, profiler.avg_ms("capture"), profiler.avg_ms("infer"), profiler.avg_ms("latency"),
+                    frame_count,
+                    inst_fps,
+                    avg_fps,
+                    profiler.avg_ms("capture"),
+                    profiler.avg_ms("infer"),
+                    profiler.avg_ms("latency"),
                 )
     finally:
         if input_writer is not None:
             input_writer.release()
         if output_writer is not None:
             output_writer.release()
+        if hq_writer is not None:
+            hq_writer.release()
+        if csv_file is not None:        # NEW: close CSV file
+            csv_file.close()
 
 
 def run_inference(frame: np.ndarray, args):

@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import uuid
 
 import cv2
 import requests
@@ -20,6 +21,7 @@ pipeline = None  # type: StreamPipeline | None
 profiler = None  # type: Profiler | None
 current_config = {}
 last_error = None  # type: str | None
+pipeline_id = None  # type: str | None
 
 
 class FileStreamReader(StreamReader):
@@ -108,23 +110,24 @@ def api_status():
     video = current_config.get("video", "")
     rtsp_transport = current_config.get("rtsp_transport", "")
     video_reference = video
+    global pipeline_id
+    pid_value = pipeline_id if pipeline and is_pipeline_running() else "-"
+
     if rtsp_transport and isinstance(video, str) and video.startswith("rtsp://"):
         # purely cosmetic – to show what transport was requested
         video_reference = "%s?rtsp_transport=%s" % (video, rtsp_transport)
 
-    return jsonify(
-        {
-            "state": state,
-            "pipeline_id": os.getpid() if pipeline and is_pipeline_running() else "-",
-            "last_error": last_error,
-            "config": {"video_reference": video_reference},
-        }
-    )
+    return jsonify({
+        "state": state,
+        "pipeline_id": pid_value,
+        "last_error": last_error,
+        "config": {"video_reference": video_reference},
+    })
 
 
 @app.route("/api/start", methods=["POST"])
 def api_start():
-    global pipeline, profiler, last_error, current_config
+    global pipeline, profiler, last_error, current_config, pipeline_id
 
     # Don't allow concurrent runs
     if is_pipeline_running():
@@ -151,6 +154,7 @@ def api_start():
         rtsp_transport = data.get("rtsp_transport", "")
 
         mode, device, rtsp_url, file_path = determine_mode(video, rtsp_transport)
+        pipeline_id = uuid.uuid4().hex
 
         args_dict = {
             "mode": mode,
@@ -170,6 +174,8 @@ def api_start():
             # NEW: model & visualization thresholds
             "model_conf": 0.10,   # YOLO detection / tracking threshold
             "vis_conf": 0.75,     # visualization-only threshold
+            "pipeline_id": pipeline_id,          # <- pass unique ID
+            "hq_output_dir": "/app/output_hq",   # optional: base dir for HQ files
         }
 
         args = argparse.Namespace(**args_dict)
@@ -210,13 +216,16 @@ def api_start():
 
         # Use StreamPipeline as a long-lived context manager. We call __enter__
         # manually here so that the pipeline outlives the HTTP request.
+        print(args)
         tmp_pipeline = StreamPipeline(reader, profiler, args)
         tmp_pipeline.__enter__()
         pipeline = tmp_pipeline
 
         current_config = {"video": video, "rtsp_transport": rtsp_transport}
         LOGGER.info("Started new pipeline with mode=%s, video=%s", mode, video)
-        return jsonify({"success": True})
+
+        return jsonify({"success": True, "pipeline_id": pipeline_id})
+
     except Exception as e:
         last_error = str(e)
         LOGGER.exception("Failed to start pipeline: %s", e)
@@ -230,7 +239,7 @@ def api_start():
 
 @app.route("/api/stop", methods=["POST"])
 def api_stop():
-    global pipeline, last_error, current_config
+    global pipeline, last_error, current_config, pipeline_id
 
     # Nothing to stop
     if pipeline is None and not is_pipeline_running():
@@ -245,6 +254,7 @@ def api_stop():
 
         pipeline = None
         current_config = {}
+        pipeline_id = None
         return jsonify({"success": True})
     except Exception as e:
         last_error = str(e)
