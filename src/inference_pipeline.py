@@ -10,13 +10,13 @@ import csv
 from datetime import datetime
 from profiler import Profiler
 from stream_readers import StreamReader
-from ultralytics import YOLO
+from ultralytics import YOLO, solutions
 from visualize import visualize_frame_with_supervision, reset_object_counter
 
 
 LOGGER = logging.getLogger("inference_pipeline")
 MODEL = YOLO(model="/app/model/weights-fp16.engine", task='segment')
-
+SOLUTION = None
 
 # Your BoT-SORT config
 _BOTSORT_CFG = {
@@ -34,6 +34,7 @@ _BOTSORT_CFG = {
     "reid_half": False,
     "proximity_thresh": 0.1,
     "appearance_thresh": 0.15,
+    "model": "auto"
 }
 
 _BOTSORT_YAML_PATH = "botsort_custom.yaml"
@@ -58,37 +59,25 @@ def ensure_botsort_yaml(path: str = _BOTSORT_YAML_PATH) -> str:
     return path
 
 
-def build_udp_out_gst(host: str, port: int, width: int, height: int, fps: int) -> str:
-    """
-    Output pipeline: raw BGR frames -> H.264 in MPEG-TS -> UDP.
-    View in VLC with: udp://@:<port>
-    """
-    pipeline = (
-        "appsrc is-live=true block=false format=time do-timestamp=true ! "
-        "queue max-size-buffers=1 leaky=downstream ! "
-        "videoconvert ! "
-        "x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=10 bframes=0 ! "
-        "mpegtsmux ! "
-        f"udpsink host={host} port={port} sync=false async=false"
-    )
-    LOGGER.info("OUT pipeline: %s", pipeline)
-    return pipeline
-
-
 def build_rtsp_out_gst(host: str, port: int, path: str,
                        width: int, height: int, fps: int) -> str:
     """
     Low-latency RTSP publisher to MediaMTX using software encoding for cross-platform compatibility.
     """
+    target_height = 720
+    target_width = int(width * target_height / height)
     pipeline = (
         "appsrc is-live=true block=true format=time do-timestamp=true ! "
         "queue max-size-buffers=1 leaky=downstream ! "
-        f"video/x-raw,format=BGR,width={width},height={height},framerate={fps}/1 ! "
+        # Accept raw BGR from the appsrc at any size, only fix framerate here
+        f"video/x-raw,format=BGR,framerate={fps}/1 ! "
         "videoconvert ! "
-        "video/x-raw,format=I420 ! "
+        "videoscale method=nearest-neighbour ! "
+        # Force 720p output to encoder
+        f"video/x-raw,format=I420,width={target_width},height={target_height},framerate={fps}/1 ! "
         "x264enc tune=zerolatency speed-preset=ultrafast "
-        "bitrate=8000000 key-int-max=15 bframes=0 "
-        "option-string=\"colormatrix=bt709:colorprim=bt709:transfer=bt709\" ! "
+        "bitrate=36000 key-int-max=45 bframes=0 "
+        "option-string=\"colormatrix=bt709:colorprim=bt709:transfer=bt709:deblock=-1,-1:aq-mode=1:aq-strength=0.8\" ! "
         "h264parse ! "
         f"rtspclientsink protocols=tcp location=rtsp://{host}:{port}/{path}"
     )
@@ -196,7 +185,10 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, profiler
                 break
 
             # Annotated frame
+            start_vis = time.time()
             vis = visualize_frame_with_supervision(frame, result, meta, args)
+            vis_time = time.time() - start_vis
+            profiler.record('visualization_time', vis_time)
 
             frame = frame.copy()
             if frame.ndim == 2:  # grayscale RTSP stream, for example
@@ -314,30 +306,41 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, profiler
                 total_unique_objects = len(seen_track_ids)
 
             if csv_writer is not None:
+                csv_start = time.time()
                 csv_writer.writerow([frame_count, total_unique_objects, detections_serialized])
-            # --- END NEW ---
+                profiler.record('csv_time', time.time() - csv_start)
 
             if input_writer is not None:
+                in_start = time.time()
                 input_writer.write(frame)
+                profiler.record('dump_input_time', time.time() - in_start)
 
             if output_writer is not None:
-                # Save HQ output right before sending frame to output stream
+                out_hq_start = time.time()
                 if hq_writer is not None:
                     hq_writer.write(vis)
+                profiler.record('dump_out_hq_time', time.time() - out_hq_start)
 
+                out_start = time.time()
                 output_writer.write(vis)
+                profiler.record('dump_out_time', time.time() - out_start)
 
             if meta is not None and frame_count % args.print_every == 0:
                 inst_fps = meta.get("inst_fps", 0.0)
                 avg_fps = profiler.avg_fps()
                 LOGGER.info(
-                    "[%6d] FPS inst/avg: %5.1f / %5.1f | capture: %6.2f ms infer: %6.2f ms | latency: %6.2f ms",
+                    "[%6d] FPS inst/avg: %5.1f / %5.1f | capture: %6.2f ms infer: %6.2f ms | latency: %6.2f ms | vis: %6.2f ms | out: %6.2fms, %6.2fms, %6.2fms, %6.2fms",
                     frame_count,
                     inst_fps,
                     avg_fps,
                     profiler.avg_ms("capture"),
                     profiler.avg_ms("infer"),
                     profiler.avg_ms("latency"),
+                    profiler.avg_ms("visualization_time"),
+                    profiler.avg_ms("csv_time"),
+                    profiler.avg_ms("dump_input_time"),
+                    profiler.avg_ms("dump_out_hq_time"),
+                    profiler.avg_ms("dump_out_time"),
                 )
     finally:
         if input_writer is not None:
@@ -351,19 +354,21 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, profiler
 
 
 def run_inference(frame: np.ndarray, args):
+    global SOLUTION
     tracker_cfg_path = ensure_botsort_yaml()
     model_conf = getattr(args, "model_conf", 0.1)
-    results = MODEL.track(
-        source=frame,
-        persist=True,
-        stream=False,
-        verbose=False,
-        tracker=tracker_cfg_path,
-        conf=model_conf,  # <- 0.1 by default from args
-        imgsz=640,
-        half=True
-    )
-    return results[0] if results else None
+    if SOLUTION is None:
+        SOLUTION = solutions.InstanceSegmentation(
+            model="/app/model/weights-fp16.engine",
+            tracker=tracker_cfg_path,
+            conf=model_conf,
+            half=True,
+            show=False,
+            classes=[0,1]
+        )
+
+    results = SOLUTION(frame)
+    return SOLUTION.tracks if results else None
 
 
 class StreamPipeline:

@@ -7,7 +7,11 @@ from hud import draw_hud, draw_object_count_banner  # <- UPDATED import
 
 BOX_ANNOTATOR = sv.BoxAnnotator()
 MASK_ANNOTATOR = sv.PolygonAnnotator()
-LABEL_ANNOTATOR = sv.LabelAnnotator()
+LABEL_ANNOTATOR = sv.LabelAnnotator(
+    text_scale=1.2,      # ← bigger text
+    text_thickness=2,    # ← bolder text
+    text_padding=8,      # ← more padding around text
+)
 SEEN_TRACK_IDS: set[int] = set()
 CUMULATIVE_OBJECTS: int = 0
 
@@ -64,6 +68,7 @@ def yolo_to_sv_detections(result, vis_conf: float) -> sv.Detections:
         return sv.Detections.empty()
 
     # Let supervision handle proper conversion (boxes, masks, tracker IDs, etc.).
+
     detections = sv.Detections.from_ultralytics(result)
 
     if len(detections) == 0:
@@ -102,8 +107,6 @@ def visualize_frame_with_supervision(
     cumulative_count = _update_cumulative_objects(detections)
     vis = draw_object_count_banner(vis, cumulative_count)
     
-    cv2.imwrite('/app/debug_vis.jpeg', vis)
-
     if debug:=False and meta is not None:
         vis = draw_hud(
             vis,

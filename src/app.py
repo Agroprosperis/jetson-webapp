@@ -1,4 +1,5 @@
 import argparse
+import json
 import logging
 import os
 import uuid
@@ -13,6 +14,7 @@ from stream_readers import StreamReader, V4L2StreamReader, RTSPStreamReader
 
 
 LOGGER = logging.getLogger("stream_benchmark")
+CONFIG_FILEPATH = "/app/config.json"
 
 app = Flask(__name__)
 
@@ -156,27 +158,30 @@ def api_start():
         mode, device, rtsp_url, file_path = determine_mode(video, rtsp_transport)
         pipeline_id = uuid.uuid4().hex
 
-        args_dict = {
-            "mode": mode,
-            "device": device,
-            "rtsp_url": rtsp_url,
-            "width": 1280,
-            "height": 720,
-            "fps": 30,
-            "print_every": 60,
-            "stream_host": "127.0.0.1",
-            # RTSP ingest port of MediaMTX
-            "stream_port": 8554,
-            "log_level": "INFO",
-            "original_path": "pub-original",
-            "output_path": "pub-output",
+        args_dict = dict()
+        if os.path.exists(CONFIG_FILEPATH):
+            with open(CONFIG_FILEPATH, 'r') as config_input:
+                args_dict = json.load(config_input)
 
-            # NEW: model & visualization thresholds
-            "model_conf": 0.10,   # YOLO detection / tracking threshold
-            "vis_conf": 0.75,     # visualization-only threshold
-            "pipeline_id": pipeline_id,          # <- pass unique ID
-            "hq_output_dir": "/app/output_hq",   # optional: base dir for HQ files
-        }
+        args_dict = dict(args_dict, 
+            mode=mode,
+            device=device,
+            rtsp_url=rtsp_url,
+            width=1280,
+            height=720,
+            fps=30,
+            print_every=60,
+            stream_host="127.0.0.1",
+            stream_port=8554,
+            log_level="INFO",
+            original_path="pub-original",
+            output_path="pub-output",
+
+            model_conf=0.10,   # YOLO detection / tracking threshold
+            vis_conf=0.75,     # visualization-only threshold
+            pipeline_id=pipeline_id,          # <- pass unique ID
+            hq_output_dir="/app/output_hq",   # optional: base dir for HQ files
+        )
 
         args = argparse.Namespace(**args_dict)
 

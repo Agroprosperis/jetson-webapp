@@ -2,50 +2,75 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+
+# Regular + bold paths (adjust if you use a different family)
+FONT_PATH_REG = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+FONT_PATH_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf"
+
+BASE_FONT_SIZE = 24
+FONT_SIZE = int(BASE_FONT_SIZE * 1.2)  # +20%
+
+# Try bold font first, fall back to regular
+try:
+    OBJECT_BANNER_FONT = ImageFont.truetype(FONT_PATH_BOLD, FONT_SIZE)
+except OSError:
+    OBJECT_BANNER_FONT = ImageFont.truetype(FONT_PATH_REG, FONT_SIZE)
+
+def rgb_to_bgr(rgb):
+    r, g, b = rgb
+    return (b, g, r)
 
 
-def draw_object_count_banner(frame_bgr, count_val: int):
+# Define colors in normal RGB for readability
+_BANNER_BG_RGB = (0, 0, 0)          # black
+_BANNER_TEXT_RGB = (255, 255, 255)  # white
+
+# Convert once to the BGR triplets that we will feed to Pillow
+BANNER_BG_BGR = rgb_to_bgr(_BANNER_BG_RGB)
+BANNER_TEXT_BGR = rgb_to_bgr(_BANNER_TEXT_RGB)
+
+
+def draw_object_count_banner(frame_bgr: np.ndarray, count_val: int):
     """
-    Draw a semi-transparent banner in the top-left corner with the
-    current number of detected objects, similar to the provided
-    WorkflowImageData example.
+    Fast banner: no transparency, no BGR<->RGB conversion.
+    Uses Pillow for text (better fonts) but keeps frame in BGR layout.
     """
     if count_val is None:
         return frame_bgr
 
-    # BGR -> RGB for Pillow
-    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    base_img = Image.fromarray(frame_rgb).convert("RGBA")
-    overlay = Image.new("RGBA", base_img.size, (0, 0, 0, 0))
-    draw_overlay = ImageDraw.Draw(overlay)
+    # Pillow will treat this as RGB, but underlying bytes remain BGR.
+    img = Image.fromarray(frame_bgr, mode="RGB")
+    draw = ImageDraw.Draw(img)
 
     text = f"Objects detected: {count_val}"
 
-    try:
-        font = ImageFont.truetype(FONT_PATH, 24)
-    except OSError:
-        font = ImageFont.load_default()
+    # Measure text once per call (font is cached globally)
+    text_bbox = draw.textbbox((0, 0), text, font=OBJECT_BANNER_FONT)
+    text_w = text_bbox[2] - text_bbox[0]
+    text_h = text_bbox[3] - text_bbox[1]
 
-    x = 10
-    y = 10
-    pad = 6
+    pad_x = 10
+    pad_y = 6
+    x0 = 10
+    y0 = 10
 
-    bbox = draw_overlay.textbbox((x, y), text, font=font)
-    left, top, right, bottom = bbox
-    text_w = right - left
-    text_h = bottom - top
+    # Solid background rectangle (no alpha)
+    bg_rect = (
+        x0,
+        y0,
+        x0 + text_w + 2 * pad_x,
+        y0 + text_h + 2 * pad_y,
+    )
+    # IMPORTANT: use BGR triplets; cv2 will later read them as BGR
+    draw.rectangle(bg_rect, fill=BANNER_BG_BGR)
 
-    bg_box = (x - pad, y - pad, x + text_w + pad, y + text_h + pad)
-    draw_overlay.rectangle(bg_box, fill=(0, 0, 0, 160))  # ~60% opacity
+    # Text on top
+    text_x = x0 + pad_x
+    text_y = y0 + pad_y
+    draw.text((text_x, text_y), text, font=OBJECT_BANNER_FONT, fill=BANNER_TEXT_BGR)
 
-    composed = Image.alpha_composite(base_img, overlay)
-    draw_text = ImageDraw.Draw(composed)
-    draw_text.text((x, y), text, font=font, fill=(255, 255, 255, 255))
-
-    out_rgb = composed.convert("RGB")
-    out_np = np.ascontiguousarray(np.array(out_rgb, dtype=np.uint8))
-    out_bgr = cv2.cvtColor(out_np, cv2.COLOR_RGB2BGR)
+    # No RGB->BGR conversion here; layout is still BGR
+    out_bgr = np.array(img)
     return out_bgr
 
 

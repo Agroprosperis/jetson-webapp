@@ -12,8 +12,10 @@ class Profiler:
         }
 
     def record(self, name: str, dt: float) -> None:
-        if name in self.data:
-            self.data[name].append(dt)
+        if not name in self.data:
+            self.data[name] = deque(maxlen=100)
+        self.data[name].append(dt)
+
 
     def avg_ms(self, name: str) -> float:
         buf = self.data.get(name, None)
