@@ -10,10 +10,10 @@ from flask import Flask, Response, jsonify, request, send_file
 
 from inference_pipeline import StreamPipeline
 from profiler import Profiler
-from stream_readers import StreamReader, V4L2StreamReader, RTSPStreamReader
+from stream_readers import V4L2StreamReader, FileStreamReader
 
 
-LOGGER = logging.getLogger("stream_benchmark")
+LOGGER = logging.getLogger("app")
 CONFIG_FILEPATH = "/app/config.json"
 
 app = Flask(__name__)
@@ -24,33 +24,6 @@ profiler = None  # type: Profiler | None
 current_config = {}
 last_error = None  # type: str | None
 pipeline_id = None  # type: str | None
-
-
-class FileStreamReader(StreamReader):
-    """Simple file-based StreamReader using OpenCV."""
-    def __init__(self, file_path, fps):
-        super().__init__(width=None, height=None, fps=fps)
-        self.file_path = file_path
-
-    def open(self):  # type: ignore[override]
-        self.cap = cv2.VideoCapture(self.file_path)
-        if not self.cap or not self.cap.isOpened():
-            LOGGER.error("Failed to open file capture: %s", self.file_path)
-            self.cap = None
-            return False
-
-        self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or self.width
-        self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or self.height
-        fps = self.cap.get(cv2.CAP_PROP_FPS)
-        if fps and fps > 1e-3:
-            self.fps = int(fps)
-
-        LOGGER.info(
-            "Opened file %s (%sx%s @ %s fps)",
-            self.file_path,
-            self.width or "?", self.height or "?", self.fps or "?",
-        )
-        return True
 
 
 def is_pipeline_running():
@@ -66,33 +39,26 @@ def is_pipeline_running():
     return any(t is not None and t.is_alive() for t in threads)
 
 
-def determine_mode(video, rtsp_transport):
+def determine_mode(video):
     """
     Decide how to interpret the `video` argument.
 
-    Returns: (mode, device, rtsp_url, file_path)
+    Returns: (mode, device, file_path)
     """
     file_path = None
     device = None
-    rtsp_url = None
     mode = None
 
     if isinstance(video, str) and video.startswith("/dev/"):
         mode = "v4l2-gs"
         device = video
-    elif isinstance(video, str) and video.startswith("rtsp://"):
-        mode = "rtsp"
-        # For FFmpeg we do *not* append rtsp_transport as a query parameter –
-        # ffmpeg will negotiate transports on its own and gracefully fall back
-        # to TCP when UDP is rejected with 461 Unsupported Transport.
-        rtsp_url = video
     else:
         mode = "file"
         file_path = video
         if not os.path.isfile(file_path):
             raise ValueError("File not found: %s" % file_path)
 
-    return mode, device, rtsp_url, file_path
+    return mode, device, file_path
 
 
 @app.route("/")
@@ -102,22 +68,17 @@ def index():
 
 @app.route("/api/config")
 def api_config():
-    # 8889 is MediaMTX WebRTC (WHEP) port in your config
     return jsonify({"stream_port": 8889})
 
 
 @app.route("/api/status")
 def api_status():
+    global pipeline_id
+    
     state = "running" if is_pipeline_running() else "idle"
     video = current_config.get("video", "")
-    rtsp_transport = current_config.get("rtsp_transport", "")
     video_reference = video
-    global pipeline_id
     pid_value = pipeline_id if pipeline and is_pipeline_running() else "-"
-
-    if rtsp_transport and isinstance(video, str) and video.startswith("rtsp://"):
-        # purely cosmetic – to show what transport was requested
-        video_reference = "%s?rtsp_transport=%s" % (video, rtsp_transport)
 
     return jsonify({
         "state": state,
@@ -153,9 +114,7 @@ def api_start():
         if not video:
             raise ValueError("No video provided")
 
-        rtsp_transport = data.get("rtsp_transport", "")
-
-        mode, device, rtsp_url, file_path = determine_mode(video, rtsp_transport)
+        mode, device, file_path = determine_mode(video)
         pipeline_id = uuid.uuid4().hex
 
         args_dict = dict()
@@ -166,7 +125,6 @@ def api_start():
         args_dict = dict(args_dict, 
             mode=mode,
             device=device,
-            rtsp_url=rtsp_url,
             width=1280,
             height=720,
             fps=30,
@@ -174,13 +132,17 @@ def api_start():
             stream_host="127.0.0.1",
             stream_port=8554,
             log_level="INFO",
-            original_path="pub-original",
+            original_path=None,
             output_path="pub-output",
 
             model_conf=0.10,   # YOLO detection / tracking threshold
             vis_conf=0.75,     # visualization-only threshold
             pipeline_id=pipeline_id,          # <- pass unique ID
             hq_output_dir="/app/output_hq",   # optional: base dir for HQ files
+            dump_original=False,
+            dump_processed=True,
+            output_stream='WebRTC', # options: WebRTC or MJPEG
+            class_names = ['CouldBeTilletia', 'Tilletia']
         )
 
         args = argparse.Namespace(**args_dict)
@@ -190,32 +152,24 @@ def api_start():
             reader = FileStreamReader(file_path, args.fps)
         elif mode == "v4l2-gs":
             reader = V4L2StreamReader(args.device, args.width, args.height, args.fps)
-        else:  # "rtsp"
-            # Use FFmpeg-based reader instead of the GStreamer one from stream_readers
-            reader = RTSPStreamReader(args.rtsp_url, args.fps, rtsp_transport)
+        else:
+            raise NotImplementedError()
 
         # For file & RTSP we can probe actual dimensions before starting
-        if isinstance(reader, (FileStreamReader, RTSPStreamReader)):
+        if isinstance(reader, (FileStreamReader)):
             with reader:
                 cap = reader.cap
                 if cap is None or not cap.isOpened():
                     raise RuntimeError("Failed to open stream reader for properties")
 
-                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or args.width
-                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or args.height
+                args.width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or args.width
+                args.height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or args.height
                 fps_val = cap.get(cv2.CAP_PROP_FPS) or args.fps
 
-                args.width = width
-                args.height = height
                 if fps_val and fps_val > 1e-3:
                     args.fps = int(fps_val)
 
-                LOGGER.info(
-                    "Input stream properties: %sx%s @ %s fps",
-                    args.width,
-                    args.height,
-                    args.fps,
-                )
+                LOGGER.info("Input stream properties: %sx%s @ %s fps", args.width, args.height, args.fps,)
 
         profiler = Profiler(window=200)
 
@@ -226,7 +180,7 @@ def api_start():
         tmp_pipeline.__enter__()
         pipeline = tmp_pipeline
 
-        current_config = {"video": video, "rtsp_transport": rtsp_transport}
+        current_config = {"video": video}
         LOGGER.info("Started new pipeline with mode=%s, video=%s", mode, video)
 
         return jsonify({"success": True, "pipeline_id": pipeline_id})
@@ -257,9 +211,9 @@ def api_stop():
             # close all RTSP / OpenCV resources via the context manager.
             pipeline.__exit__(None, None, None)
 
-        pipeline = None
+        pipeline, pipeline_id = None, None
         current_config = {}
-        pipeline_id = None
+
         return jsonify({"success": True})
     except Exception as e:
         last_error = str(e)
@@ -281,7 +235,7 @@ def api_upload():
     file.save(path)
 
     # Frontend expects a "video" URL and optional rtsp_transport
-    return jsonify({"video": path, "rtsp_transport": ""})
+    return jsonify({"video": path})
 
 
 @app.route("/<path:path>/whep", methods=["GET", "POST", "OPTIONS"])
@@ -303,18 +257,11 @@ def proxy_whep(path):
         resp = requests.get(target_url, headers=headers)
 
     excluded_headers = {"content-encoding", "content-length", "transfer-encoding", "connection"}
-    response_headers = [
-        (name, value)
-        for (name, value) in resp.raw.headers.items()
-        if name.lower() not in excluded_headers
-    ]
+    response_headers = [(name, value) for (name, value) in resp.raw.headers.items() if name.lower() not in excluded_headers]
     return Response(resp.content, resp.status_code, response_headers)
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level="INFO",
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    logging.basicConfig(level="INFO", format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     logging.getLogger("ultralytics").setLevel(logging.ERROR)
     app.run(host="0.0.0.0", port=8000, threaded=True)

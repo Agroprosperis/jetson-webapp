@@ -1,7 +1,7 @@
 <html>
 <head>
 <meta charset='utf-8'/>
-<title>RF App (WebRTC Original + WebRTC Workflow)</title>
+<title>RF App (WebRTC Workflow)</title>
 <meta name='viewport' content='width=device-width,initial-scale=1'/>
 <style>
 body{margin:0;background:#111;color:#eee;font-family:system-ui,Segoe UI,Roboto,Arial}
@@ -11,7 +11,7 @@ button{cursor:pointer;transition:transform .06s ease,opacity .2s}
 button:active{transform:scale(0.98)}
 button[disabled]{opacity:.5;cursor:not-allowed}
 .status{font-size:12px;opacity:.9;margin-left:auto;padding:4px 8px;border-radius:8px;background:#222}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;position:fixed;inset:56px 0 0 0}
+.grid{display:grid;grid-template-columns:1fr;gap:6px;position:fixed;inset:56px 0 0 0}
 .pane{display:flex;flex-direction:column;min-width:0;min-height:0}
 .pane h3{margin:6px 12px 4px 12px;font-weight:600;font-size:14px;opacity:.9}
 .pane video,.pane img{flex:1;min-height:0;width:100%;height:100%;object-fit:contain;background:#000}
@@ -21,200 +21,212 @@ button[disabled]{opacity:.5;cursor:not-allowed}
 <body>
 <header>
 <form id='cfg' onsubmit='return false;'>
-<input id='video' type='text' placeholder='rtsp://127.0.0.1:8554/<path> (or file, or 0)' size='48'/>
-<select id='rtsp_transport'><option value=''>auto</option>
-<option value='tcp'>rtsp_transport=tcp</option><option value='udp'>rtsp_transport=udp</option></select>
-<button id='run'>Run</button>
-<button id='stop' type='button'>Stop</button>
-<button id='uploadBtn'>Upload Video</button>
-<input id='upload' type='file' accept='video/*' style='display:none'/>
+  <!-- Only file path or device, no RTSP/rtsp_transport -->
+  <input id='video' type='text'
+         placeholder='/dev/video0 or path/to/video.mp4'
+         size='48'/>
+  <button id='run'>Run</button>
+  <button id='stop' type='button'>Stop</button>
+  <button id='uploadBtn' type='button'>Upload Video</button>
+  <input id='upload' type='file' accept='video/*' style='display:none'/>
 </form>
 <div class='status'><span id='status'>status: idle</span></div>
 </header>
 <div class='grid'>
-<div class='pane'><h3>Original (WebRTC via MediaMTX)</h3><video id='orig' playsinline autoplay muted controls></video></div>
-<div class='pane'><h3>Workflow (WebRTC via MediaMTX)</h3><video id='wf' playsinline autoplay muted controls></video></div>
+  <div class='pane'>
+    <h3>Workflow (WebRTC via MediaMTX)</h3>
+    <video id='wf' playsinline autoplay muted controls></video>
+  </div>
 </div>
 <script>
-let pc_orig=null; let pc_wf=null; let cfg=null; let state='idle';
+let pc_wf=null; let cfg=null; let state='idle';
 let isUploading=false; let uploadProgress=0;
 const statusEl=document.getElementById('status');
 const btnRun=document.getElementById('run'); const btnStop=document.getElementById('stop');
 const uploadBtn=document.getElementById('uploadBtn'); const uploadInput=document.getElementById('upload');
-const vOrig=document.getElementById('orig'); const vWf=document.getElementById('wf');
+const vWf=document.getElementById('wf');
+
 function applyState(j){
-if(isUploading){
-btnRun.disabled=true; btnStop.disabled=true; uploadBtn.disabled=true;
-statusEl.textContent=`status: uploading ${uploadProgress}%`;
-return;
+  if(isUploading){
+    btnRun.disabled=true; btnStop.disabled=true; uploadBtn.disabled=true;
+    statusEl.textContent=`status: uploading ${uploadProgress}%`;
+    return;
+  }
+  state=(j&&j.state)||'idle';
+  btnRun.disabled=state==='starting'||state==='running';
+  btnRun.textContent=(state==='running')?'Running':((state==='starting')?'Starting...':'Run');
+  btnStop.disabled=state==='idle'||state==='stopping';
+  uploadBtn.disabled=false;
+  let msg='status: '+state+' pid:' + ((j&&j.pipeline_id)||'-');
+  if(j&&j.last_error&&state!=='running') msg+=' fail: '+j.last_error;
+  statusEl.textContent=msg;
+  if (state !== 'running') {
+    disconnectWHEP_wf();
+  }
 }
-state=(j&&j.state)||'idle';
-btnRun.disabled=state==='starting'||state==='running';
-btnRun.textContent=(state==='running')?'Running':((state==='starting')?'Starting...':'Run');
-btnStop.disabled=state==='idle'||state==='stopping';
-uploadBtn.disabled=false;
-let msg='status: '+state+' pid:' + ((j&&j.pipeline_id)||'-');
-if(j&&j.last_error&&state!=='running') msg+=' fail: '+j.last_error;
-statusEl.textContent=msg;
-if (state !== 'running') {
-  disconnectWHEP_orig();
-  disconnectWHEP_wf();
+
+async function fetchCfg(){
+  const r=await fetch('/api/config');
+  cfg=await r.json();
 }
-}
-async function fetchCfg(){ const r=await fetch('/api/config'); cfg=await r.json(); }
+
 async function refresh(){
-try{ const r=await fetch('/api/status'); const j=await r.json(); applyState(j); return j; }catch(e){ statusEl.textContent='status: error'; return null; }
+  try{
+    const r=await fetch('/api/status');
+    const j=await r.json();
+    applyState(j);
+    return j;
+  }catch(e){
+    statusEl.textContent='status: error';
+    return null;
+  }
 }
-async function connectWHEP_orig(path, retryCount = 0, maxRetries = 5){
-if(!cfg) await fetchCfg();
-const whep = '/' + encodeURIComponent(path) + '/whep';
-try{
-if(pc_orig) { try{pc_orig.close();}catch(e){} pc_orig=null; }
-vOrig.srcObject=null;
-pc_orig=new RTCPeerConnection({iceServers:[{urls:['stun:stun.l.google.com:19302']}]});
-pc_orig.addEventListener('track',(ev)=>{ vOrig.srcObject=ev.streams[0]; });
-pc_orig.addEventListener('iceconnectionstatechange', () => {
-if (pc_orig.iceConnectionState === 'failed' || pc_orig.iceConnectionState === 'disconnected' || pc_orig.iceConnectionState === 'closed') {
-if (state === 'running') {
-statusEl.textContent = 'status: WHEP orig connection failed, renegotiating...';
-disconnectWHEP_orig();
-connectWHEP_orig(path);
-}
-}
-});
-const offer=await pc_orig.createOffer({offerToReceiveVideo:true, offerToReceiveAudio:false});
-await pc_orig.setLocalDescription(offer);
-const rr=await fetch(whep,{method:'POST',headers:{'Content-Type':'application/sdp'},body:offer.sdp});
-if(!rr.ok){
-if (rr.status === 404 && retryCount < maxRetries) {
-await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
-return connectWHEP_orig(path, retryCount + 1, maxRetries);
-} else {
-throw new Error('WHEP HTTP '+rr.status);
-}
-}
-const answer=await rr.text();
-await pc_orig.setRemoteDescription({type:'answer', sdp:answer});
-}catch(e){ throw new Error('webrtc orig failed: '+(e&&e.message?e.message:e)); }
-}
+
 async function connectWHEP_wf(path, retryCount = 0, maxRetries = 5){
-if(!cfg) await fetchCfg();
-const whep = '/' + encodeURIComponent(path) + '/whep';
-try{
-if(pc_wf) { try{pc_wf.close();}catch(e){} pc_wf=null; }
-vWf.srcObject=null;
-pc_wf=new RTCPeerConnection({iceServers:[{urls:['stun:stun.l.google.com:19302']}]});
-pc_wf.addEventListener('track',(ev)=>{ vWf.srcObject=ev.streams[0]; });
-pc_wf.addEventListener('iceconnectionstatechange', () => {
-if (pc_wf.iceConnectionState === 'failed' || pc_wf.iceConnectionState === 'disconnected' || pc_wf.iceConnectionState === 'closed') {
-if (state === 'running') {
-statusEl.textContent = 'status: WHEP wf connection failed, renegotiating...';
-disconnectWHEP_wf();
-connectWHEP_wf(path);
+  if(!cfg) await fetchCfg();
+  const whep = '/' + encodeURIComponent(path) + '/whep';
+  try{
+    if(pc_wf) { try{pc_wf.close();}catch(e){} pc_wf=null; }
+    vWf.srcObject=null;
+
+    pc_wf=new RTCPeerConnection({iceServers:[{urls:['stun:stun.l.google.com:19302']}]});
+    pc_wf.addEventListener('track',(ev)=>{ vWf.srcObject=ev.streams[0]; });
+    pc_wf.addEventListener('iceconnectionstatechange', () => {
+      if (pc_wf.iceConnectionState === 'failed' ||
+          pc_wf.iceConnectionState === 'disconnected' ||
+          pc_wf.iceConnectionState === 'closed') {
+        if (state === 'running') {
+          statusEl.textContent = 'status: WHEP wf connection failed, renegotiating...';
+          disconnectWHEP_wf();
+          connectWHEP_wf(path);
+        }
+      }
+    });
+
+    const offer=await pc_wf.createOffer({offerToReceiveVideo:true, offerToReceiveAudio:false});
+    await pc_wf.setLocalDescription(offer);
+
+    const rr=await fetch(whep,{method:'POST',headers:{'Content-Type':'application/sdp'},body:offer.sdp});
+    if(!rr.ok){
+      if (rr.status === 404 && retryCount < maxRetries) {
+        await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
+        return connectWHEP_wf(path, retryCount + 1, maxRetries);
+      } else {
+        throw new Error('WHEP HTTP '+rr.status);
+      }
+    }
+    const answer=await rr.text();
+    await pc_wf.setRemoteDescription({type:'answer', sdp:answer});
+  }catch(e){
+    throw new Error('webrtc wf failed: '+(e&&e.message?e.message:e));
+  }
 }
+
+function disconnectWHEP_wf(){
+  try{ if(pc_wf){ pc_wf.close(); } }catch(e){}
+  pc_wf=null; vWf.srcObject=null;
 }
-});
-const offer=await pc_wf.createOffer({offerToReceiveVideo:true, offerToReceiveAudio:false});
-await pc_wf.setLocalDescription(offer);
-const rr=await fetch(whep,{method:'POST',headers:{'Content-Type':'application/sdp'},body:offer.sdp});
-if(!rr.ok){
-if (rr.status === 404 && retryCount < maxRetries) {
-await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
-return connectWHEP_wf(path, retryCount + 1, maxRetries);
-} else {
-throw new Error('WHEP HTTP '+rr.status);
-}
-}
-const answer=await rr.text();
-await pc_wf.setRemoteDescription({type:'answer', sdp:answer});
-}catch(e){ throw new Error('webrtc wf failed: '+(e&&e.message?e.message:e)); }
-}
-function disconnectWHEP_orig(){ try{ if(pc_orig){ pc_orig.close(); } }catch(e){} pc_orig=null; vOrig.srcObject=null; }
-function disconnectWHEP_wf(){ try{ if(pc_wf){ pc_wf.close(); } }catch(e){} pc_wf=null; vWf.srcObject=null; }
+
 btnRun.onclick=async()=>{
-const video=document.getElementById('video').value.trim();
-if(!video){alert('Enter RTSP URL');return;}
-const rtsp_transport=document.getElementById('rtsp_transport').value;
-try{
-statusEl.textContent='status: starting workflow pipeline...';
-const startRes=await fetch('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({video,rtsp_transport})});
-if(!startRes.ok){ throw new Error('start failed: HTTP '+startRes.status); }
-await refresh();
-statusEl.textContent='status: starting original preview...';
-await connectWHEP_orig('pub-original');
-statusEl.textContent='status: starting workflow preview...';
-await connectWHEP_wf('pub-output');
-}catch(e){ statusEl.textContent='status: failed -> '+e; disconnectWHEP_orig(); disconnectWHEP_wf(); }
+  const video=document.getElementById('video').value.trim();
+  if(!video){
+    alert('Enter video source (file path or device)');
+    return;
+  }
+  try{
+    statusEl.textContent='status: starting workflow pipeline...';
+    const startRes=await fetch('/api/start',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({video})
+    });
+    if(!startRes.ok){
+      throw new Error('start failed: HTTP '+startRes.status);
+    }
+    await refresh();
+    statusEl.textContent='status: starting workflow preview...';
+    await connectWHEP_wf('pub-output');
+  }catch(e){
+    statusEl.textContent='status: failed -> '+e;
+    disconnectWHEP_wf();
+  }
 };
+
 btnStop.onclick=async()=>{
-try{
-statusEl.textContent='status: stopping...';
-disconnectWHEP_orig();
-disconnectWHEP_wf();
-const stopRes=await fetch('/api/stop',{method:'POST'});
-if(!stopRes.ok){ throw new Error('stop failed: HTTP '+stopRes.status); }
-await refresh();
-}catch(e){ statusEl.textContent='status: stop error -> '+e; }
+  try{
+    statusEl.textContent='status: stopping...';
+    disconnectWHEP_wf();
+    const stopRes=await fetch('/api/stop',{method:'POST'});
+    if(!stopRes.ok){
+      throw new Error('stop failed: HTTP '+stopRes.status);
+    }
+    await refresh();
+  }catch(e){
+    statusEl.textContent='status: stop error -> '+e;
+  }
 };
+
 uploadBtn.onclick=()=>{ uploadInput.click(); };
+
 uploadInput.onchange=function(){
-if(!uploadInput.files.length) return;
-if(isUploading) return;
-const file=uploadInput.files[0];
-const fd=new FormData(); fd.append('file',file);
-const xhr=new XMLHttpRequest();
-xhr.open('POST','/api/upload');
-xhr.upload.onprogress=function(e){
-if(e.lengthComputable){
-uploadProgress=Math.round((e.loaded/e.total)*100);
-applyState();
-}
+  if(!uploadInput.files.length) return;
+  if(isUploading) return;
+
+  const file=uploadInput.files[0];
+  const fd=new FormData();
+  fd.append('file',file);
+
+  const xhr=new XMLHttpRequest();
+  xhr.open('POST','/api/upload');
+
+  xhr.upload.onprogress=function(e){
+    if(e.lengthComputable){
+      uploadProgress=Math.round((e.loaded/e.total)*100);
+      applyState();
+    }
+  };
+
+  xhr.onload=function(){
+    isUploading=false;
+    if(xhr.status!==200){
+      statusEl.textContent='upload error: '+xhr.status;
+      refresh();
+      return;
+    }
+    try{
+      const j=JSON.parse(xhr.responseText);
+      document.getElementById('video').value=j.video;
+      uploadInput.value='';
+      btnRun.click();
+    }catch(e){
+      statusEl.textContent='upload error: '+e;
+      refresh();
+    }
+  };
+
+  xhr.onerror=function(){
+    isUploading=false;
+    statusEl.textContent='upload error';
+    refresh();
+  };
+
+  isUploading=true; uploadProgress=0; applyState();
+  xhr.send(fd);
 };
-xhr.onload=function(){
-isUploading=false;
-if(xhr.status!==200){
-statusEl.textContent='upload error: '+xhr.status;
-refresh();
-return;
-}
-try{
-const j=JSON.parse(xhr.responseText);
-document.getElementById('video').value=j.video;
-document.getElementById('rtsp_transport').value=j.rtsp_transport||'';
-uploadInput.value='';
-btnRun.click();
-}catch(e){
-statusEl.textContent='upload error: '+e;
-refresh();
-}
-};
-xhr.onerror=function(){
-isUploading=false;
-statusEl.textContent='upload error';
-refresh();
-};
-isUploading=true; uploadProgress=0; applyState();
-xhr.send(fd);
-};
+
 window.addEventListener('load', async()=>{
-await fetchCfg();
-let j = await refresh(); setInterval(refresh,1500);
-if(state==='running' && j && j.config && 'video_reference' in j.config){
-const video = j.config.video_reference || '';
-document.getElementById('video').value = video;
-let transport = '';
-if(video){
-try{
-const u = new URL(video);
-transport = u.searchParams.get('rtsp_transport') || '';
-}catch(e){}
-}
-document.getElementById('rtsp_transport').value = transport;
-await connectWHEP_orig('pub-original');
-await connectWHEP_wf('pub-output');
-}
+  await fetchCfg();
+  let j = await refresh();
+  setInterval(refresh,1500);
+
+  if(state==='running' && j && j.config && 'video_reference' in j.config){
+    const video = j.config.video_reference || '';
+    document.getElementById('video').value = video;
+    await connectWHEP_wf('pub-output');
+  }
 });
-window.addEventListener('beforeunload',()=>{ disconnectWHEP_orig(); disconnectWHEP_wf(); });
+
+window.addEventListener('beforeunload',()=>{ disconnectWHEP_wf(); });
 </script>
 </body>
 </html>

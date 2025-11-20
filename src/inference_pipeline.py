@@ -1,3 +1,4 @@
+import argparse
 import cv2
 import threading
 import time
@@ -6,17 +7,22 @@ import logging
 import numpy as np
 import os
 import csv
+import ultralytics
 
 from datetime import datetime
 from profiler import Profiler
 from stream_readers import StreamReader
-from ultralytics import YOLO, solutions
+from ultralytics import YOLO
+from ultralytics.trackers.bot_sort import BOTSORT
+from ultralytics.cfg import get_cfg
+
 from visualize import visualize_frame_with_supervision, reset_object_counter
 
 
 LOGGER = logging.getLogger("inference_pipeline")
-MODEL = YOLO(model="/app/model/weights-fp16.engine", task='segment')
-SOLUTION = None
+MODEL = None
+TRACKER = None
+
 
 # Your BoT-SORT config
 _BOTSORT_CFG = {
@@ -29,34 +35,10 @@ _BOTSORT_CFG = {
     "fuse_score": True,
     "gmc_method": "sparseOptFlow",
     "with_reid": False,
-    "reid_weights": "/work/upwork/igor/osnet_x0_25_msmt17.onnx",
-    "reid_device": "cuda",
-    "reid_half": False,
     "proximity_thresh": 0.1,
     "appearance_thresh": 0.15,
     "model": "auto"
 }
-
-_BOTSORT_YAML_PATH = "botsort_custom.yaml"
-
-def ensure_botsort_yaml(path: str = _BOTSORT_YAML_PATH) -> str:
-    """
-    Make sure a BoT-SORT YAML config file exists on disk for Ultralytics YOLO.
-    Ultralytics' `model.track(..., tracker=...)` API expects a path, not a dict.
-    """
-    if os.path.exists(path):
-        return path
-
-    lines = []
-    for key, value in _BOTSORT_CFG.items():
-        lines.append(f"{key}: {value}")
-    text = "\n".join(lines) + "\n"
-
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(text)
-
-    LOGGER.info("Written custom BoT-SORT config to %s", path)
-    return path
 
 
 def build_rtsp_out_gst(host: str, port: int, path: str,
@@ -72,7 +54,7 @@ def build_rtsp_out_gst(host: str, port: int, path: str,
         # Accept raw BGR from the appsrc at any size, only fix framerate here
         f"video/x-raw,format=BGR,framerate={fps}/1 ! "
         "videoconvert ! "
-        "videoscale method=nearest-neighbour ! "
+        "videoscale method=bilinear ! "
         # Force 720p output to encoder
         f"video/x-raw,format=I420,width={target_width},height={target_height},framerate={fps}/1 ! "
         "x264enc tune=zerolatency speed-preset=ultrafast "
@@ -138,11 +120,12 @@ def inference_loop(
             break
 
         start_inference = time.perf_counter()
-        result = run_inference(frame, args)
-        end_inference = time.perf_counter()
+        result, end_inference = run_inference(frame, args)
+        end_tracking = time.perf_counter()
 
         profiler.record("capture", capture_time)
-        profiler.record("infer", end_inference - start_inference)
+        profiler.record("yolo", end_inference - start_inference)
+        profiler.record("track", end_tracking - end_inference)
         profiler.record("latency", end_inference - capture_start_end)
         profiler.record("interval", end_inference - start_time)
 
@@ -255,7 +238,6 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, profiler
                 if not hq_writer.isOpened():
                     raise RuntimeError("Failed to open HQ file writer")
 
-                # NEW: CSV for per-frame stats
                 hq_csv_filename = f"output-hq-{pipeline_id}.csv"
                 hq_csv_path = os.path.join(hq_output_dir, hq_csv_filename)
                 LOGGER.info("Saving per-frame stats CSV to %s", hq_csv_path)
@@ -264,7 +246,6 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, profiler
                 csv_writer = csv.writer(csv_file)
                 csv_writer.writerow(["frame", "total_unique_objects", "detections"])
 
-            # --- NEW: build CSV stats for this frame ---
             total_unique_objects = 0
             detections_serialized = ""
 
@@ -329,12 +310,13 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, profiler
                 inst_fps = meta.get("inst_fps", 0.0)
                 avg_fps = profiler.avg_fps()
                 LOGGER.info(
-                    "[%6d] FPS inst/avg: %5.1f / %5.1f | capture: %6.2f ms infer: %6.2f ms | latency: %6.2f ms | vis: %6.2f ms | out: %6.2fms, %6.2fms, %6.2fms, %6.2fms",
+                    "[%6d] FPS inst/avg: %5.1f / %5.1f | capture: %6.2f ms yolo: %6.2f ms, track: %6.2f ms | latency: %6.2f ms | vis: %6.2f ms | out: %6.2fms, %6.2fms, %6.2fms, %6.2fms",
                     frame_count,
                     inst_fps,
                     avg_fps,
                     profiler.avg_ms("capture"),
-                    profiler.avg_ms("infer"),
+                    profiler.avg_ms("yolo"),
+                    profiler.avg_ms("track"),
                     profiler.avg_ms("latency"),
                     profiler.avg_ms("visualization_time"),
                     profiler.avg_ms("csv_time"),
@@ -343,32 +325,46 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, profiler
                     profiler.avg_ms("dump_out_time"),
                 )
     finally:
-        if input_writer is not None:
-            input_writer.release()
-        if output_writer is not None:
-            output_writer.release()
-        if hq_writer is not None:
-            hq_writer.release()
-        if csv_file is not None:        # NEW: close CSV file
-            csv_file.close()
+        if input_writer is not None: input_writer.release()
+        if output_writer is not None: output_writer.release()
+        if hq_writer is not None: hq_writer.release()
+        if csv_file is not None: csv_file.close()
+
+
+class GMCOnYolo(ultralytics.trackers.utils.gmc.GMC):
+    def __init__(self, method: str = "sparseOptFlow", downscale: int = 1):
+        super().__init__(method=method, downscale=downscale)
+
+    def apply(self, raw_frame: np.ndarray, detections=None) -> np.ndarray:
+        if raw_frame.ndim == 3 and raw_frame.shape[2] == 3:
+            frame = cv2.cvtColor(raw_frame, cv2.COLOR_BGR2GRAY)
+        else:
+            frame = raw_frame
+
+        return super().apply(frame, detections)
 
 
 def run_inference(frame: np.ndarray, args):
-    global SOLUTION
-    tracker_cfg_path = ensure_botsort_yaml()
-    model_conf = getattr(args, "model_conf", 0.1)
-    if SOLUTION is None:
-        SOLUTION = solutions.InstanceSegmentation(
-            model="/app/model/weights-fp16.engine",
-            tracker=tracker_cfg_path,
-            conf=model_conf,
-            half=True,
-            show=False,
-            classes=[0,1]
-        )
+    global MODEL, TRACKER
 
-    results = SOLUTION(frame)
-    return SOLUTION.tracks if results else None
+    if MODEL is None:
+        MODEL = YOLO(model="/app/model/weights-fp16.engine", task='detect')
+    
+    if TRACKER is None:
+        TRACKER = BOTSORT(argparse.Namespace(**_BOTSORT_CFG), frame_rate=args.fps)
+        TRACKER.gmc = GMCOnYolo(downscale=2)
+    
+    model_conf = getattr(args, "model_conf", 0.1)
+    img = np.ascontiguousarray(frame, dtype=np.uint8)
+
+    results = MODEL(img, conf=model_conf, verbose=False, classes=[0, 1], show=False, save=False)
+    t1 = time.perf_counter()
+
+    if results is None or len(results) == 0:
+        return
+    
+    tracks = TRACKER.update(results[0].boxes.cpu().numpy(), img)
+    return tracks, t1
 
 
 class StreamPipeline:

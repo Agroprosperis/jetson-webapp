@@ -6,6 +6,7 @@ import os
 
 LOGGER = logging.getLogger("stream_reader")
 
+
 class StreamReader:
     """
     Base class for video ingestion.
@@ -69,60 +70,28 @@ class V4L2StreamReader(StreamReader):
         return self.is_opened()
 
 
-class RTSPStreamReader(StreamReader):
-    def __init__(self, rtsp_url: str, fps: int, rtsp_transport: str = "") -> None:
+class FileStreamReader(StreamReader):
+    """Simple file-based StreamReader using OpenCV."""
+    def __init__(self, file_path, fps):
         super().__init__(width=None, height=None, fps=fps)
-        self.rtsp_url = rtsp_url
-        self.rtsp_transport = rtsp_transport
+        self.file_path = file_path
 
-    def open(self) -> bool:
-        url = self.rtsp_url
-        if self.rtsp_transport:
-            url += f"?rtsp_transport={self.rtsp_transport}"
-
-        self.cap = cv2.VideoCapture(url)
+    def open(self):  # type: ignore[override]
+        self.cap = cv2.VideoCapture(self.file_path)
         if not self.cap or not self.cap.isOpened():
-            LOGGER.error("Failed to open RTSP via FFmpeg backend: %s", url)
+            LOGGER.error("Failed to open file capture: %s", self.file_path)
             self.cap = None
             return False
-        self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or self.width
+        self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or self.height
         fps = self.cap.get(cv2.CAP_PROP_FPS)
-        if fps > 1e-3:
-            self.fps = fps
-        LOGGER.info("RTSP stream opened: %sx%s @ %.2f fps", self.width or "?", self.height or "?", self.fps or "?")
-        return True
+        if fps and fps > 1e-3:
+            self.fps = int(fps)
 
-class __RTSPStreamReader(StreamReader):
-    def __init__(self, rtsp_url: str, fps: int, rtsp_transport: str = "") -> None:
-        super().__init__(width=None, height=None, fps=fps)
-        self.rtsp_url = rtsp_url
-        self.rtsp_transport = rtsp_transport
-
-    def _build_rtsp_pipeline(self) -> str:
-        protocols_str = ""
-        if self.rtsp_transport == "tcp":
-            protocols_str = " protocols=4"
-        elif self.rtsp_transport == "udp":
-            protocols_str = " protocols=1"
-        pipeline = (
-            f"rtspsrc location={self.rtsp_url} latency=0{protocols_str} ! "
-            "decodebin ! videoconvert ! video/x-raw,format=BGR ! queue max-size-buffers=1 leaky=downstream ! appsink sync=false max-buffers=1 drop=true"
+        LOGGER.info(
+            "Opened file %s (%sx%s @ %s fps)",
+            self.file_path,
+            self.width or "?", self.height or "?", self.fps or "?",
         )
-        LOGGER.info("CAP pipeline: %s", pipeline)
-        return pipeline
-
-    def open(self) -> bool:
-        gst = self._build_rtsp_pipeline()
-        self.cap = cv2.VideoCapture(gst, cv2.CAP_GSTREAMER)
-        if not self.cap or not self.cap.isOpened():
-            LOGGER.error("Failed to open RTSP via GStreamer: %s", self.rtsp_url)
-            self.cap = None
-            return False
-        self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = self.cap.get(cv2.CAP_PROP_FPS)
-        if fps > 1e-3:
-            self.fps = fps
-        LOGGER.info("RTSP stream opened: %sx%s @ %.2f fps", self.width or "?", self.height or "?", self.fps or "?")
         return True

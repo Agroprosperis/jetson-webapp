@@ -58,12 +58,34 @@ def reset_object_counter() -> None:
     CUMULATIVE_OBJECTS = 0
 
 
+def tracks_to_sv_detections(tracks: np.ndarray) -> sv.Detections:
+    """
+    tracks: Nx8 array
+    [x1, y1, x2, y2, track_id, score, class_id, extra]
+    """
+    if tracks is None or len(tracks) == 0:
+        return sv.Detections.empty()
+
+    xyxy = tracks[:, 0:4]
+    tracker_id = tracks[:, 4].astype(int)
+    confidence = tracks[:, 5]
+    class_id = tracks[:, 6].astype(int)
+
+    return sv.Detections(
+        xyxy=xyxy,
+        confidence=confidence,
+        class_id=class_id,
+        tracker_id=tracker_id,
+    )
+
+
 def yolo_to_sv_detections(result, vis_conf: float) -> sv.Detections:
     """
     Convert a single Ultralytics YOLO result (with tracking + optional masks)
     into a supervision.Detections object and apply a visualization confidence
     threshold.
     """
+    print(result)
     if result is None:
         return sv.Detections.empty()
 
@@ -84,61 +106,42 @@ def yolo_to_sv_detections(result, vis_conf: float) -> sv.Detections:
 
     return detections[mask]
 
-
 def visualize_frame_with_supervision(
     frame: np.ndarray,
-    result,
+    tracks: np.ndarray,
     meta: dict | None,
     args,
 ) -> np.ndarray:
     vis = frame.copy()
 
+    # convert tracker output to supervision.Detections
+    detections = tracks_to_sv_detections(tracks)
+
     vis_conf = getattr(args, "vis_conf", 0.75)
-    detections = yolo_to_sv_detections(result, vis_conf)
-    labels = build_labels(result, detections)
+    if detections.confidence is not None:
+        keep = detections.confidence >= vis_conf
+        detections = detections[keep]
+
+    labels = build_labels_from_tracks(detections, args)
 
     if len(detections) > 0:
-        # Order: masks → boxes → labels
-        vis = MASK_ANNOTATOR.annotate(vis, detections)
         vis = BOX_ANNOTATOR.annotate(vis, detections)
         vis = LABEL_ANNOTATOR.annotate(vis, detections, labels=labels)
 
-    # Unique object counter banner (top-left)
     cumulative_count = _update_cumulative_objects(detections)
     vis = draw_object_count_banner(vis, cumulative_count)
-    
-    if debug:=False and meta is not None:
-        vis = draw_hud(
-            vis,
-            send_ts=meta.get("send_ts"),
-            recv_ts=None,
-            latency_ms=meta.get("latency_dt", 0.0) * 1000.0,
-            fps=meta.get("inst_fps", 0.0),
-        )
     return vis
 
 
-def build_labels(result, detections: sv.Detections):
-    if result is None or len(detections) == 0:
-        return []
-
-    names = result.names
+def build_labels_from_tracks(detections: sv.Detections, args) -> list[str]:
+    names = getattr(args, "class_names", None)  # or args.names, adapt to your config
     labels = []
-    tracker_ids = getattr(detections, "tracker_id", None)
 
     for i in range(len(detections)):
-        cls_id = int(detections.class_id[i])
-        conf = float(detections.confidence[i])
-        name = names.get(cls_id, str(cls_id))
+        cls_id = int(detections.class_id[i]) if detections.class_id is not None else 0
+        conf = float(detections.confidence[i]) if detections.confidence is not None else 1.0
 
-        if tracker_ids is not None:
-            tid = tracker_ids[i]
-        else:
-            tid = None
-
-        if tid is not None:
-            labels.append(f"#{int(tid)} {name} {conf:.2f}")
-        else:
-            labels.append(f"{name} {conf:.2f}")
+        name = names[cls_id] if names is not None and cls_id < len(names) else str(cls_id)
+        labels.append(f"{name} {conf:.2f}")
 
     return labels
