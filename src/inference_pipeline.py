@@ -65,8 +65,14 @@ def build_rtsp_and_hq_gst(
     fps: int,
     hq_path: str,
 ) -> str:
+    # Bitrate consideration: 4K @ 40fps is heavy. 
+    # 50Mbps is good for disk, potentially heavy for wifi streaming, 
+    # but we encode ONCE to save CPU cycles on Orin Nano.
     bitrate_kbit = 50000 
     
+    # Construct RTSP URL
+    rtsp_url = f"rtsp://{host}:{port}/{path}"
+
     pipeline = (
         "appsrc is-live=true block=false format=time do-timestamp=true "
         "max-bytes=100000000 ! " 
@@ -74,14 +80,25 @@ def build_rtsp_and_hq_gst(
         f"video/x-raw,format=BGR,width={width},height={height},framerate={fps}/1 ! "
         "videoconvert ! video/x-raw,format=I420 ! "
         
-        # CPU Encoding (Ultrafast is key for 4K on Nano)
+        # CPU Encoding (Ultrafast is key for 4K on Nano without NVENC)
+        # We encode ONCE here.
         f"x264enc tune=zerolatency speed-preset=ultrafast bitrate={bitrate_kbit} "
         "key-int-max=30 bframes=0 sliced-threads=true threads=4 ! "
         "h264parse config-interval=-1 ! "
         
-        # Safe Container (MKV) - writes constantly to disk
+        # Split the encoded stream: One to Disk, One to Network
+        "tee name=t "
+
+        # Branch 1: High Quality Disk Recording (MKV)
+        "t. ! queue max-size-buffers=10 leaky=downstream ! "
         "matroskamux ! "
         f"filesink location=\"{hq_path}\" sync=false "
+
+        # Branch 2: RTSP Stream to MediaMTX
+        # protocols=tcp is crucial for high bitrate 4K stability locally
+        # REMOVED: sync=false (not supported by rtspclientsink)
+        "t. ! queue max-size-buffers=5 leaky=downstream ! "
+        f"rtspclientsink location={rtsp_url} protocols=tcp "
     )
     
     LOGGER.info("Pipeline: %s", pipeline)
@@ -195,7 +212,7 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, profiler
 
                     xyxy_np = xyxy.cpu().numpy()
                     cls_np = cls.cpu().numpy() if cls is not None else None
-                    conf_np = conf.cpu().numpy() if conf is not None else None
+                    conf_np = conf.cpu().numpy() if conf is not None else 0.0
 
                     det_parts = []
                     num_dets = xyxy_np.shape[0]
@@ -220,7 +237,6 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, profiler
 
             # Single write: RTSP + HQ recording are both handled by GStreamer
             out_start = time.time()
-            print('Dump single frame')
             output_writer.write(vis)
             profiler.record('dump_out_time', time.time() - out_start)
 

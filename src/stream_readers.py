@@ -43,38 +43,51 @@ class StreamReader:
         if self.cap is not None:
             capture = self.cap
             self.cap = None
-
             capture.release()
 
 
 class V4L2StreamReader(StreamReader):
-    def __init__(self, device: str, width: int, height: int, fps: int) -> None:
+    def __init__(self, device: str, width: int, height: int, fps: int, pixel_format: str = "MJPG") -> None:
         super().__init__(width=width, height=height, fps=fps)
         self.device = device
+        self.pixel_format = pixel_format
 
     @staticmethod
-    def _build_v4l2_gst_pipeline(device: str, width: int, height: int, fps: int) -> str:
+    def _build_v4l2_gst_pipeline(device: str, width: int, height: int, fps: int, pixel_format: str) -> str:
+        # Determine caps based on requested format
+        # Note: On Jetson, 'image/jpeg' is standard for USB MJPEG cams.
+        # 'video/x-raw' is used for YUYV/UYVY.
+        
+        if pixel_format == "MJPG" or pixel_format == "MJPEG":
+            caps = f"image/jpeg,width={width},height={height},framerate={fps}/1"
+            decoder = "jpegdec ! videoconvert" 
+        else:
+            # Assume raw (YUYV, etc.)
+            caps = f"video/x-raw,width={width},height={height},framerate={fps}/1"
+            decoder = "videoconvert"
+
         pipeline = (
             f"v4l2src device={device} ! "
-            f"image/jpeg,width={width},height={height},framerate={fps}/1 ! "
-            "jpegdec ! videoconvert ! queue max-size-buffers=1 leaky=downstream ! appsink max-buffers=1 drop=true sync=false"
+            f"{caps} ! "
+            f"{decoder} ! "
+            "queue max-size-buffers=1 leaky=downstream ! "
+            "appsink max-buffers=1 drop=true sync=false"
         )
         LOGGER.info("CAP pipeline: %s", pipeline)
         return pipeline
 
     def open(self) -> bool:
-        gst = self._build_v4l2_gst_pipeline(self.device, self.width, self.height, self.fps)
+        gst = self._build_v4l2_gst_pipeline(self.device, self.width, self.height, self.fps, self.pixel_format)
         self.cap = cv2.VideoCapture(gst, cv2.CAP_GSTREAMER)
         return self.is_opened()
 
 
 class FileReader(StreamReader):
-    """Simple file-based StreamReader using OpenCV."""
     def __init__(self, file_path, fps):
         super().__init__(width=None, height=None, fps=fps)
         self.file_path = file_path
 
-    def open(self):  # type: ignore[override]
+    def open(self):
         self.cap = cv2.VideoCapture(self.file_path)
         if not self.cap or not self.cap.isOpened():
             LOGGER.error("Failed to open file capture: %s", self.file_path)

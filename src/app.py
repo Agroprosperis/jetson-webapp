@@ -11,7 +11,7 @@ from flask import Flask, Response, jsonify, request, send_file
 from inference_pipeline import StreamPipeline
 from profiler import Profiler
 from stream_readers import V4L2StreamReader, FileReader
-
+from camera_manager import CameraManager
 
 LOGGER = logging.getLogger("app")
 CONFIG_FILEPATH = "/app/config.json"
@@ -43,28 +43,6 @@ def pipeline_thread_states():
     return [t.is_alive() for t in threads] 
 
 
-def determine_mode(video):
-    """
-    Decide how to interpret the `video` argument.
-
-    Returns: (mode, device, file_path)
-    """
-    file_path = None
-    device = None
-    mode = None
-
-    if isinstance(video, str) and video.startswith("/dev/"):
-        mode = "v4l2-gs"
-        device = video
-    else:
-        mode = "file"
-        file_path = video
-        if not os.path.isfile(file_path):
-            raise ValueError("File not found: %s" % file_path)
-
-    return mode, device, file_path
-
-
 @app.route("/")
 def index():
     return send_file("index.html")
@@ -75,6 +53,17 @@ def api_config():
     return jsonify({"stream_port": 8889})
 
 
+@app.route("/api/cameras")
+def api_cameras():
+    """List attached cameras and their modes."""
+    try:
+        cams = CameraManager.get_available_cameras()
+        return jsonify({"cameras": cams})
+    except Exception as e:
+        LOGGER.error(f"Failed to list cameras: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/status")
 def api_status():
     global pipeline_id
@@ -83,18 +72,18 @@ def api_status():
     states = pipeline_thread_states()
     live_threads = [names[idx] for idx, alive in enumerate(states) if alive]
     state = "running" if any(states) else "idle"
-    video = current_config.get("video", "")
-    video_reference = video
+    
+    # Return the full current config so UI can show resolution/fps
+    video_desc = current_config.get("video_description", current_config.get("video", ""))
     pid_value = pipeline_id if pipeline and is_pipeline_running() else "-"
 
     return jsonify({
         "state": state,
         "pipeline_id": pid_value,
         "last_error": last_error,
-        "config": {"video_reference": video_reference},
-        "threads": live_threads,  # optional extra info
+        "config": {"video_reference": video_desc},
+        "threads": live_threads,
     })
-
 
 
 @app.route("/api/start", methods=["POST"])
@@ -105,12 +94,12 @@ def api_start():
     if is_pipeline_running():
         return jsonify({"error": "already running"}), 400
 
-    # Clean up stale pipeline object, if any
+    # Clean up stale pipeline object
     if pipeline is not None and not is_pipeline_running():
         try:
             pipeline.__exit__(None, None, None)
         except Exception:
-            LOGGER.exception("Error while cleaning up stale pipeline before start")
+            LOGGER.exception("Error cleaning up stale pipeline")
         finally:
             pipeline = None
 
@@ -119,78 +108,96 @@ def api_start():
 
     try:
         data = request.json or {}
-        video = data.get("video")
-        if not video:
-            raise ValueError("No video provided")
-
-        mode, device, file_path = determine_mode(video)
-        pipeline_id = uuid.uuid4().hex
-
+        
+        # determine source type
+        source_type = data.get("source_type", "file") # 'camera' or 'file'
+        
+        # Default Args
         args_dict = dict()
         if os.path.exists(CONFIG_FILEPATH):
             with open(CONFIG_FILEPATH, 'r') as config_input:
                 args_dict = json.load(config_input)
 
-        args_dict = dict(args_dict, 
-            mode=mode,
-            device=device,
-            width=1280,
-            height=720,
-            fps=30,
+        pipeline_id = uuid.uuid4().hex
+        
+        # Common defaults
+        args_dict.update(dict(
             print_every=60,
             stream_host="127.0.0.1",
             stream_port=8554,
             log_level="INFO",
-            original_path=None,
             output_path="pub-output",
-
-            model_conf=0.10,   # YOLO detection / tracking threshold
-            vis_conf=0.75,     # visualization-only threshold
-            pipeline_id=pipeline_id,          # <- pass unique ID
-            hq_output_dir="/app/output_hq",   # optional: base dir for HQ files
-            dump_original=False,
-            dump_processed=True,
-            output_stream='WebRTC', # options: WebRTC or MJPEG
+            model_conf=0.10,
+            vis_conf=0.75,
+            pipeline_id=pipeline_id,
+            hq_output_dir="/app/output_hq",
+            output_stream='WebRTC',
             class_names = ['CouldBeTilletia', 'Tilletia']
-        )
+        ))
 
-        args = argparse.Namespace(**args_dict)
+        if source_type == "camera":
+            device = data.get("device")
+            width = int(data.get("width", 1280))
+            height = int(data.get("height", 720))
+            fps = int(data.get("fps", 30))
+            pixel_format = data.get("format", "MJPG")
+            
+            if not device:
+                raise ValueError("No device selected")
 
-        # Choose reader implementation
-        if mode == "file":
-            reader = FileReader(file_path, args.fps)
-        elif mode == "v4l2-gs":
-            reader = V4L2StreamReader(args.device, args.width, args.height, args.fps)
+            # Update args
+            args_dict["mode"] = "v4l2-gs"
+            args_dict["device"] = device
+            args_dict["width"] = width
+            args_dict["height"] = height
+            args_dict["fps"] = fps
+            args_dict["pixel_format"] = pixel_format
+            
+            video_desc = f"{device} ({width}x{height} @ {fps}fps {pixel_format})"
+            
+            # Initialize Reader with explicit caps
+            args = argparse.Namespace(**args_dict)
+            reader = V4L2StreamReader(args.device, args.width, args.height, args.fps, pixel_format=pixel_format)
+
         else:
-            raise NotImplementedError()
-
-        # For file & RTSP we can probe actual dimensions before starting
-        if isinstance(reader, (FileReader)):
+            # File Mode
+            video = data.get("video")
+            if not video:
+                raise ValueError("No file provided")
+                
+            if not os.path.isfile(video):
+                raise ValueError("File not found: %s" % video)
+                
+            args_dict["mode"] = "file"
+            video_desc = os.path.basename(video)
+            
+            # Defaults for file, will be overwritten by probe
+            args_dict["fps"] = 30 
+            
+            args = argparse.Namespace(**args_dict)
+            reader = FileReader(video, args.fps)
+            
+            # Probe file properties
             with reader:
                 cap = reader.cap
                 if cap is None or not cap.isOpened():
-                    raise RuntimeError("Failed to open stream reader for properties")
-
-                args.width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or args.width
-                args.height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or args.height
-                fps_val = cap.get(cv2.CAP_PROP_FPS) or args.fps
-
-                if fps_val and fps_val > 1e-3:
-                    args.fps = int(fps_val)
-
-                LOGGER.info("Input stream properties: %sx%s @ %s fps", args.width, args.height, args.fps,)
+                    raise RuntimeError("Failed to open file")
+                
+                args.width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                args.height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                f_fps = cap.get(cv2.CAP_PROP_FPS)
+                if f_fps > 0:
+                    args.fps = int(f_fps)
+                LOGGER.info(f"File probed: {args.width}x{args.height} @ {args.fps}")
 
         profiler = Profiler(window=200)
 
-        # Use StreamPipeline as a long-lived context manager. We call __enter__
-        # manually here so that the pipeline outlives the HTTP request.
-        print(args)
+        LOGGER.info(f"Starting pipeline: {args}")
         tmp_pipeline = StreamPipeline(reader, profiler, args)
         tmp_pipeline.__enter__()
         pipeline = tmp_pipeline
 
-        current_config = {"video": video}
-        LOGGER.info("Started new pipeline with mode=%s, video=%s", mode, video)
+        current_config = {"video_description": video_desc}
 
         return jsonify({"success": True, "pipeline_id": pipeline_id})
 
@@ -201,7 +208,7 @@ def api_start():
             try:
                 tmp_pipeline.__exit__(type(e), e, e.__traceback__)
             except Exception:
-                LOGGER.exception("Error during pipeline cleanup after failed start")
+                pass
         return jsonify({"error": str(e)}), 500
 
 
@@ -209,15 +216,12 @@ def api_start():
 def api_stop():
     global pipeline, last_error, current_config, pipeline_id
 
-    # Nothing to stop
     if pipeline is None and not is_pipeline_running():
         current_config = {}
         return jsonify({"success": True})
 
     try:
         if pipeline is not None:
-            # Gracefully stop capture / inference / output threads and
-            # close all RTSP / OpenCV resources via the context manager.
             pipeline.__exit__(None, None, None)
 
         pipeline, pipeline_id = None, None
@@ -243,18 +247,12 @@ def api_upload():
     path = os.path.join("uploads", file.filename)
     file.save(path)
 
-    # Frontend expects a "video" URL and optional rtsp_transport
     return jsonify({"video": path})
 
 
 @app.route("/<path:path>/whep", methods=["GET", "POST", "OPTIONS"])
 def proxy_whep(path):
-    """
-    Very small HTTP proxy that forwards WHEP requests from the UI to MediaMTX.
-
-    - The UI will hit:   http://<this-app>:8000/<path>/whep
-    - We forward to:     http://127.0.0.1:8889/<path>/whep
-    """
+    # Proxy WHEP requests to the local mediamtx server
     target_url = "http://127.0.0.1:8889/%s/whep" % path
     headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
 
