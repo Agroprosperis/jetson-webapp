@@ -1,17 +1,16 @@
-import cv2
 import numpy as np
 import supervision as sv
 import logging
 
-from hud import draw_hud, draw_object_count_banner  # <- UPDATED import
+from hud import draw_object_count_banner
 
 BOX_ANNOTATOR = sv.BoxAnnotator()
-MASK_ANNOTATOR = sv.PolygonAnnotator()
 LABEL_ANNOTATOR = sv.LabelAnnotator(
-    text_scale=1.2,      # ← bigger text
-    text_thickness=2,    # ← bolder text
-    text_padding=8,      # ← more padding around text
+    text_scale = 1.2,
+    text_thickness = 2,
+    text_padding = 8,
 )
+
 SEEN_TRACK_IDS: set[int] = set()
 CUMULATIVE_OBJECTS: int = 0
 
@@ -109,7 +108,6 @@ def yolo_to_sv_detections(result, vis_conf: float) -> sv.Detections:
 def visualize_frame_with_supervision(
     frame: np.ndarray,
     tracks: np.ndarray,
-    meta: dict | None,
     args,
 ) -> np.ndarray:
     vis = frame.copy()
@@ -130,11 +128,11 @@ def visualize_frame_with_supervision(
 
     cumulative_count = _update_cumulative_objects(detections)
     vis = draw_object_count_banner(vis, cumulative_count)
-    return vis
+    return vis, cumulative_count
 
 
 def build_labels_from_tracks(detections: sv.Detections, args) -> list[str]:
-    names = getattr(args, "class_names", None)  # or args.names, adapt to your config
+    names = getattr(args, "class_names", None)
     labels = []
 
     for i in range(len(detections)):

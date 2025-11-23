@@ -10,7 +10,7 @@ from flask import Flask, Response, jsonify, request, send_file
 
 from inference_pipeline import StreamPipeline
 from profiler import Profiler
-from stream_readers import V4L2StreamReader, FileStreamReader
+from stream_readers import V4L2StreamReader, FileReader
 
 
 LOGGER = logging.getLogger("app")
@@ -27,16 +27,20 @@ pipeline_id = None  # type: str | None
 
 
 def is_pipeline_running():
+    return any(pipeline_thread_states())
+
+
+def pipeline_thread_states():
     """Return True if there is an active StreamPipeline with any live thread."""
     global pipeline
     if pipeline is None:
-        return False
+        return [False, False, False]
 
     threads = getattr(pipeline, "_threads", None)
     if not threads:
-        return False
+        return [False, False, False]
 
-    return any(t is not None and t.is_alive() for t in threads)
+    return [t.is_alive() for t in threads] 
 
 
 def determine_mode(video):
@@ -74,8 +78,11 @@ def api_config():
 @app.route("/api/status")
 def api_status():
     global pipeline_id
-    
-    state = "running" if is_pipeline_running() else "idle"
+    names = ["capture", "inference", "output"]
+
+    states = pipeline_thread_states()
+    live_threads = [names[idx] for idx, alive in enumerate(states) if alive]
+    state = "running" if any(states) else "idle"
     video = current_config.get("video", "")
     video_reference = video
     pid_value = pipeline_id if pipeline and is_pipeline_running() else "-"
@@ -85,7 +92,9 @@ def api_status():
         "pipeline_id": pid_value,
         "last_error": last_error,
         "config": {"video_reference": video_reference},
+        "threads": live_threads,  # optional extra info
     })
+
 
 
 @app.route("/api/start", methods=["POST"])
@@ -149,14 +158,14 @@ def api_start():
 
         # Choose reader implementation
         if mode == "file":
-            reader = FileStreamReader(file_path, args.fps)
+            reader = FileReader(file_path, args.fps)
         elif mode == "v4l2-gs":
             reader = V4L2StreamReader(args.device, args.width, args.height, args.fps)
         else:
             raise NotImplementedError()
 
         # For file & RTSP we can probe actual dimensions before starting
-        if isinstance(reader, (FileStreamReader)):
+        if isinstance(reader, (FileReader)):
             with reader:
                 cap = reader.cap
                 if cap is None or not cap.isOpened():

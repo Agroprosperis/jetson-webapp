@@ -1,8 +1,6 @@
 import cv2
 import logging
 import numpy as np
-import os
-
 
 LOGGER = logging.getLogger("stream_reader")
 
@@ -36,8 +34,6 @@ class StreamReader:
         raise NotImplementedError
 
     def read(self) -> tuple[bool, np.ndarray | None]:
-        if self.cap is None:
-            return False, None
         return self.cap.read()
 
     def is_opened(self) -> bool:
@@ -45,8 +41,10 @@ class StreamReader:
 
     def release(self) -> None:
         if self.cap is not None:
-            self.cap.release()
+            capture = self.cap
             self.cap = None
+
+            capture.release()
 
 
 class V4L2StreamReader(StreamReader):
@@ -70,7 +68,7 @@ class V4L2StreamReader(StreamReader):
         return self.is_opened()
 
 
-class FileStreamReader(StreamReader):
+class FileReader(StreamReader):
     """Simple file-based StreamReader using OpenCV."""
     def __init__(self, file_path, fps):
         super().__init__(width=None, height=None, fps=fps)
@@ -85,13 +83,10 @@ class FileStreamReader(StreamReader):
 
         self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or self.width
         self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or self.height
+
         fps = self.cap.get(cv2.CAP_PROP_FPS)
         if fps and fps > 1e-3:
             self.fps = int(fps)
 
-        LOGGER.info(
-            "Opened file %s (%sx%s @ %s fps)",
-            self.file_path,
-            self.width or "?", self.height or "?", self.fps or "?",
-        )
+        LOGGER.info("Opened file %s (%sx%s @ %s fps)", self.file_path, self.width or "?", self.height or "?", self.fps or "?")
         return True
