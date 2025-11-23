@@ -33,6 +33,11 @@ button[disabled]{opacity:.5;cursor:not-allowed}
       <button id="refreshCams" title="Refresh Cameras">↻</button>
     </div>
 
+    <div class="controls">
+        <label for="confThreshold" style="font-size:12px; opacity:0.8;">Conf:</label>
+        <input id="confThreshold" type="number" min="0.1" max="1.0" step="0.05" value="0.75" style="width: 60px;" title="Detection Confidence Threshold"/>
+    </div>
+
     <div id="fileControls" class="controls hidden">
       <button id='uploadBtn' type='button'>Upload Video</button>
       <input id='upload' type='file' accept='video/*' style='display:none'/>
@@ -69,6 +74,7 @@ const fileControls = document.getElementById('fileControls');
 const camDeviceEl = document.getElementById('camDevice');
 const camModeEl = document.getElementById('camMode');
 const refreshCamsBtn = document.getElementById('refreshCams');
+const confThresholdEl = document.getElementById('confThreshold'); // NEW
 
 const uploadBtn=document.getElementById('uploadBtn'); 
 const uploadInput=document.getElementById('upload');
@@ -154,6 +160,7 @@ function applyState(j){
   sourceTypeEl.disabled = isRunning;
   camDeviceEl.disabled = isRunning;
   camModeEl.disabled = isRunning;
+  confThresholdEl.disabled = isRunning; // Disable conf input while running
 
   let msg='status: '+state+' pid:' + ((j&&j.pipeline_id)||'-');
   if(j&&j.last_error&&state!=='running') msg+=' fail: '+j.last_error;
@@ -217,6 +224,9 @@ function disconnectWHEP_wf(){
 btnRun.onclick=async()=>{
   let payload = {};
   
+  // NEW: Get confidence value
+  const confVal = parseFloat(confThresholdEl.value);
+
   if(sourceTypeEl.value === 'camera') {
       const camIdx = camDeviceEl.value;
       if(camIdx === '' || !cameraList[camIdx]) { alert("Select a camera"); return; }
@@ -232,14 +242,16 @@ btnRun.onclick=async()=>{
           width: mode.width,
           height: mode.height,
           fps: mode.fps,
-          format: mode.format
+          format: mode.format,
+          vis_conf: confVal // Send to backend
       };
   } else {
       const path = uploadedPathEl.value;
       if(!path) { alert("Upload a file first"); return; }
       payload = {
           source_type: 'file',
-          video: path
+          video: path,
+          vis_conf: confVal // Send to backend
       };
   }
 

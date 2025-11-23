@@ -120,6 +120,9 @@ def api_start():
 
         pipeline_id = uuid.uuid4().hex
         
+        # NEW: Extract confidence from request (default to 0.75 if missing)
+        requested_conf = float(data.get("vis_conf", 0.75))
+        
         # Common defaults
         args_dict.update(dict(
             print_every=60,
@@ -128,7 +131,7 @@ def api_start():
             log_level="INFO",
             output_path="pub-output",
             model_conf=0.10,
-            vis_conf=0.75,
+            vis_conf=requested_conf,  # <--- UPDATED: Uses value from UI
             pipeline_id=pipeline_id,
             hq_output_dir="/app/output_hq",
             output_stream='WebRTC',
