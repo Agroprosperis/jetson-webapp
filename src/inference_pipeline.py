@@ -11,7 +11,7 @@ import ultralytics
 
 from datetime import datetime
 from profiler import Profiler
-from stream_readers import StreamReader
+from stream_readers import StreamReader, FileReader
 from ultralytics import YOLO
 from ultralytics.trackers.bot_sort import BOTSORT
 
@@ -65,39 +65,46 @@ def build_rtsp_and_hq_gst(
     fps: int,
     hq_path: str,
 ) -> str:
-    # Bitrate consideration: 4K @ 40fps is heavy. 
-    # 50Mbps is good for disk, potentially heavy for wifi streaming, 
-    # but we encode ONCE to save CPU cycles on Orin Nano.
-    bitrate_kbit = 50000 
+    # Bitrate Strategy:
+    # To ensure the Disk Recording never drops frames, the Pipeline must never block.
+    # Since we use TCP for RTSP, a high bitrate will fill the TCP window and BLOCK the pipeline.
+    # 8000 kbps (8 Mbps) is a safe sweet spot for 4K H.264 that fits in standard Wi-Fi/Ethernet buffers.
+    bitrate_kbit = 8000
     
-    # Construct RTSP URL
     rtsp_url = f"rtsp://{host}:{port}/{path}"
 
     pipeline = (
-        "appsrc is-live=true block=false format=time do-timestamp=true "
+        "appsrc is-live=true block=true format=time do-timestamp=true "
         "max-bytes=100000000 ! " 
-        "queue max-size-buffers=5 leaky=downstream ! "
+        # RAW QUEUE: Blocking (leaky=no). 
+        # We hold frames here if the encoder is busy.
+        # Max size 5 buffers (approx 150ms latency).
+        "queue max-size-buffers=5 leaky=no ! "
         f"video/x-raw,format=BGR,width={width},height={height},framerate={fps}/1 ! "
         "videoconvert ! video/x-raw,format=I420 ! "
         
-        # CPU Encoding (Ultrafast is key for 4K on Nano without NVENC)
-        # We encode ONCE here.
+        # CPU Encoding
+        # 'ultrafast' is mandatory for 4K CPU encoding.
+        # 'tune=zerolatency' helps streaming.
         f"x264enc tune=zerolatency speed-preset=ultrafast bitrate={bitrate_kbit} "
         "key-int-max=30 bframes=0 sliced-threads=true threads=4 ! "
         "h264parse config-interval=-1 ! "
         
-        # Split the encoded stream: One to Disk, One to Network
+        # Split the encoded stream
         "tee name=t "
 
-        # Branch 1: High Quality Disk Recording (MKV)
-        "t. ! queue max-size-buffers=10 leaky=downstream ! "
+        # Branch 1: Disk Recording (MKV)
+        # Blocking queue ensures we write every encoded frame.
+        "t. ! queue max-size-buffers=10 leaky=no ! "
         "matroskamux ! "
         f"filesink location=\"{hq_path}\" sync=false "
 
-        # Branch 2: RTSP Stream to MediaMTX
-        # protocols=tcp is crucial for high bitrate 4K stability locally
-        # REMOVED: sync=false (not supported by rtspclientsink)
-        "t. ! queue max-size-buffers=5 leaky=downstream ! "
+        # Branch 2: RTSP Stream
+        # CRITICAL FIX: leaky=no (Blocking). 
+        # Dropping frames here caused the "blocky/gray" video artifacts.
+        # We increase the buffer size (200 buffers) to absorb network jitters without blocking the Disk branch.
+        # If this queue fills (Net < 8Mbps consistently), the whole pipeline (including Disk) will slow down.
+        "t. ! queue max-size-buffers=200 leaky=no ! "
         f"rtspclientsink location={rtsp_url} protocols=tcp "
     )
     
@@ -110,19 +117,29 @@ def current_ts() -> str:
 
 
 def capture_loop(reader: StreamReader, capture_queue: queue.Queue, stop_event: threading.Event) -> None:
+    # Determine if we need to pace the reading (File Mode)
+    is_file = isinstance(reader, FileReader)
+    target_interval = 1.0 / reader.fps if (reader.fps and reader.fps > 0) else 0.033
+    
     with reader:
         while not stop_event.is_set():
-            start_time = time.perf_counter()
+            loop_start = time.perf_counter()
+            
             ret, frame = reader.read()
-            end_time = time.perf_counter()
+            read_done = time.perf_counter()
 
             if not ret or frame is None:
-                LOGGER.warning("Capture failed, stopping capture thread.")
+                LOGGER.warning("Capture source ended.")
                 capture_queue.put((None, 0.0, 0.0))
                 break
 
-            capture_queue.put((frame, end_time, end_time - start_time))
-            #LOGGER.info(f'Capture queue size {capture_queue.qsize()}')
+            capture_queue.put((frame, read_done, read_done - loop_start))
+            
+            if is_file:
+                process_dur = time.perf_counter() - loop_start
+                sleep_time = target_interval - process_dur
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
 
 
 def inference_loop(frame_queue: queue.Queue, result_queue: queue.Queue, stop_event: threading.Event, profiler: Profiler, args) -> None:
@@ -183,7 +200,6 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, profiler
                 hq_path = os.path.join(hq_output_dir, hq_filename)
                 LOGGER.info("Saving HQ output to %s", hq_path)
 
-                # Pass w, h directly. The new build_rtsp_and_hq_gst handles the specific encoding
                 LOGGER.info("Configuring 4K CPU Pipeline: %sx%s @ %s fps", w, h, args.fps)
                 out_pipeline = build_rtsp_and_hq_gst(args.stream_host, args.stream_port, args.output_path, w, h, args.fps, hq_path)
                 output_writer = cv2.VideoWriter(out_pipeline, cv2.CAP_GSTREAMER, 0, args.fps, (w, h), True)
@@ -193,11 +209,9 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, profiler
                 else:
                     LOGGER.info(f'Open combined output stream {w}x{h}: {out_pipeline}')
 
-                # Init CSV once we know the output dir
+                # Init CSV
                 hq_csv_filename = f"output-hq-{pipeline_id}.csv"
                 hq_csv_path = os.path.join(hq_output_dir, hq_csv_filename)
-                LOGGER.info("Saving per-frame stats CSV to %s", hq_csv_path)
-
                 csv_file = open(hq_csv_path, "w", newline="", encoding="utf-8")
                 csv_writer = csv.writer(csv_file)
                 csv_writer.writerow(["frame", "total_unique_objects", "detections"])
@@ -231,11 +245,8 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, profiler
                 profiler.record('csv_time', time.time() - csv_start)
 
             if input_writer is not None:
-                in_start = time.time()
                 input_writer.write(frame)
-                profiler.record('dump_input_time', time.time() - in_start)
 
-            # Single write: RTSP + HQ recording are both handled by GStreamer
             out_start = time.time()
             output_writer.write(vis)
             profiler.record('dump_out_time', time.time() - out_start)
@@ -254,11 +265,6 @@ class GMCOnYolo(ultralytics.trackers.utils.gmc.GMC):
         super().__init__(method=method, downscale=downscale)
 
     def apply(self, raw_frame: np.ndarray, detections=None) -> np.ndarray:
-        #if raw_frame.ndim == 3 and raw_frame.shape[2] == 3:
-            #frame = cv2.cvtColor(raw_frame, cv2.COLOR_BGR2GRAY)
-        #else:
-            #frame = raw_frame
-
         return super().apply(raw_frame, detections)
 
 
@@ -274,7 +280,7 @@ def run_inference(frame: np.ndarray, args):
 
         TRACKER = BOTSORT(argparse.Namespace(**_BOTSORT_CFG), frame_rate=args.fps)
         LOGGER.info(f'Tracker scaling is {max(max(frame.shape) // 128, 1)}')
-        TRACKER.gmc = GMCOnYolo(downscale=(max(max(frame.shape) // 640, 1))) # tested original == 1024 == 640 == 320 == 160 == 80
+        TRACKER.gmc = GMCOnYolo(downscale=(max(max(frame.shape) // 640, 1)))
     
     model_conf = getattr(args, "model_conf", 0.1)
     img = np.ascontiguousarray(frame, dtype=np.uint8)
@@ -298,8 +304,8 @@ class StreamPipeline:
         self.args = args
 
         # Queues & stop flag
-        self.frame_queue = queue.Queue(maxsize=80) # 2s at 40fps
-        self.result_queue = queue.Queue(maxsize=120) # 3s at 40fps
+        self.frame_queue = queue.Queue(maxsize=80)
+        self.result_queue = queue.Queue(maxsize=120)
         self.stop_event = threading.Event()
 
         # Threads
@@ -332,7 +338,6 @@ class StreamPipeline:
             t.join(timeout=2.0)
 
     def run(self) -> None:
-        """Block while output thread is alive."""
         try:
             while self.output_t.is_alive():
                 time.sleep(1.0)
