@@ -2,7 +2,7 @@ import numpy as np
 import supervision as sv
 import logging
 import cv2
-from datetime import datetime  # <--- NEW IMPORT
+from datetime import datetime
 
 BOX_ANNOTATOR = sv.BoxAnnotator()
 LABEL_ANNOTATOR = sv.LabelAnnotator(
@@ -84,8 +84,8 @@ def draw_combined_banner(scene: np.ndarray, count: int, s_value: float, analysis
     # 1. Get current local time in human readable format
     current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # 2. Define Text (Added Time at the start)
-    text = f"{current_time_str} | Objects: {count} | S: {s_value:.2f} | {analysis_id}"
+    # 2. Define Text (Added Time at the start, rounded S to 1 decimal)
+    text = f"{current_time_str} | Objects: {count} | S: {s_value:.1f} | {analysis_id}"
     
     # 3. visual settings
     font = cv2.FONT_HERSHEY_SIMPLEX
@@ -139,7 +139,10 @@ def visualize_frame_with_supervision(
 
     cumulative_count = _update_cumulative_objects(detections)
     
-    s_metric = cumulative_count * 1111. / 100.
+    # S = (count * 1111) / 100
+    # Round to 1 decimal place
+    s_metric = round((cumulative_count * 1111. / 100.), 1)
+    
     p_id = getattr(args, "pipeline_id", "unknown")
     vis = draw_combined_banner(vis, cumulative_count, s_metric, p_id)
 

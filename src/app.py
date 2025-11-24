@@ -3,11 +3,12 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime  # <--- NEW IMPORT
+import glob
+from datetime import datetime
 
 import cv2
 import requests
-from flask import Flask, Response, jsonify, request, send_file
+from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 
 from inference_pipeline import StreamPipeline
 from profiler import Profiler
@@ -16,6 +17,7 @@ from camera_manager import CameraManager
 
 LOGGER = logging.getLogger("app")
 CONFIG_FILEPATH = "/app/config.json"
+HQ_OUTPUT_DIR = "/app/output_hq"
 
 app = Flask(__name__)
 
@@ -47,6 +49,11 @@ def pipeline_thread_states():
 @app.route("/")
 def index():
     return send_file("index.html")
+
+
+@app.route("/results")
+def results_page():
+    return send_file("results.html")
 
 
 @app.route("/api/config")
@@ -87,6 +94,91 @@ def api_status():
     })
 
 
+@app.route("/api/results")
+def api_list_results():
+    """List grouped MKV and CSV files from the output directory."""
+    try:
+        if not os.path.exists(HQ_OUTPUT_DIR):
+            return jsonify({"results": []})
+
+        # Find all MKV files
+        mkv_files = glob.glob(os.path.join(HQ_OUTPUT_DIR, "*.mkv"))
+        results_map = {}
+
+        for mkv_path in mkv_files:
+            filename = os.path.basename(mkv_path)
+            # Expected format: output-hq-{pipeline_id}.mkv
+            if filename.startswith("output-hq-") and filename.endswith(".mkv"):
+                pid = filename[10:-4]  # Extract ID
+                
+                # Check for corresponding CSV
+                csv_filename = f"output-hq-{pid}.csv"
+                csv_path = os.path.join(HQ_OUTPUT_DIR, csv_filename)
+                
+                # Get file stats (size and time)
+                stat = os.stat(mkv_path)
+                creation_time = datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+                size_mb = round(stat.st_size / (1024 * 1024), 2)
+
+                results_map[pid] = {
+                    "id": pid,
+                    "timestamp": creation_time,
+                    "video": filename,
+                    "video_size": f"{size_mb} MB",
+                    "csv": csv_filename if os.path.exists(csv_path) else None
+                }
+
+        # Convert to list and sort by timestamp descending
+        results_list = list(results_map.values())
+        results_list.sort(key=lambda x: x['timestamp'], reverse=True)
+
+        return jsonify({"results": results_list})
+
+    except Exception as e:
+        LOGGER.error(f"Failed to list results: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/results/<pid>", methods=["DELETE"])
+def api_delete_result(pid):
+    """Delete the MKV and CSV associated with a specific Analysis ID (pid)."""
+    try:
+        if not pid or ".." in pid or "/" in pid:
+            return jsonify({"error": "Invalid ID"}), 400
+
+        mkv_filename = f"output-hq-{pid}.mkv"
+        csv_filename = f"output-hq-{pid}.csv"
+        
+        mkv_path = os.path.join(HQ_OUTPUT_DIR, mkv_filename)
+        csv_path = os.path.join(HQ_OUTPUT_DIR, csv_filename)
+        
+        deleted_files = []
+
+        if os.path.exists(mkv_path):
+            os.remove(mkv_path)
+            deleted_files.append(mkv_filename)
+        
+        if os.path.exists(csv_path):
+            os.remove(csv_path)
+            deleted_files.append(csv_filename)
+            
+        LOGGER.info(f"Deleted results for ID {pid}: {deleted_files}")
+        return jsonify({"success": True, "deleted": deleted_files})
+
+    except Exception as e:
+        LOGGER.error(f"Failed to delete results for {pid}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/download/<path:filename>")
+def download_file(filename):
+    """Download a file from the HQ output directory."""
+    try:
+        return send_from_directory(HQ_OUTPUT_DIR, filename, as_attachment=True)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 404
+
+
 @app.route("/api/start", methods=["POST"])
 def api_start():
     global pipeline, profiler, last_error, current_config, pipeline_id
@@ -119,18 +211,22 @@ def api_start():
             with open(CONFIG_FILEPATH, 'r') as config_input:
                 args_dict = json.load(config_input)
 
-        # NEW: Generate Timestamp for Filename (YYYY-MM-DD_HH-MM-SS)
-        start_time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-
-        # NEW: Construct Pipeline ID with Timestamp
+        # ---------------------------------------------------------------------
+        # UPDATED LOGIC HERE
+        # ---------------------------------------------------------------------
         analysis_num = data.get("analysis_number", "").strip()
-        if analysis_num:
-            # Result: 2025-11-24_12-30-00-Analysis101
-            pipeline_id = f"{start_time_str}-{analysis_num}"
-        else:
-            # Result: 2025-11-24_12-30-00-a1b2c3...
-            pipeline_id = f"{start_time_str}-{uuid.uuid4().hex}"
         
+        if analysis_num:
+            # If user provided a specific number, use ONLY that.
+            # Filename: output-hq-{analysis_num}.mkv
+            # Banner: ... | {analysis_num}
+            pipeline_id = analysis_num
+        else:
+            # Fallback: Timestamp + UUID
+            start_time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            pipeline_id = f"{start_time_str}-{uuid.uuid4().hex}"
+        # ---------------------------------------------------------------------
+
         # NEW: Extract confidence from request (default to 0.75 if missing)
         requested_conf = float(data.get("vis_conf", 0.75))
         
@@ -144,7 +240,7 @@ def api_start():
             model_conf=0.10,
             vis_conf=requested_conf,
             pipeline_id=pipeline_id, # This will be used for filenames and the banner
-            hq_output_dir="/app/output_hq",
+            hq_output_dir=HQ_OUTPUT_DIR,
             output_stream='WebRTC',
             class_names = ['CouldBeTilletia', 'Tilletia']
         ))

@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset='utf-8'/>
+<title>Analysis Results</title>
+<meta name='viewport' content='width=device-width,initial-scale=1'/>
+<style>
+body { margin:0; background:#111; color:#eee; font-family:system-ui, Segoe UI, Roboto, Arial; padding: 20px; }
+h1 { margin-bottom: 20px; font-weight: 300; }
+table { width: 100%; border-collapse: collapse; background: #222; border-radius: 8px; overflow: hidden; }
+th, td { text-align: left; padding: 12px 16px; border-bottom: 1px solid #333; }
+th { background: #1b1b1b; font-weight: 600; color: #aaa; text-transform: uppercase; font-size: 12px; }
+tr:last-child td { border-bottom: none; }
+tr:hover { background: #2a2a2a; }
+a { color: #3b82f6; text-decoration: none; }
+a:hover { text-decoration: underline; }
+.btn-del {
+    background: #ef4444; color: white; border: none; padding: 6px 12px;
+    border-radius: 4px; cursor: pointer; font-size: 12px;
+}
+.btn-del:hover { background: #dc2626; }
+.empty { padding: 20px; text-align: center; color: #777; font-style: italic; }
+.back-link { display: inline-block; margin-bottom: 20px; color: #888; text-decoration: none; font-size: 14px;}
+.back-link:hover { color: #eee; }
+</style>
+</head>
+<body>
+
+<a href="/" class="back-link">← Back to Dashboard</a>
+
+<h1>Analysis Results</h1>
+
+<div id="loading">Loading...</div>
+
+<table id="resultsTable" style="display:none;">
+    <thead>
+        <tr>
+            <th>Analysis / Pipeline ID</th>
+            <th>Date</th>
+            <th>Video Output</th>
+            <th>Data Output</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody id="resultsBody"></tbody>
+</table>
+
+<script>
+async function loadResults() {
+    try {
+        const res = await fetch('/api/results');
+        const data = await res.json();
+        
+        const tbody = document.getElementById('resultsBody');
+        const table = document.getElementById('resultsTable');
+        const loading = document.getElementById('loading');
+        
+        loading.style.display = 'none';
+        tbody.innerHTML = '';
+
+        if (!data.results || data.results.length === 0) {
+            table.style.display = 'none';
+            const msg = document.createElement('div');
+            msg.className = 'empty';
+            msg.textContent = 'No analysis results found.';
+            document.body.appendChild(msg);
+            return;
+        }
+
+        table.style.display = 'table';
+
+        data.results.forEach(item => {
+            const tr = document.createElement('tr');
+            tr.id = `row-${item.id}`;
+            
+            const csvLink = item.csv 
+                ? `<a href="/download/${item.csv}" download>Download CSV</a>` 
+                : '<span style="color:#555">No CSV</span>';
+
+            tr.innerHTML = `
+                <td style="font-family:monospace; color:#aaa;">${item.id}</td>
+                <td>${item.timestamp}</td>
+                <td>
+                    <a href="/download/${item.video}" download>Download Video</a>
+                    <span style="font-size:11px; color:#666; margin-left:8px;">(${item.video_size})</span>
+                </td>
+                <td>${csvLink}</td>
+                <td>
+                    <button class="btn-del" onclick="deleteResult('${item.id}')">Remove</button>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+    } catch(e) {
+        document.getElementById('loading').textContent = 'Error loading results.';
+        console.error(e);
+    }
+}
+
+async function deleteResult(pid) {
+    if(!confirm(`Are you sure you want to delete analysis "${pid}"? This cannot be undone.`)) return;
+
+    try {
+        const res = await fetch(`/api/results/${pid}`, { method: 'DELETE' });
+        const j = await res.json();
+        
+        if (j.success) {
+            const row = document.getElementById(`row-${pid}`);
+            if(row) row.remove();
+            
+            // Reload if empty to show empty message
+            const tbody = document.getElementById('resultsBody');
+            if(tbody.children.length === 0) location.reload();
+        } else {
+            alert("Error: " + (j.error || "Unknown error"));
+        }
+    } catch(e) {
+        alert("Failed to delete: " + e);
+    }
+}
+
+window.onload = loadResults;
+</script>
+
+</body>
+</html>

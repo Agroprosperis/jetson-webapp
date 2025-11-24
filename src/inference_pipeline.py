@@ -172,6 +172,9 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, profiler
     csv_file = None
     csv_writer = None
     frame_count = 0
+    
+    # Retrieve Pipeline ID (Analysis Number) once
+    pipeline_id = getattr(args, "pipeline_id", "unknown")
 
     try:
         while not stop_event.is_set():
@@ -180,6 +183,7 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, profiler
                 break
 
             start_vis = time.time()
+            # Note: result is the 'tracks' numpy array
             vis, total_unique_objects = visualize_frame_with_supervision(frame, result, args)
             profiler.record('vis', time.time() - start_vis)
 
@@ -192,7 +196,6 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, profiler
             if output_writer is None:
                 h, w = frame.shape[:2]
 
-                pipeline_id = getattr(args, "pipeline_id", "unknown")
                 hq_output_dir = getattr(args, "hq_output_dir", "/app")
                 os.makedirs(hq_output_dir, exist_ok=True)
 
@@ -214,34 +217,39 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, profiler
                 hq_csv_path = os.path.join(hq_output_dir, hq_csv_filename)
                 csv_file = open(hq_csv_path, "w", newline="", encoding="utf-8")
                 csv_writer = csv.writer(csv_file)
-                csv_writer.writerow(["frame", "total_unique_objects", "detections"])
+                # UPDATED HEADER: Added Analysis Number and S Value
+                csv_writer.writerow(["frame", "analysis_number", "s_value", "total_unique_objects", "detections"])
 
+            # -----------------------------------------------------
+            # FIXED CSV GENERATION FOR NUMPY ARRAY (TRACKS)
+            # -----------------------------------------------------
             detections_serialized = ""
-            if result is not None:
-                boxes = getattr(result, "boxes", None)
-                if boxes is not None and len(boxes) > 0:
-                    xyxy = boxes.xyxy
-                    cls = getattr(boxes, "cls", None)
-                    conf = getattr(boxes, "conf", None)
-
-                    xyxy_np = xyxy.cpu().numpy()
-                    cls_np = cls.cpu().numpy() if cls is not None else None
-                    conf_np = conf.cpu().numpy() if conf is not None else 0.0
-
-                    det_parts = []
-                    num_dets = xyxy_np.shape[0]
-                    for i in range(num_dets):
-                        x0, y0, x1, y1 = xyxy_np[i]
-                        cls_id = int(cls_np[i]) if cls_np is not None else -1
-                        conf_val = float(conf_np[i]) if conf_np is not None else 0.0
-                        det_parts.append(
-                            f"x0={int(x0)}_y0={int(y0)}_x1={int(x1)}_y1={int(y1)}_class={cls_id}_conf={conf_val:.3f}"
-                        )
-                    detections_serialized = "|".join(det_parts)
+            if result is not None and len(result) > 0:
+                # result is the 'tracks' numpy array: [x1, y1, x2, y2, track_id, conf, class_id, ...]
+                det_parts = []
+                for row in result:
+                    x0, y0, x1, y1 = row[:4]
+                    # row[4] is track_id if needed
+                    # Index 5 is confidence
+                    # Index 6 is class_id
+                    conf_val = float(row[5])
+                    cls_id = int(row[6])
+                    
+                    det_parts.append(
+                        f"x0={int(x0)}_y0={int(y0)}_x1={int(x1)}_y1={int(y1)}_class={cls_id}_conf={conf_val:.3f}"
+                    )
+                detections_serialized = "|".join(det_parts)
 
             if csv_writer is not None:
                 csv_start = time.time()
-                csv_writer.writerow([frame_count, total_unique_objects, detections_serialized])
+                
+                # Calculate S Value
+                # Formula: (count * 1111) / 100
+                s_value = round((total_unique_objects * 1111.0) / 100.0, 1)
+
+                # UPDATED ROW: Write pipeline_id and s_value
+                csv_writer.writerow([frame_count, pipeline_id, s_value, total_unique_objects, detections_serialized])
+                
                 profiler.record('csv_time', time.time() - csv_start)
 
             if input_writer is not None:
@@ -280,7 +288,7 @@ def run_inference(frame: np.ndarray, args):
 
         TRACKER = BOTSORT(argparse.Namespace(**_BOTSORT_CFG), frame_rate=args.fps)
         LOGGER.info(f'Tracker scaling is {max(max(frame.shape) // 128, 1)}')
-        TRACKER.gmc = GMCOnYolo(downscale=(max(max(frame.shape) // 640, 1)))
+        TRACKER.gmc = GMCOnYolo(downscale=(max(max(frame.shape) // 320, 1)))
     
     model_conf = getattr(args, "model_conf", 0.1)
     img = np.ascontiguousarray(frame, dtype=np.uint8)
