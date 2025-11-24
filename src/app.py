@@ -18,6 +18,7 @@ from camera_manager import CameraManager
 LOGGER = logging.getLogger("app")
 CONFIG_FILEPATH = "/app/config.json"
 HQ_OUTPUT_DIR = "/app/output_hq"
+MODEL_DIR = "/app/model"
 
 app = Flask(__name__)
 
@@ -61,6 +62,38 @@ def api_config():
     return jsonify({"stream_port": 8889})
 
 
+@app.route("/api/models")
+def api_models():
+    """List available *fp16.engine models in /model/ul and /model/rf."""
+    try:
+        models = []
+        # Search in UL and RF folders
+        search_paths = [
+            os.path.join(MODEL_DIR, "ul", "*fp16.engine"),
+            os.path.join(MODEL_DIR, "rf", "*fp16.engine")
+        ]
+        
+        for p in search_paths:
+            files = glob.glob(p)
+            for f in files:
+                # Get relative path or clear name
+                # We categorize them by parent folder name (ul or rf)
+                parent = os.path.basename(os.path.dirname(f))
+                name = os.path.basename(f)
+                
+                models.append({
+                    "path": f,
+                    "name": name,
+                    "type": parent, # 'ul' or 'rf'
+                    "display": f"[{parent.upper()}] {name}"
+                })
+        
+        return jsonify({"models": models})
+    except Exception as e:
+        LOGGER.error(f"Failed to list models: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/cameras")
 def api_cameras():
     """List attached cameras and their modes."""
@@ -84,12 +117,18 @@ def api_status():
     # Return the full current config so UI can show resolution/fps
     video_desc = current_config.get("video_description", current_config.get("video", ""))
     pid_value = pipeline_id if pipeline and is_pipeline_running() else "-"
+    
+    # Add current model to status if running
+    current_model = current_config.get("model_path", "")
 
     return jsonify({
         "state": state,
         "pipeline_id": pid_value,
         "last_error": last_error,
-        "config": {"video_reference": video_desc},
+        "config": {
+            "video_reference": video_desc,
+            "model": os.path.basename(current_model) if current_model else ""
+        },
         "threads": live_threads,
     })
 
@@ -212,21 +251,31 @@ def api_start():
                 args_dict = json.load(config_input)
 
         # ---------------------------------------------------------------------
-        # UPDATED LOGIC HERE
+        # Analysis Number Logic
         # ---------------------------------------------------------------------
         analysis_num = data.get("analysis_number", "").strip()
-        
         if analysis_num:
-            # If user provided a specific number, use ONLY that.
-            # Filename: output-hq-{analysis_num}.mkv
-            # Banner: ... | {analysis_num}
             pipeline_id = analysis_num
         else:
-            # Fallback: Timestamp + UUID
             start_time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             pipeline_id = f"{start_time_str}-{uuid.uuid4().hex}"
+        
         # ---------------------------------------------------------------------
-
+        # Model Selection Logic
+        # ---------------------------------------------------------------------
+        # Check if user provided a specific model path
+        model_path = data.get("model_path", None)
+        
+        # If no model provided, fallback to default (hardcoded) or check default path
+        if not model_path:
+            # Fallback default
+            model_path = "/app/model/weights-fp16.engine"
+            
+        # Verify existence
+        if not os.path.exists(model_path):
+             LOGGER.warning(f"Selected model not found: {model_path}. attempting to find any engine...")
+             # Fallback logic could go here
+        
         # NEW: Extract confidence from request (default to 0.75 if missing)
         requested_conf = float(data.get("vis_conf", 0.75))
         
@@ -239,10 +288,11 @@ def api_start():
             output_path="pub-output",
             model_conf=0.10,
             vis_conf=requested_conf,
-            pipeline_id=pipeline_id, # This will be used for filenames and the banner
+            pipeline_id=pipeline_id,
             hq_output_dir=HQ_OUTPUT_DIR,
             output_stream='WebRTC',
-            class_names = ['CouldBeTilletia', 'Tilletia']
+            class_names = ['CouldBeTilletia', 'Tilletia'],
+            model_path=model_path # PASS MODEL PATH TO ARGS
         ))
 
         if source_type == "camera":
@@ -307,7 +357,10 @@ def api_start():
         tmp_pipeline.__enter__()
         pipeline = tmp_pipeline
 
-        current_config = {"video_description": video_desc}
+        current_config = {
+            "video_description": video_desc,
+            "model_path": model_path
+        }
 
         return jsonify({"success": True, "pipeline_id": pipeline_id})
 
