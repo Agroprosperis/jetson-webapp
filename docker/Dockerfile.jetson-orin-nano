@@ -1,5 +1,5 @@
-FROM ultralytics/ultralytics:latest
-#FROM ultralytics/ultralytics:latest-jetson-jetpack6
+#FROM ultralytics/ultralytics:latest
+FROM ultralytics/ultralytics:latest-jetson-jetpack6
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -51,15 +51,9 @@ RUN /usr/bin/cmake .. \
 RUN make -j"$(nproc)" && make install && ldconfig
 
 # 6. Make sure numpy is there (needed by cv2)
-RUN python3 -m pip install --no-cache-dir numpy
-
-RUN python3 -m pip install --no-cache-dir pillow
-RUN python3 -m pip install --no-cache-dir lapx 
-RUN python3 -m pip install --no-cache-dir supervision
-
 RUN apt update && apt install -y gstreamer1.0-rtsp && rm -rf /var/lib/apt/lists/*
-
-RUN python3 -m pip install --no-cache-dir flask
-RUN python3 -m pip install 'onnx>=1.12.0' 'onnxslim>=0.1.71' 'onnxruntime-gpu' 'tensorrt-cu12>7.0.0' --no-cache-dir
+RUN python3 -m pip install --no-cache-dir \
+    "numpy<2.0" pillow lapx supervision \
+    flask 'onnx>=1.12.0' 'onnxslim>=0.1.71' 'onnxruntime-gpu'
 
 WORKDIR /workspace
