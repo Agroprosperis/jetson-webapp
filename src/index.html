@@ -4,71 +4,145 @@
 <title>RF App (Jetson)</title>
 <meta name='viewport' content='width=device-width,initial-scale=1'/>
 <style>
-body{margin:0;background:#111;color:#eee;font-family:system-ui,Segoe UI,Roboto,Arial}
-header{padding:12px 14px;background:#1b1b1b;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-input,select,button{padding:8px 10px;border-radius:8px;border:1px solid #333;background:#222;color:#eee}
-button{cursor:pointer;transition:transform .06s ease,opacity .2s}
-button:active{transform:scale(0.98)}
-button[disabled]{opacity:.5;cursor:not-allowed}
-.status{font-size:12px;opacity:.9;margin-left:auto;padding:4px 8px;border-radius:8px;background:#222}
-.grid{display:grid;grid-template-columns:1fr;gap:6px;position:fixed;inset:56px 0 0 0}
-.pane{display:flex;flex-direction:column;min-width:0;min-height:0}
-.pane h3{margin:6px 12px 4px 12px;font-weight:600;font-size:14px;opacity:.9}
-.pane video{flex:1;min-height:0;width:100%;height:100%;object-fit:contain;background:#000}
+/* Layout Structure Updates */
+body {
+  margin: 0;
+  background: #111;
+  color: #eee;
+  font-family: system-ui, Segoe UI, Roboto, Arial;
+  display: flex;
+  flex-direction: column;
+  height: 100vh; /* Full viewport height */
+  overflow: hidden;
+}
+
+header {
+  padding: 10px 14px;
+  background: #1b1b1b;
+  display: flex;
+  flex-direction: column; /* Stack rows vertically */
+  gap: 8px;
+  border-bottom: 1px solid #333;
+  flex-shrink: 0; /* Prevent header from squishing */
+}
+
+/* New Class for rows */
+.control-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+}
+
+/* Standard Elements */
+input, select, button {
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid #333;
+  background: #222;
+  color: #eee;
+  font-size: 13px;
+}
+
+button { cursor: pointer; transition: transform .06s ease, opacity .2s; }
+button:active { transform: scale(0.98); }
+button[disabled] { opacity: .5; cursor: not-allowed; }
+
+.status {
+  font-size: 12px;
+  opacity: .9;
+  margin-left: auto; /* Pushes status to the far right */
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: #222;
+  white-space: nowrap;
+}
+
+/* Grid now fills remaining space */
+.grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  flex: 1; /* Fill remaining height */
+  position: relative;
+  min-height: 0; /* Crucial for nested flex scrolling/sizing */
+}
+
+.pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; }
+.pane h3 { margin: 6px 12px 4px 12px; font-weight: 600; font-size: 14px; opacity: .9; }
+.pane video { flex: 1; min-height: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+
 .controls { display: flex; gap: 10px; align-items: center; }
 .hidden { display: none !important; }
+
+/* Button Colors */
 .btn-primary { background: #2563eb; border: 1px solid #1d4ed8; }
 .btn-primary:hover { background: #1d4ed8; }
 .btn-secondary { background: #333; border: 1px solid #555; }
 .btn-secondary:hover { background: #444; }
+
+/* Specific Input Widths for cleaner look */
+input[type="number"], input[type="text"] { border: 1px solid #444; background-color: #1a1a1a; }
+select { border: 1px solid #444; }
+
 </style>
 </head>
 <body>
+
 <header>
-  <div class="controls">
-    <select id="sourceType">
-      <option value="camera">Camera</option>
+  
+  <div class="control-row">
+    <div class="controls">
+      <label for="analysisNum" style="font-size:13px; font-weight:bold; color:#aaa;">Analysis #:</label>
+      <input id="analysisNum" type="text" placeholder="Auto" style="width: 120px;" title="Manual Analysis Number"/>
+    </div>
+    
+    <div class='status'><span id='status'>status: idle</span></div>
+  </div>
+
+  <div class="control-row">
+    <select id="sourceType" style="font-weight:bold;">
+      <option value="camera">Camera Source</option>
       <option value="file">File Upload</option>
     </select>
 
     <div id="camControls" class="controls">
-      <select id="camDevice"><option>Loading...</option></select>
-      <select id="camMode"><option>-</option></select>
+      <select id="camDevice" style="max-width: 200px;"><option>Loading...</option></select>
+      <select id="camMode" style="max-width: 220px;"><option>-</option></select>
       <button id="refreshCams" title="Refresh Cameras">↻</button>
     </div>
+
+    <div id="fileControls" class="controls hidden">
+      <button id='uploadBtn' type='button' class="btn-secondary">Choose Video</button>
+      <input id='upload' type='file' accept='video/*' style='display:none'/>
+      <span id="fileName" style="font-size:12px; color:#aaa; max-width: 200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></span>
+      <input type="hidden" id="uploadedPath" />
+    </div>
+  </div>
+
+  <div class="control-row">
+    
+    <select id="modelSelect" title="Select AI Model" style="max-width: 250px;">
+        <option value="">Loading Models...</option>
+    </select>
 
     <div class="controls">
         <label for="confThreshold" style="font-size:12px; opacity:0.8;">Conf:</label>
         <input id="confThreshold" type="number" min="0.1" max="1.0" step="0.05" value="0.75" style="width: 100px;" title="Detection Confidence Threshold"/>
     </div>
 
-    <div class="controls">
-        <label for="analysisNum" style="font-size:12px; opacity:0.8;">Analysis #:</label>
-        <input id="analysisNum" type="text" placeholder="Auto" style="width: 100px;" title="Manual Analysis Number"/>
-    </div>
+    <div style="flex:1"></div> <button id='run' class="btn-primary" style="min-width: 80px;">Run</button>
+    <button id='stop' type='button' style="min-width: 60px;">Stop</button>
 
-    <div id="fileControls" class="controls hidden">
-      <button id='uploadBtn' type='button'>Upload Video</button>
-      <input id='upload' type='file' accept='video/*' style='display:none'/>
-      <span id="fileName" style="font-size:12px; color:#aaa;"></span>
-      <input type="hidden" id="uploadedPath" />
-    </div>
-
-    <button id='run' class="btn-primary">Run</button>
-    <button id='stop' type='button'>Stop</button>
-
-    <!-- NEW RESULTS BUTTON -->
-    <a href="/results" target="_blank" style="text-decoration:none;">
+    <a href="/results" target="_blank" style="text-decoration:none; margin-left: 10px;">
       <button type="button" class="btn-secondary">See Results</button>
     </a>
-
   </div>
-  <div class='status'><span id='status'>status: idle</span></div>
+
 </header>
 
 <div class='grid'>
   <div class='pane'>
-    <h3>Output Stream</h3>
     <video id='wf' playsinline autoplay muted controls></video>
   </div>
 </div>
@@ -90,7 +164,8 @@ const camDeviceEl = document.getElementById('camDevice');
 const camModeEl = document.getElementById('camMode');
 const refreshCamsBtn = document.getElementById('refreshCams');
 const confThresholdEl = document.getElementById('confThreshold');
-const analysisNumEl = document.getElementById('analysisNum'); // NEW
+const analysisNumEl = document.getElementById('analysisNum');
+const modelSelectEl = document.getElementById('modelSelect'); 
 
 const uploadBtn=document.getElementById('uploadBtn'); 
 const uploadInput=document.getElementById('upload');
@@ -157,6 +232,40 @@ function updateModes() {
 camDeviceEl.onchange = updateModes;
 refreshCamsBtn.onclick = loadCameras;
 
+// Load Models
+async function loadModels() {
+    modelSelectEl.innerHTML = '<option value="">Loading...</option>';
+    try {
+        const res = await fetch('/api/models');
+        const data = await res.json();
+        const models = data.models || [];
+        
+        modelSelectEl.innerHTML = '';
+        
+        if (models.length === 0) {
+            const opt = document.createElement('option');
+            opt.value = "";
+            opt.textContent = "No models found (*.engine)";
+            modelSelectEl.appendChild(opt);
+            return;
+        }
+
+        models.forEach(m => {
+            const opt = document.createElement('option');
+            opt.value = m.path;
+            opt.textContent = m.display;
+            modelSelectEl.appendChild(opt);
+        });
+        
+        // Select first one by default if available
+        if (models.length > 0) modelSelectEl.selectedIndex = 0;
+
+    } catch(e) {
+        console.error(e);
+        modelSelectEl.innerHTML = '<option value="">Error loading models</option>';
+    }
+}
+
 // Main App Logic
 function applyState(j){
   if(isUploading){
@@ -176,13 +285,15 @@ function applyState(j){
   camDeviceEl.disabled = isRunning;
   camModeEl.disabled = isRunning;
   confThresholdEl.disabled = isRunning;
-  analysisNumEl.disabled = isRunning; // NEW: Disable analysis number when running
+  analysisNumEl.disabled = isRunning;
+  modelSelectEl.disabled = isRunning;
 
   let msg='status: '+state+' pid:' + ((j&&j.pipeline_id)||'-');
   if(j&&j.last_error&&state!=='running') msg+=' fail: '+j.last_error;
   
-  if(state === 'running' && j.config && j.config.video_reference) {
-      msg += ` [${j.config.video_reference}]`;
+  if(state === 'running' && j.config) {
+      if(j.config.video_reference) msg += ` [${j.config.video_reference}]`;
+      if(j.config.model) msg += ` [Model: ${j.config.model}]`;
   }
   statusEl.textContent=msg;
   
@@ -239,8 +350,15 @@ btnRun.onclick=async()=>{
   let payload = {};
   
   const confVal = parseFloat(confThresholdEl.value);
-  // NEW: Get analysis number
   const analysisVal = analysisNumEl.value;
+  const modelVal = modelSelectEl.value;
+
+  // Common fields
+  let common = {
+      vis_conf: confVal,
+      analysis_number: analysisVal,
+      model_path: modelVal
+  };
 
   if(sourceTypeEl.value === 'camera') {
       const camIdx = camDeviceEl.value;
@@ -252,23 +370,21 @@ btnRun.onclick=async()=>{
       const mode = JSON.parse(modeStr);
       
       payload = {
+          ...common,
           source_type: 'camera',
           device: cameraList[camIdx].device,
           width: mode.width,
           height: mode.height,
           fps: mode.fps,
-          format: mode.format,
-          vis_conf: confVal,
-          analysis_number: analysisVal // NEW
+          format: mode.format
       };
   } else {
       const path = uploadedPathEl.value;
       if(!path) { alert("Upload a file first"); return; }
       payload = {
+          ...common,
           source_type: 'file',
-          video: path,
-          vis_conf: confVal,
-          analysis_number: analysisVal // NEW
+          video: path
       };
   }
 
@@ -342,6 +458,7 @@ uploadInput.onchange=function(){
 
 window.addEventListener('load', async()=>{
   loadCameras();
+  loadModels();
   let j = await refresh();
   setInterval(refresh,1500);
 
