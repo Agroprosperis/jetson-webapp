@@ -35,7 +35,12 @@ button[disabled]{opacity:.5;cursor:not-allowed}
 
     <div class="controls">
         <label for="confThreshold" style="font-size:12px; opacity:0.8;">Conf:</label>
-        <input id="confThreshold" type="number" min="0.1" max="1.0" step="0.05" value="0.75" style="width: 60px;" title="Detection Confidence Threshold"/>
+        <input id="confThreshold" type="number" min="0.1" max="1.0" step="0.05" value="0.75" style="width: 100px;" title="Detection Confidence Threshold"/>
+    </div>
+
+    <div class="controls">
+        <label for="analysisNum" style="font-size:12px; opacity:0.8;">Analysis #:</label>
+        <input id="analysisNum" type="text" placeholder="Auto" style="width: 100px;" title="Manual Analysis Number"/>
     </div>
 
     <div id="fileControls" class="controls hidden">
@@ -74,7 +79,8 @@ const fileControls = document.getElementById('fileControls');
 const camDeviceEl = document.getElementById('camDevice');
 const camModeEl = document.getElementById('camMode');
 const refreshCamsBtn = document.getElementById('refreshCams');
-const confThresholdEl = document.getElementById('confThreshold'); // NEW
+const confThresholdEl = document.getElementById('confThreshold');
+const analysisNumEl = document.getElementById('analysisNum'); // NEW
 
 const uploadBtn=document.getElementById('uploadBtn'); 
 const uploadInput=document.getElementById('upload');
@@ -110,7 +116,7 @@ async function loadCameras() {
 
         cameraList.forEach((cam, idx) => {
             const opt = document.createElement('option');
-            opt.value = idx; // Use index to lookup in cameraList
+            opt.value = idx; 
             opt.textContent = `${cam.name} (${cam.device})`;
             camDeviceEl.appendChild(opt);
         });
@@ -133,7 +139,6 @@ function updateModes() {
         const opt = document.createElement('option');
         opt.value = JSON.stringify(m);
         opt.textContent = `${m.width}x${m.height} @ ${m.fps}fps (${m.format})`;
-        // Select 4K or highest res by default if available
         if(m.width >= 3840) opt.selected = true;
         camModeEl.appendChild(opt);
     });
@@ -160,12 +165,12 @@ function applyState(j){
   sourceTypeEl.disabled = isRunning;
   camDeviceEl.disabled = isRunning;
   camModeEl.disabled = isRunning;
-  confThresholdEl.disabled = isRunning; // Disable conf input while running
+  confThresholdEl.disabled = isRunning;
+  analysisNumEl.disabled = isRunning; // NEW: Disable analysis number when running
 
   let msg='status: '+state+' pid:' + ((j&&j.pipeline_id)||'-');
   if(j&&j.last_error&&state!=='running') msg+=' fail: '+j.last_error;
   
-  // If running, show what we are running
   if(state === 'running' && j.config && j.config.video_reference) {
       msg += ` [${j.config.video_reference}]`;
   }
@@ -197,7 +202,6 @@ async function connectWHEP_wf(path, retryCount = 0, maxRetries = 5){
     pc_wf=new RTCPeerConnection({iceServers:[{urls:['stun:stun.l.google.com:19302']}]});
     pc_wf.addEventListener('track',(ev)=>{ vWf.srcObject=ev.streams[0]; });
     
-    // [Simplified WHEP logic for brevity, keeping robustness]
     const offer=await pc_wf.createOffer({offerToReceiveVideo:true, offerToReceiveAudio:false});
     await pc_wf.setLocalDescription(offer);
 
@@ -224,8 +228,9 @@ function disconnectWHEP_wf(){
 btnRun.onclick=async()=>{
   let payload = {};
   
-  // NEW: Get confidence value
   const confVal = parseFloat(confThresholdEl.value);
+  // NEW: Get analysis number
+  const analysisVal = analysisNumEl.value;
 
   if(sourceTypeEl.value === 'camera') {
       const camIdx = camDeviceEl.value;
@@ -243,7 +248,8 @@ btnRun.onclick=async()=>{
           height: mode.height,
           fps: mode.fps,
           format: mode.format,
-          vis_conf: confVal // Send to backend
+          vis_conf: confVal,
+          analysis_number: analysisVal // NEW
       };
   } else {
       const path = uploadedPathEl.value;
@@ -251,7 +257,8 @@ btnRun.onclick=async()=>{
       payload = {
           source_type: 'file',
           video: path,
-          vis_conf: confVal // Send to backend
+          vis_conf: confVal,
+          analysis_number: analysisVal // NEW
       };
   }
 

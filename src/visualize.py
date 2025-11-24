@@ -1,8 +1,8 @@
 import numpy as np
 import supervision as sv
 import logging
-
-from hud import draw_object_count_banner
+import cv2
+from datetime import datetime  # <--- NEW IMPORT
 
 BOX_ANNOTATOR = sv.BoxAnnotator()
 LABEL_ANNOTATOR = sv.LabelAnnotator(
@@ -20,7 +20,6 @@ LOGGER = logging.getLogger("visualization")
 def _update_cumulative_objects(detections: sv.Detections) -> int:
     """
     Cumulative unique objects over the whole run.
-
     Uses tracker IDs if available (preferred), otherwise falls back to
     summing detections across frames.
     """
@@ -78,32 +77,44 @@ def tracks_to_sv_detections(tracks: np.ndarray) -> sv.Detections:
     )
 
 
-def yolo_to_sv_detections(result, vis_conf: float) -> sv.Detections:
+def draw_combined_banner(scene: np.ndarray, count: int, s_value: float, analysis_id: str) -> np.ndarray:
     """
-    Convert a single Ultralytics YOLO result (with tracking + optional masks)
-    into a supervision.Detections object and apply a visualization confidence
-    threshold.
+    Draws the total object count, the calculated S-metric, and the Analysis ID (Pipeline ID).
     """
-    print(result)
-    if result is None:
-        return sv.Detections.empty()
+    # 1. Get current local time in human readable format
+    current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Let supervision handle proper conversion (boxes, masks, tracker IDs, etc.).
+    # 2. Define Text (Added Time at the start)
+    text = f"{current_time_str} | Objects: {count} | S: {s_value:.2f} | {analysis_id}"
+    
+    # 3. visual settings
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = 1.0
+    thickness = 2
+    text_color = (255, 255, 255) # White
+    bg_color = (0, 0, 0)         # Black
+    
+    # 4. Calculate size
+    (text_w, text_h), baseline = cv2.getTextSize(text, font, scale, thickness)
+    
+    # 5. Define positions (Top-Left corner with padding)
+    x, y = 30, 60
+    pad = 10
+    
+    # 6. Draw Background Rectangle
+    cv2.rectangle(
+        scene,
+        (x - pad, y - text_h - pad),
+        (x + text_w + pad, y + pad),
+        bg_color,
+        -1 # Filled
+    )
+    
+    # 7. Draw Text
+    cv2.putText(scene, text, (x, y), font, scale, text_color, thickness)
+    
+    return scene
 
-    detections = sv.Detections.from_ultralytics(result)
-
-    if len(detections) == 0:
-        return detections
-
-    conf = detections.confidence
-    if conf is None:
-        return detections
-
-    mask = conf >= vis_conf
-    if not np.any(mask):
-        return sv.Detections.empty()
-
-    return detections[mask]
 
 def visualize_frame_with_supervision(
     frame: np.ndarray,
@@ -127,7 +138,11 @@ def visualize_frame_with_supervision(
         vis = LABEL_ANNOTATOR.annotate(vis, detections, labels=labels)
 
     cumulative_count = _update_cumulative_objects(detections)
-    vis = draw_object_count_banner(vis, cumulative_count)
+    
+    s_metric = cumulative_count * 1111. / 100.
+    p_id = getattr(args, "pipeline_id", "unknown")
+    vis = draw_combined_banner(vis, cumulative_count, s_metric, p_id)
+
     return vis, cumulative_count
 
 

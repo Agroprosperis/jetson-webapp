@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import uuid
+from datetime import datetime  # <--- NEW IMPORT
 
 import cv2
 import requests
@@ -118,7 +119,17 @@ def api_start():
             with open(CONFIG_FILEPATH, 'r') as config_input:
                 args_dict = json.load(config_input)
 
-        pipeline_id = uuid.uuid4().hex
+        # NEW: Generate Timestamp for Filename (YYYY-MM-DD_HH-MM-SS)
+        start_time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+        # NEW: Construct Pipeline ID with Timestamp
+        analysis_num = data.get("analysis_number", "").strip()
+        if analysis_num:
+            # Result: 2025-11-24_12-30-00-Analysis101
+            pipeline_id = f"{start_time_str}-{analysis_num}"
+        else:
+            # Result: 2025-11-24_12-30-00-a1b2c3...
+            pipeline_id = f"{start_time_str}-{uuid.uuid4().hex}"
         
         # NEW: Extract confidence from request (default to 0.75 if missing)
         requested_conf = float(data.get("vis_conf", 0.75))
@@ -131,8 +142,8 @@ def api_start():
             log_level="INFO",
             output_path="pub-output",
             model_conf=0.10,
-            vis_conf=requested_conf,  # <--- UPDATED: Uses value from UI
-            pipeline_id=pipeline_id,
+            vis_conf=requested_conf,
+            pipeline_id=pipeline_id, # This will be used for filenames and the banner
             hq_output_dir="/app/output_hq",
             output_stream='WebRTC',
             class_names = ['CouldBeTilletia', 'Tilletia']
