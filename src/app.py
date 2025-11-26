@@ -291,7 +291,7 @@ def api_start():
             pipeline_id=pipeline_id,
             hq_output_dir=HQ_OUTPUT_DIR,
             output_stream='WebRTC',
-            class_names = ['CouldBeTilletia', 'Tilletia'],
+            class_names=['Background', 'CouldBeTilletia', 'Tilletia'],
             model_path=model_path # PASS MODEL PATH TO ARGS
         ))
 
