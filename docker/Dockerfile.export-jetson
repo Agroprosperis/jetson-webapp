@@ -1,0 +1,3 @@
+FROM roboflow/roboflow-inference-server-roboflow/inference-server-trt-jetson
+
+RUN pip install rfdetr[onnxexport]
