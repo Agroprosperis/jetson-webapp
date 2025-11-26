@@ -1,0 +1,3 @@
+FROM roboflow/roboflow-inference-server-gpu
+
+RUN pip install rfdetr[onnxexport] tensorrt
