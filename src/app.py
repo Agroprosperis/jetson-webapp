@@ -64,13 +64,13 @@ def api_config():
 
 @app.route("/api/models")
 def api_models():
-    """List available *fp16.engine models in /model/ul and /model/rf."""
+    """List available *.engine models in /model/ul and /model/rf."""
     try:
         models = []
-        # Search in UL and RF folders
+        # Search in UL and RF folders for engine files
         search_paths = [
             os.path.join(MODEL_DIR, "ul", "*fp16.engine"),
-            os.path.join(MODEL_DIR, "rf", "*fp16.engine")
+            os.path.join(MODEL_DIR, "rf", "*.engine") 
         ]
         
         for p in search_paths:

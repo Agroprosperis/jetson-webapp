@@ -7,10 +7,14 @@ import logging
 import numpy as np
 import os
 import csv
-from datetime import datetime
-from abc import ABC, abstractmethod
+import torch
+import tensorrt as trt
 
+from datetime import datetime
+
+# Third-party imports
 from ultralytics import YOLO
+from ultralytics.engine.results import Boxes
 from ultralytics.trackers.bot_sort import BOTSORT
 from ultralytics.trackers.utils.gmc import GMC
 
@@ -18,39 +22,37 @@ from profiler import Profiler
 from stream_readers import StreamReader, FileReader
 from visualize import visualize_frame_with_supervision, reset_object_counter
 
+
 LOGGER = logging.getLogger("inference_pipeline")
 
 
-class InferenceBackend(ABC):
-    """Abstract base class for inference backends (UL, RF, etc)."""
+class InferenceBackend():
+    """Base class for inference backends (UL, RF, etc)."""
+    def _detect_objects(self, frame: np.ndarray, args):
+        raise NotImplementedError()
     
-    @abstractmethod
+    def _track(self, results: list, frame: np.ndarray, args):
+        raise NotImplementedError()
+
     def predict(self, frame: np.ndarray, args):
         """
         Run inference and tracking on the frame.
         Returns:
             tuple: (tracks, inference_end_time)
         """
-        pass
+        frame = np.ascontiguousarray(frame, dtype=np.uint8)
 
+        results, inference_time = self._detect_objects(frame, args)
+        results, tracker_time = self._track(results, frame, args)
+        return results, inference_time, tracker_time
+    
 
-class GMCOnYolo(GMC):
-    """Helper class for Ultralytics BoT-SORT GMC."""
-    def __init__(self, method: str = "sparseOptFlow", downscale: int = 1):
-        super().__init__(method=method, downscale=downscale)
-
-    def apply(self, raw_frame: np.ndarray, detections=None) -> np.ndarray:
-        return super().apply(raw_frame, detections)
-
-
-class UltralyticsBackend(InferenceBackend):
+class BotSortTrackerBackend(InferenceBackend):
     """
-    Handles Ultralytics YOLO model loading and BoT-SORT tracking.
+    Handles BoT-SORT tracking.
     """
-    def __init__(self, model_path: str, args):
-        LOGGER.info(f"Initializing Ultralytics Backend with model: {model_path}")
-        self.model_path = model_path
-        self.model = self._load_model(model_path)
+    def __init__(self):
+        LOGGER.info(f"Initializing BotSort Tracker")
         self.tracker = None
         
         # BoT-SORT Configuration
@@ -69,6 +71,48 @@ class UltralyticsBackend(InferenceBackend):
             "model": "auto"
         }
 
+    def _init_tracker(self, frame_shape, args):
+        """Lazy initializer for tracker to ensure we have frame dimensions."""
+        vis_conf = getattr(args, "vis_conf", 0.5)
+        self.tracker_cfg['new_track_thresh'] = vis_conf
+        self.tracker_cfg['track_high_thresh'] = min(vis_conf, 0.4)
+
+        tracker = BOTSORT(argparse.Namespace(**self.tracker_cfg), frame_rate=args.fps)
+        scale_factor = max(max(frame_shape) // 320, 1)
+        tracker.gmc = GMCOnYolo(downscale=scale_factor)
+        
+        LOGGER.info(f'Tracker initialized. Scaling is {max(max(frame_shape) // 128, 1)}')
+        return tracker
+    
+    def _track(self, results: list, frame: np.ndarray, args):
+        if self.tracker is None:
+            self.tracker = self._init_tracker(frame.shape, args)
+        
+        start_time = time.perf_counter()
+        detection_boxes = results[0].boxes
+        detection_boxes = detection_boxes.cpu().numpy()
+        tracks = self.tracker.update(detection_boxes, frame)
+
+        return tracks, time.perf_counter() - start_time
+
+
+class GMCOnYolo(GMC):
+    """Helper class for Ultralytics BoT-SORT GMC."""
+    def __init__(self, method: str = "sparseOptFlow", downscale: int = 1):
+        super().__init__(method=method, downscale=downscale)
+
+    def apply(self, raw_frame: np.ndarray, detections=None) -> np.ndarray:
+        return super().apply(raw_frame, detections)
+
+
+class UltralyticsBackend(BotSortTrackerBackend):
+    def __init__(self, model_path: str, args):
+        super().__init__()
+
+        LOGGER.info(f"Initializing Ultralytics Backend with model: {model_path}")
+        self.model_path = model_path
+        self.model = self._load_model(model_path)
+
     def _load_model(self, path: str):
         try:
             return YOLO(model=path, task='detect')
@@ -76,60 +120,170 @@ class UltralyticsBackend(InferenceBackend):
             LOGGER.error(f"Failed to load UL model {path}: {e}")
             raise e
 
-    def _init_tracker(self, frame_shape, args):
-        """Lazy initializer for tracker to ensure we have frame dimensions."""
-        # Dynamic threshold adjustment from args
-        vis_conf = getattr(args, "vis_conf", 0.5)
-        self.tracker_cfg['new_track_thresh'] = vis_conf
-        self.tracker_cfg['track_high_thresh'] = min(vis_conf, 0.4)
-
-        tracker = BOTSORT(argparse.Namespace(**self.tracker_cfg), frame_rate=args.fps)
-        
-        # Configure GMC
-        scale_factor = max(max(frame_shape) // 320, 1)
-        tracker.gmc = GMCOnYolo(downscale=scale_factor)
-        
-        LOGGER.info(f'Tracker initialized. Scaling is {max(max(frame_shape) // 128, 1)}')
-        return tracker
-
-    def predict(self, frame: np.ndarray, args):
-        # 1. Initialize tracker if first run
-        if self.tracker is None:
-            self.tracker = self._init_tracker(frame.shape, args)
-
-        # 2. Inference
+    def _detect_objects(self, frame: np.ndarray, args):
         model_conf = getattr(args, "model_conf", 0.1)
-        img = np.ascontiguousarray(frame, dtype=np.uint8)
-        
-        # Run YOLO inference
-        results = self.model(img, conf=model_conf, verbose=False, classes=[0, 1], show=False, save=False)
-        t1 = time.perf_counter() # Inference end time
+        start_time = time.perf_counter()
+        results = self.model(frame, conf=model_conf, verbose=False, classes=[0, 1], show=False, save=False, half=True)
+        end_time = time.perf_counter()
 
         if results is None or len(results) == 0:
-            return None, t1
+            h, w = frame.shape[:2]
+            empty_boxes = Boxes(torch.zeros((0, 6)), orig_shape=(h, w))
+            return [MockResult(empty_boxes)], end_time - start_time 
         
-        # 3. Tracking
-        tracks = self.tracker.update(results[0].boxes.cpu().numpy(), img)
-        return tracks, t1
+        return results, end_time - start_time
 
 
-class RoboflowMockBackend(InferenceBackend):
+class MockResult:
+    """A simple wrapper to mimic the Ultralytics Results object structure."""
+    def __init__(self, boxes):
+        self.boxes = boxes
+
+
+class RoboflowBackend(BotSortTrackerBackend):
     """
-    Mock class for Roboflow (RF) integration.
+    TensorRT Backend for Roboflow/Custom models.
+    Integrated from inference_tensorrt_rf.py
     """
-    def __init__(self, model_path: str):
-        LOGGER.info(f"Initializing Roboflow Mock Backend for: {model_path}")
+    def __init__(self, model_path: str, args):
+        super().__init__()
+
+        LOGGER.info(f"Initializing TensorRT Backend for: {model_path}")
         self.model_path = model_path
-
-    def predict(self, frame: np.ndarray, args):
-        # Mock Inference delay
-        time.sleep(0.02) 
-        t1 = time.perf_counter()
         
-        # Return empty tracks or dummy tracks
-        # Format: [[x1, y1, x2, y2, track_id, conf, class_id], ...]
-        # For now, returning None to simulate no detections
-        return [], t1
+        # Initialize TRT Logger and Runtime
+        self.logger = trt.Logger(trt.Logger.WARNING)
+        self.runtime = trt.Runtime(self.logger)
+        
+        try:
+            with open(model_path, "rb") as f:
+                self.engine = self.runtime.deserialize_cuda_engine(f.read())
+        except Exception as e:
+            LOGGER.error(f"Failed to load engine {model_path}: {e}")
+            raise e
+
+        self.context = self.engine.create_execution_context()
+        
+        # Allocation
+        self.inputs = []
+        self.outputs = []
+        self.bindings = [None] * self.engine.num_io_tensors
+        self.input_shape = None
+        
+        for i in range(self.engine.num_io_tensors):
+            name = self.engine.get_tensor_name(i)
+            is_input = self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT
+            shape = self.engine.get_tensor_shape(name)
+            dtype = self._trt_to_torch_dtype(self.engine.get_tensor_dtype(name))
+            
+            # Handle dynamic batch size if present, defaulting to 1
+            if -1 in shape: 
+                shape = (1, 3, 640, 640)
+                
+            # Allocate GPU memory
+            tensor = torch.zeros(tuple(shape), dtype=dtype, device='cuda').contiguous()
+            binding = {'index': i, 'tensor': tensor, 'ptr': tensor.data_ptr(), 'shape': shape}
+            self.bindings[i] = binding['ptr']
+            if is_input: 
+                self.inputs.append(binding)
+                self.input_shape = shape
+            else: 
+                self.outputs.append(binding)
+            
+        self.h, self.w = (self.input_shape[2], self.input_shape[3]) if self.input_shape else (640, 640)
+        LOGGER.info(f"TRT Engine loaded. Input Shape: {self.h}x{self.w}")
+
+    def _trt_to_torch_dtype(self, trt_dtype):
+        return {
+            trt.float32: torch.float32, 
+            trt.float16: torch.float16, 
+            trt.int32: torch.int32
+        }.get(trt_dtype, torch.float32)
+
+    def _preprocess(self, image):
+        """Resize and normalize image to tensor."""
+        # Resize
+        img = cv2.resize(image, (self.w, self.h))
+        # Convert to tensor, put on GPU, permute to [C, H, W]
+        tensor = torch.from_numpy(img).cuda().permute(2, 0, 1).float()
+        # Normalize (0-1) and Standardize (ImageNet stats)
+        tensor = tensor[[2, 1, 0], :, :] / 255.0  # BGR to RGB split and normalize
+        mean = torch.tensor([0.485, 0.456, 0.406], device='cuda').view(3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], device='cuda').view(3, 1, 1)
+        return ((tensor - mean) / std).unsqueeze(0)
+
+    def _postprocess_gpu(self, outputs, orig_w, orig_h, conf_thresh=0.5):
+        logits, boxes = None, None
+        for out in outputs:
+            t = out['tensor']
+            # Heuristics to identify boxes vs logits based on shape
+            if t.shape[-1] == 4: boxes = t
+            elif len(t.shape) >= 3 and t.shape[-2] == 4: boxes = t.transpose(1, 2)
+            elif len(t.shape) == 2 and t.shape[0] == 4: boxes = t.t().unsqueeze(0)
+            else: logits = t
+
+        if logits is None or boxes is None: 
+            return None
+
+        # Ensure shapes align
+        num_queries = boxes.shape[1]
+        if logits.shape[-1] == num_queries and logits.shape[-2] != num_queries:
+            logits = logits.transpose(1, 2)
+        
+        # GPU operations
+        scores = torch.sigmoid(logits.clamp(-100, 100))
+        max_scores, class_ids = torch.max(scores[0], dim=-1)
+        mask = max_scores > conf_thresh
+        
+        if not mask.any(): 
+            return None
+
+        filt_scores = max_scores[mask]
+        filt_classes = class_ids[mask]
+        filt_boxes = boxes[0][mask]
+
+        # Decode boxes on GPU
+        cx, cy, w, h = filt_boxes.unbind(-1)
+        x1 = (cx - 0.5 * w) * orig_w
+        y1 = (cy - 0.5 * h) * orig_h
+        x2 = (cx + 0.5 * w) * orig_w
+        y2 = (cy + 0.5 * h) * orig_h
+        
+        xyxy = torch.stack([x1, y1, x2, y2], dim=1)
+        
+        # Move to CPU for pipeline consumption
+        return xyxy.cpu().numpy(), filt_scores.cpu().numpy(), filt_classes.cpu().numpy()
+    
+    def _detect_objects(self, frame: np.ndarray, args):
+        start_time = time.perf_counter()
+        input_tensor = self._preprocess(frame)
+        self.inputs[0]['tensor'].copy_(input_tensor)
+        self.context.execute_v2(self.bindings)
+        conf_thresh = getattr(args, "model_conf", 0.5)
+        orig_h, orig_w = frame.shape[:2]
+        
+        try:
+            res = self._postprocess_gpu(self.outputs, orig_w, orig_h, conf_thresh)
+        except Exception as e:
+            LOGGER.error(f"Post-process error: {e}")
+            # Return empty Boxes object on error
+            empty_boxes = Boxes(torch.zeros((0, 6)), orig_shape=(orig_h, orig_w))
+            return [MockResult(empty_boxes)], time.perf_counter() - start_time
+
+        # Handle no detections
+        if res is None:
+            empty_boxes = Boxes(torch.zeros((0, 6)), orig_shape=(orig_h, orig_w))
+            return [MockResult(empty_boxes)], time.perf_counter() - start_time
+
+        xyxy, confs, classes = res
+        
+        confs = confs.reshape(-1, 1)
+        classes = classes.reshape(-1, 1)
+        preds = np.hstack((xyxy, confs, classes))
+        torch_preds = torch.from_numpy(preds)
+        boxes_obj = Boxes(torch_preds, orig_shape=(orig_h, orig_w))
+        
+        return [MockResult(boxes_obj)], time.perf_counter() - start_time
 
 
 class ModelManager:
@@ -143,9 +297,10 @@ class ModelManager:
 
     def _get_backend_type(self, path: str):
         # Logic to determine backend based on folder/name
-        if "RF" in path or "roboflow" in path.lower():
-            return RoboflowMockBackend
-        # Default to Ultralytics for "UL" or unknown
+        # If path contains 'rf' directory or logic dictates, use TRT Backend
+        if "/rf/" in path or "rfdetr" in path.lower():
+            return RoboflowBackend
+        # Default to Ultralytics
         return UltralyticsBackend
 
     def predict(self, frame: np.ndarray, args):
@@ -154,6 +309,10 @@ class ModelManager:
         # Check if we need to load/reload the model
         if self.current_backend is None or self.current_model_path != requested_path:
             backend_cls = self._get_backend_type(requested_path)
+            # Clean up old backend if exists (mostly for CUDA memory if needed)
+            self.current_backend = None 
+            torch.cuda.empty_cache()
+            
             self.current_backend = backend_cls(requested_path, args)
             self.current_model_path = requested_path
 
@@ -195,6 +354,7 @@ def build_rtsp_and_hq_gst(host: str, port: int, path: str, width: int, height: i
     LOGGER.info("Pipeline: %s", pipeline)
     return pipeline
 
+
 def current_ts() -> str:
     return datetime.now().strftime("%H:%M:%S.%f")[:-3]
 
@@ -234,17 +394,15 @@ def inference_loop(frame_queue: queue.Queue, result_queue: queue.Queue, stop_eve
             break
 
         start_inference = time.perf_counter()
-        result, end_inference = model_manager.predict(frame, args)
-        end_tracking = time.perf_counter()
-
+        result, inference_time, tracker_time = model_manager.predict(frame, args)
         result_queue.put((frame, result))
-        result_pushed = time.perf_counter()
+        end_inference = time.perf_counter()
 
         profiler.record("capture", capture_time)
-        profiler.record("yolo", end_inference - start_inference)
-        profiler.record("track", end_tracking - end_inference)
+        profiler.record("inf", inference_time)
+        profiler.record("track", tracker_time)
         profiler.record("latency", time.perf_counter() - capture_start_end)
-        profiler.record("result_delayed", result_pushed - end_tracking)
+        profiler.record("processing", end_inference - start_inference)
         profiler.record("capture_queue", frame_queue.qsize())
         profiler.record("output_queue", result_queue.qsize())
 
@@ -298,8 +456,7 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, profiler
             if result is not None and len(result) > 0:
                 det_parts = []
                 for row in result:
-                    # Handle possibility of result being just a list vs numpy array if backend differs
-                    # Assuming numpy for now as per existing logic
+                    # x1, y1, x2, y2, track_id, conf, class_id
                     x0, y0, x1, y1 = row[:4]
                     conf_val = float(row[5])
                     cls_id = int(row[6])
