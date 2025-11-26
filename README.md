@@ -19,13 +19,12 @@ Optional: test the docker image trying to compile as tensorrt the pre-trained ul
 docker run --network host --runtime=nvidia --rm -it -e NVIDIA_DRIVER_CAPABILITIES=all -v $(pwd):/app opencv-gst:latest yolo export format=engine
 ```
 
-Model must be compiled as tensorrt and saved as src/model/weights-fp16.engine:
+Model must be compiled as tensorrt (once new model is added). Ultralytics tensorrt models must be stored in `model/ul` folder and Roboflow models in `model/rf` folder
 ```
 # Command must be executed on target device, first download pre-trained model and save as *.pt file
-# in the following example pre-trained model is saved as cd ${REPO_DIR}/src/runs/detect/train18/weights/last.pt
+# in the following example pre-trained model is saved as cd ${REPO_DIR}/src/model/ul/yolo11s-seg-v15-fp16.pt
 cd ${REPO_DIR}/src
-docker run --network host --runtime=nvidia --rm -it -e NVIDIA_DRIVER_CAPABILITIES=all -v $(pwd):/app opencv-gst:latest yolo export format=engine model=/app/train17/weights/last.pt imgsz=640 half
-mkdir ${REPO_DIR}/src/model
+docker run --network host --runtime=nvidia --rm -it -e NVIDIA_DRIVER_CAPABILITIES=all -v $(pwd):/app opencv-gst:latest yolo export format=engine model=/app/model/ul/yolo11s-seg-v15-fp16.pt imgsz=640 half
 mv train17/weights/last.engine model/weights-fp16.engine
 ```
 
