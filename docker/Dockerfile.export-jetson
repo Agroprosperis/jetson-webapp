@@ -1,3 +1,9 @@
-FROM roboflow/roboflow-inference-server-roboflow/inference-server-trt-jetson
+FROM dustynv/l4t-pytorch:r36.4.0
 
-RUN pip install rfdetr[onnxexport]
+ENV PIP_INDEX_URL='https://pypi.jetson-ai-lab.io/jp6/cu126'
+RUN pip install -U pip
+
+RUN pip install --no-cache-dir rfdetr numpy==1.26.4 supervision roboflow --index-url https://pypi.jetson-ai-lab.io/jp6/cu126
+
+RUN CMAKE_EXECUTABLE=/usr/bin/cmake pip install onnxslim numpy==1.26.4
+RUN pip install onnxsim --no-build-isolation
