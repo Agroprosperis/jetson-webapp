@@ -141,6 +141,60 @@ class BotSortTrackerBackend(InferenceBackend):
         LOGGER.info(f'Tracker initialized. Scaling is {scale_factor}')
         return tracker
     
+    def dump_debug_frame(self, frame):
+        """Dumps debug visualization of the tracker state and GMC flow."""
+        if self.tracker is None:
+            return
+
+        debug_dir = "/app/debug_output"
+        os.makedirs(debug_dir, exist_ok=True)
+        
+        vis_frame = frame.copy()
+
+        # --- 1. Visualize GMC Optical Flow (Background Motion) ---
+        # We access the GMC instance attached to the tracker
+        if hasattr(self.tracker, 'gmc'):
+            gmc = self.tracker.gmc
+            # Check if features from the current step are exposed
+            if hasattr(gmc, 'last_good_old') and hasattr(gmc, 'last_good_new'):
+                p0 = gmc.last_good_old
+                p1 = gmc.last_good_new
+                scale = getattr(gmc, 'downscale', 1)
+
+                if p0 is not None and p1 is not None:
+                    for new, old in zip(p1, p0):
+                        # Points are stored in downscaled coordinates, scale up for visualization
+                        a, b = new.ravel() * scale
+                        c, d = old.ravel() * scale
+                        
+                        # Draw Flow Vector in Cyan (distinct from Green tracks)
+                        # Line thickness increased for visibility
+                        cv2.line(vis_frame, (int(a), int(b)), (int(c), int(d)), (255, 255, 0), 3) 
+                        cv2.circle(vis_frame, (int(a), int(b)), 4, (255, 255, 0), -1)
+
+        # --- 2. Visualize Tracks ---
+        def draw_track(t, color, status_label):
+            # Using xyxy attribute directly
+            x1, y1, x2, y2 = t.xyxy
+            tid = t.track_id
+            cv2.rectangle(vis_frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 3)
+            cv2.putText(vis_frame, f"{tid} {status_label}", (int(x1), int(y1)-10), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 3)
+
+        # Active / Warming Up
+        for t in self.tracker.tracked_stracks:
+            if t.is_activated:
+                 draw_track(t, (0, 255, 0), "ACTIVE") # Green
+            else:
+                 draw_track(t, (0, 255, 255), "WARMUP") # Yellow
+
+        # Lost Tracks
+        for t in self.tracker.lost_stracks:
+            draw_track(t, (0, 0, 255), "LOST") # Red
+
+        filename = f"tracker_{self.frame_cnt:06d}.jpg"
+        cv2.imwrite(os.path.join(debug_dir, filename), vis_frame)
+
     def _track(self, results: list, frame: np.ndarray, args):
         if self.tracker is None:
             self.tracker = self._init_tracker(frame.shape, args)
@@ -150,6 +204,10 @@ class BotSortTrackerBackend(InferenceBackend):
         detection_boxes = results[0].boxes
         detection_boxes = detection_boxes.cpu().numpy()
         tracks = self.tracker.update(detection_boxes, frame)
+        
+        if debug:=False:
+            self.dump_debug_frame(frame)
+
         return tracks, time.perf_counter() - start_time
 
 
@@ -158,10 +216,17 @@ class JetsonOptimizedGMC(GMC):
     Optimized GMC for Jetson/Microscopy.
     - Uses sparseOptFlow with increased search depth (maxLevel=6)
     - Fixes coordinate scaling bug
+    - Exposes flow points for external debug visualization
     """
     def __init__(self, downscale=2):
         super().__init__(method="sparseOptFlow", downscale=downscale)
+        self.frame_cnt = 0 # Explicit frame counter (independent of parent)
         self.last_H = np.eye(2, 3)
+        
+        # Storage for debug visualization
+        self.last_good_old = None
+        self.last_good_new = None
+
         self.feature_params = dict(
             maxCorners=100,
             qualityLevel=0.02, 
@@ -177,6 +242,10 @@ class JetsonOptimizedGMC(GMC):
     def apply(self, raw_frame: np.ndarray, detections=None) -> np.ndarray:
         self.frame_cnt += 1
         t_start = time.perf_counter()
+
+        # Reset debug points for this frame
+        self.last_good_old = None
+        self.last_good_new = None
 
         if self.downscale > 1:
             h, w = raw_frame.shape[:2]
@@ -195,6 +264,7 @@ class JetsonOptimizedGMC(GMC):
         
         if self.prevKeyPoints is not None and len(self.prevKeyPoints) > 0:
             next_pts, status, err = cv2.calcOpticalFlowPyrLK(self.prevFrame, curr_frame, self.prevKeyPoints, None, **self.lk_params)
+        
         matched_pts = 0
         H = np.eye(2, 3)
         
@@ -202,6 +272,10 @@ class JetsonOptimizedGMC(GMC):
             good_old = self.prevKeyPoints[status == 1]
             good_new = next_pts[status == 1]
             matched_pts = len(good_old)
+
+            # Store for external debug visualization
+            self.last_good_old = good_old
+            self.last_good_new = good_new
 
             if matched_pts > 4:
                 H, _ = cv2.estimateAffinePartial2D(good_old, good_new, method=cv2.RANSAC, ransacReprojThreshold=3)
