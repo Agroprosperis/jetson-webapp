@@ -11,7 +11,6 @@ import requests
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 
 from inference_pipeline import StreamPipeline
-from profiler import Profiler
 from stream_readers import V4L2StreamReader, FileReader
 from camera_manager import CameraManager
 
@@ -24,7 +23,6 @@ app = Flask(__name__)
 
 # Global runtime state
 pipeline = None  # type: StreamPipeline | None
-profiler = None  # type: Profiler | None
 current_config = {}
 last_error = None  # type: str | None
 pipeline_id = None  # type: str | None
@@ -220,7 +218,7 @@ def download_file(filename):
 
 @app.route("/api/start", methods=["POST"])
 def api_start():
-    global pipeline, profiler, last_error, current_config, pipeline_id
+    global pipeline, last_error, current_config, pipeline_id
 
     # Don't allow concurrent runs
     if is_pipeline_running():
@@ -250,9 +248,6 @@ def api_start():
             with open(CONFIG_FILEPATH, 'r') as config_input:
                 args_dict = json.load(config_input)
 
-        # ---------------------------------------------------------------------
-        # Analysis Number Logic
-        # ---------------------------------------------------------------------
         analysis_num = data.get("analysis_number", "").strip()
         if analysis_num:
             pipeline_id = analysis_num
@@ -260,24 +255,14 @@ def api_start():
             start_time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             pipeline_id = f"{start_time_str}-{uuid.uuid4().hex}"
         
-        # ---------------------------------------------------------------------
-        # Model Selection Logic
-        # ---------------------------------------------------------------------
-        # Check if user provided a specific model path
         model_path = data.get("model_path", None)
         
         # If no model provided, fallback to default (hardcoded) or check default path
         if not model_path:
-            # Fallback default
             model_path = "/app/model/weights-fp16.engine"
-            
-        # Verify existence
-        if not os.path.exists(model_path):
-             LOGGER.warning(f"Selected model not found: {model_path}. attempting to find any engine...")
-             # Fallback logic could go here
-        
-        # NEW: Extract confidence from request (default to 0.75 if missing)
+
         requested_conf = float(data.get("vis_conf", 0.75))
+        vis_strategy = data.get("vis_strategy", "tracker")
         
         # Common defaults
         args_dict.update(dict(
@@ -288,11 +273,11 @@ def api_start():
             output_path="pub-output",
             model_conf=0.10,
             vis_conf=requested_conf,
+            vis_strategy=vis_strategy,
             pipeline_id=pipeline_id,
             hq_output_dir=HQ_OUTPUT_DIR,
             output_stream='WebRTC',
-            class_names=['Background', 'CouldBeTilletia', 'Tilletia'],
-            model_path=model_path # PASS MODEL PATH TO ARGS
+            model_path=model_path,
         ))
 
         if source_type == "camera":
@@ -350,10 +335,8 @@ def api_start():
                     args.fps = int(f_fps)
                 LOGGER.info(f"File probed: {args.width}x{args.height} @ {args.fps}")
 
-        profiler = Profiler(window=200)
-
         LOGGER.info(f"Starting pipeline: {args}")
-        tmp_pipeline = StreamPipeline(reader, profiler, args)
+        tmp_pipeline = StreamPipeline(reader, args)
         tmp_pipeline.__enter__()
         pipeline = tmp_pipeline
 

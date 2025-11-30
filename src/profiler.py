@@ -21,6 +21,8 @@ class Profiler:
         self.data[name].append(dt)
         self.log()
 
+        return self
+
     def average(self, name: str) -> float:
         buf = self.data.get(name, None)
         if not buf:

@@ -127,9 +127,14 @@ def visualize_frame_with_supervision(
     detections = tracks_to_sv_detections(tracks)
 
     vis_conf = getattr(args, "vis_conf", 0.75)
-    if detections.confidence is not None:
-        keep = detections.confidence >= vis_conf
-        detections = detections[keep]
+    vis_strategy = getattr(args, "vis_strategy", "confidence")
+
+    if vis_strategy == "confidence":
+        if detections.confidence is not None:
+            keep = detections.confidence >= vis_conf
+            detections = detections[keep]
+    else:
+        pass
 
     labels = build_labels_from_tracks(detections, args)
 
@@ -138,15 +143,13 @@ def visualize_frame_with_supervision(
         vis = LABEL_ANNOTATOR.annotate(vis, detections, labels=labels)
 
     cumulative_count = _update_cumulative_objects(detections)
-    
-    # S = (count * 1111) / 100
-    # Round to 1 decimal place
     s_metric = round((cumulative_count * 1111. / 100.), 1)
     
     p_id = getattr(args, "pipeline_id", "unknown")
-    vis = draw_combined_banner(vis, cumulative_count, s_metric, p_id)
+    vis = draw_combined_banner(vis, cumulative_count, s_metric, f"{p_id}")
 
     return vis, cumulative_count
+
 
 
 def build_labels_from_tracks(detections: sv.Detections, args) -> list[str]:
