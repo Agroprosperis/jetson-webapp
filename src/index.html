@@ -288,7 +288,22 @@ function applyState(j){
   analysisNumEl.disabled = isRunning;
   modelSelectEl.disabled = isRunning;
 
-  let msg='status: '+state+' pid:' + ((j&&j.pipeline_id)||'-');
+  // --- Check MediaMTX Status ---
+  let mtxStatus = "";
+  if (j && j.mediamtx) {
+    if (!j.mediamtx.whep) {
+        mtxStatus = " [MediaMTX OFFLINE]";
+        statusEl.style.color = "#ff4444"; // Red warning
+        statusEl.style.fontWeight = "bold";
+    } else {
+        statusEl.style.color = "#eee"; // Normal color
+        statusEl.style.fontWeight = "normal";
+    }
+  }
+  // -----------------------------
+
+  let msg='status: '+state+' pid:' + ((j&&j.pipeline_id)||'-') + mtxStatus;
+  
   if(j&&j.last_error&&state!=='running') msg+=' fail: '+j.last_error;
   
   if(state === 'running' && j.config) {

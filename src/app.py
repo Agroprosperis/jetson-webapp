@@ -4,6 +4,7 @@ import logging
 import os
 import uuid
 import glob
+import socket
 from datetime import datetime
 
 import cv2
@@ -103,6 +104,14 @@ def api_cameras():
         return jsonify({"error": str(e)}), 500
 
 
+def check_port(host, port, timeout=0.1):
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except (OSError, ConnectionRefusedError):
+        return False
+
+
 @app.route("/api/status")
 def api_status():
     global pipeline_id
@@ -119,10 +128,15 @@ def api_status():
     # Add current model to status if running
     current_model = current_config.get("model_path", "")
 
+    # Check MediaMTX Ports (8889 for WHEP, 8554 for RTSP)
+    mtx_whep = check_port("127.0.0.1", 8889)
+    mtx_rtsp = check_port("127.0.0.1", 8554)
+
     return jsonify({
         "state": state,
         "pipeline_id": pid_value,
         "last_error": last_error,
+        "mediamtx": { "whep": mtx_whep, "rtsp": mtx_rtsp }, # <--- NEW FIELD
         "config": {
             "video_reference": video_desc,
             "model": os.path.basename(current_model) if current_model else ""
