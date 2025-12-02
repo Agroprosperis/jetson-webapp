@@ -497,10 +497,21 @@ def capture_loop(reader: StreamReader, capture_queue: queue.Queue, stop_event: t
             loop_start = time.perf_counter()
             ret, frame = reader.read()
             read_done = time.perf_counter()
+
             if not ret or frame is None:
-                capture_queue.put((None, 0.0, 0.0))
+                try:
+                    capture_queue.put((None, 0.0, 0.0), timeout=0.1)
+                except:
+                    pass
                 break
-            capture_queue.put((frame, read_done, read_done - loop_start))
+
+            while not stop_event.is_set():
+                try:
+                    capture_queue.put((frame, read_done, read_done - loop_start), timeout=0.025)
+                    break 
+                except queue.Full:
+                    continue
+            
             if is_file:
                 process_dur = time.perf_counter() - loop_start
                 sleep_time = target_interval - process_dur
@@ -536,7 +547,7 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, args) ->
             frame, result = result_queue.get()
             if frame is None: 
                 break
-            
+
             start_vis = time.time()
             vis, total_unique_objects = visualize_frame_with_supervision(frame, result, args)
             PROFILER.record('vis', time.time() - start_vis)
@@ -597,12 +608,40 @@ class StreamPipeline:
         for t in self._threads: t.start()
 
     def stop(self) -> None:
+        LOGGER.info("Stopping pipeline...")
         self.stop_event.set()
-        try: self.frame_queue.put((None, 0.0, 0.0), timeout=0.1)
-        except: pass
-        try: self.result_queue.put((None, None), timeout=0.1)
-        except: pass
-        for t in self._threads: t.join(timeout=2.0)
+
+        try:
+            while not self.frame_queue.empty():
+                self.frame_queue.get_nowait()
+        except Exception:
+            pass
+
+        try:
+            while not self.result_queue.empty():
+                self.result_queue.get_nowait()
+        except Exception:
+            pass
+
+        try: 
+            self.frame_queue.put((None, 0.0, 0.0), timeout=0.1)
+        except: 
+            pass
+        
+        try: 
+            self.result_queue.put((None, None), timeout=0.1)
+        except: 
+            pass
+
+        for t in self._threads: 
+            t.join(timeout=2.0)
+            if t.is_alive():
+                LOGGER.warning(f"Thread {t.name} did not exit cleanly (Zombie thread).")
+
+        if hasattr(self.reader, 'cap') and self.reader.cap is not None:
+            if self.reader.cap.isOpened():
+                LOGGER.warning("Force releasing camera resource in stop()")
+                self.reader.cap.release()
 
     def run(self) -> None:
         try:
