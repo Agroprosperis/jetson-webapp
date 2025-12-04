@@ -560,11 +560,11 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, args) ->
                 h, w = frame.shape[:2]
                 hq_output_dir = getattr(args, "hq_output_dir", "/app")
                 os.makedirs(hq_output_dir, exist_ok=True)
-                hq_filename = f"output-hq-{pipeline_id}.mkv"
+                hq_filename = f"{pipeline_id}.mkv"
                 hq_path = os.path.join(hq_output_dir, hq_filename)
                 out_pipeline = build_rtsp_and_hq_gst(args.stream_host, args.stream_port, args.output_path, w, h, args.fps, hq_path)
                 output_writer = cv2.VideoWriter(out_pipeline, cv2.CAP_GSTREAMER, 0, args.fps, (w, h), True)
-                hq_csv_path = os.path.join(hq_output_dir, f"output-hq-{pipeline_id}.csv")
+                hq_csv_path = os.path.join(hq_output_dir, f"{pipeline_id}.csv")
                 csv_file = open(hq_csv_path, "w", newline="", encoding="utf-8")
                 csv_writer = csv.writer(csv_file)
                 csv_writer.writerow(["frame", "analysis_number", "s_value", "total_unique_objects", "detections"])

@@ -56,4 +56,6 @@ RUN python3 -m pip install --no-cache-dir \
     "numpy<2.0" pillow lapx supervision \
     flask 'onnx>=1.12.0' 'onnxslim>=0.1.71' 'onnxruntime-gpu'
 
+RUN python3 -m pip install --no-cache-dir flasgger
+
 WORKDIR /workspace
