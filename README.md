@@ -55,3 +55,11 @@ Run app
 cd ${REPO_DIR}/src
 docker run --network host --runtime=nvidia --rm -it --device=/dev/video0 -v $(pwd):/app opencv-gst:latest python /app/app.py
 ```
+
+# How to Update the API readme file
+Run application as described in previous section and execute
+```
+cd ${REPO_DIR}
+curl http://localhost:8000/apispec_1.json > auto_swagger.json
+npx widdershins --search false --summary auto_swagger.json -o API_README.md
+```
