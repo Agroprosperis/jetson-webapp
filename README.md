@@ -61,5 +61,5 @@ Run application as described in previous section and execute
 ```
 cd ${REPO_DIR}
 curl http://localhost:8000/apispec_1.json > auto_swagger.json
-npx widdershins auto_swagger.json -o API_README.md --search false --summary --language_tabs 'shell:Curl'
+python3 generate_docs.py
 ```
