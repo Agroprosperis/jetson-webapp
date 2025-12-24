@@ -25,13 +25,18 @@ sudo apt-get update
 sudo apt-get install nvidia-l4t-dla-compiler
 ```
 
+# How to compile YOLO-model
 Model must be compiled as tensorrt (once new model is added). Ultralytics tensorrt models must be stored in `model/ul` folder and Roboflow models in `model/rf` folder
+
+1. Download the model - open model card from the list and choose `Download Weights` button
+![alt text](docs/download_model.png)
+2. By default model is downloaded as `weights.pt`, rename it to the meaningful name, for example `yolo11-tilletia-detection-yolov8-seg-twxa6-41-fp16.pt` would be good to track the model type and origin from the app. The postfix `tilletia-detection-yolov8-seg-twxa6-41` is based on `Model URL` on the screenshot on previous step. `-fp16` is essential at the end of the filename to let the application find the model.
+3. Copy the renamed model to jetson in the folder ${REPO_DIR}/src/model/ul/
+
+4. Compile the model to tensorrt
 ```
-# Command must be executed on target device, first download pre-trained model and save as *.pt file
-# in the following example pre-trained model is saved as cd ${REPO_DIR}/src/model/ul/yolo11s-seg-v15-fp16.pt
 cd ${REPO_DIR}/src
-docker run --network host --runtime=nvidia --rm -it -e NVIDIA_DRIVER_CAPABILITIES=all -v $(pwd):/app opencv-gst:latest yolo export format=engine model=/app/model/ul/yolo11s-seg-v15-fp16.pt imgsz=640 half
-mv train17/weights/last.engine model/weights-fp16.engine
+docker run --network host --runtime=nvidia --rm -it -e NVIDIA_DRIVER_CAPABILITIES=all -v $(pwd):/app opencv-gst:latest yolo export format=engine model=/app/model/ul/yolo11-tilletia-detection-yolov8-seg-twxa6-41-fp16.pt imgsz=640 half
 ```
 
 To convert Roboflow RF-DETR object detection models:
