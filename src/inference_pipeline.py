@@ -587,8 +587,11 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, args) ->
             if output_writer is not None:
                 output_writer.write(vis)
     finally:
-        if output_writer is not None: output_writer.release()
-        if csv_file is not None: csv_file.close()
+        if output_writer is not None: 
+            output_writer.release()
+
+        if csv_file is not None: 
+            csv_file.close()
 
 
 class StreamPipeline:
@@ -612,32 +615,42 @@ class StreamPipeline:
         self.stop_event.set()
 
         try:
+            LOGGER.info("Clearing input queue")
             while not self.frame_queue.empty():
                 self.frame_queue.get_nowait()
+            LOGGER.info("Input queue cleared")
         except Exception:
             pass
 
         try:
+            LOGGER.info("Clearing result queue")
             while not self.result_queue.empty():
                 self.result_queue.get_nowait()
+            LOGGER.info("Result queue cleared")
         except Exception:
             pass
 
-        try: 
+        try:
+            LOGGER.info("Inject stop frame to the input queue")
             self.frame_queue.put((None, 0.0, 0.0), timeout=0.1)
+            LOGGER.info("Injected stop frame to the input queue")
         except: 
             pass
         
         try: 
+            LOGGER.info("Inject stop frame to the result queue")
             self.result_queue.put((None, None), timeout=0.1)
+            LOGGER.info("Injected stop frame to the result queue")
         except: 
             pass
 
+        LOGGER.info("Waiting threads for termination")
         for t in self._threads: 
             t.join(timeout=2.0)
             if t.is_alive():
                 LOGGER.warning(f"Thread {t.name} did not exit cleanly (Zombie thread).")
 
+        LOGGER.info("check if cap is closed")
         if hasattr(self.reader, 'cap') and self.reader.cap is not None:
             if self.reader.cap.isOpened():
                 LOGGER.warning("Force releasing camera resource in stop()")
@@ -654,5 +667,6 @@ class StreamPipeline:
         return self
 
     def __exit__(self, exc_type, exc, tb):
+        LOGGER.warning("Triggered for stop event")
         self.stop()
         return False

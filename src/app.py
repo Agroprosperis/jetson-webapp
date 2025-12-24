@@ -58,6 +58,15 @@ def pipeline_thread_states():
     return [t.is_alive() for t in threads] 
 
 
+def extract_id_or_date(filename):
+    pattern = r"^(?:(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})-[a-fA-F0-9]{32}|(.+))\.mkv$"
+    match = re.match(pattern, filename)
+    
+    if match:
+        return match.group(1) or match.group(2)
+    return None
+
+
 @app.route("/")
 def index():
     return send_file("index.html")
@@ -255,16 +264,18 @@ def api_list_results():
 
         for mkv_path in mkv_files:
             filename = os.path.basename(mkv_path)
-            if filename.startswith("output-hq-") and filename.endswith(".mkv"):
-                pid = filename[10:-4]
-                
-                csv_filename = f"output-hq-{pid}.csv"
+            
+            if filename.endswith(".mkv"):
+                LOGGER.info(f"Found result with id: {id}")
+
+                csv_filename = f"{filename[-4]}.csv"
                 csv_path = os.path.join(HQ_OUTPUT_DIR, csv_filename)
                 
                 stat = os.stat(mkv_path)
                 creation_time = datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
                 size_mb = round(stat.st_size / (1024 * 1024), 2)
 
+                pid = extract_id_or_date(filename)
                 results_map[pid] = {
                     "id": pid,
                     "timestamp": creation_time,
@@ -316,6 +327,7 @@ def api_search_results():
     """
     try:
         analysis_id = request.args.get('analysis_id', '').strip()
+        LOGGER.warning(f'Search by analysis_id: {analysis_id}')
         if not os.path.exists(HQ_OUTPUT_DIR):
             return jsonify({"results": []})
 
