@@ -4,6 +4,7 @@ import logging
 import os
 import uuid
 import glob
+import shutil
 import socket
 import re
 from datetime import datetime
@@ -259,33 +260,41 @@ def api_list_results():
         if not os.path.exists(HQ_OUTPUT_DIR):
             return jsonify({"results": []})
 
-        mkv_files = glob.glob(os.path.join(HQ_OUTPUT_DIR, "*.mkv"))
-        results_map = {}
+        results_list = []
+        run_dirs = [
+            name for name in os.listdir(HQ_OUTPUT_DIR)
+            if os.path.isdir(os.path.join(HQ_OUTPUT_DIR, name))
+        ]
 
-        for mkv_path in mkv_files:
-            filename = os.path.basename(mkv_path)
-            
-            if filename.endswith(".mkv"):
-                LOGGER.info(f"Found result with id: {id}")
+        for run_id in run_dirs:
+            run_path = os.path.join(HQ_OUTPUT_DIR, run_id)
+            files = []
+            latest_mtime = 0
 
-                csv_filename = f"{filename[-4]}.csv"
-                csv_path = os.path.join(HQ_OUTPUT_DIR, csv_filename)
-                
-                stat = os.stat(mkv_path)
-                creation_time = datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+            for filename in sorted(os.listdir(run_path)):
+                full_path = os.path.join(run_path, filename)
+                if not os.path.isfile(full_path):
+                    continue
+                stat = os.stat(full_path)
+                latest_mtime = max(latest_mtime, stat.st_mtime)
                 size_mb = round(stat.st_size / (1024 * 1024), 2)
+                files.append({
+                    "name": filename,
+                    "path": f"{run_id}/{filename}",
+                    "size": f"{size_mb} MB",
+                })
 
-                pid = extract_id_or_date(filename)
-                results_map[pid] = {
-                    "id": pid,
-                    "timestamp": creation_time,
-                    "video": filename,
-                    "video_size": f"{size_mb} MB",
-                    "csv": csv_filename if os.path.exists(csv_path) else None
-                }
+            timestamp = datetime.fromtimestamp(latest_mtime).strftime('%Y-%m-%d %H:%M:%S') if latest_mtime else "-"
+            results_list.append({
+                "id": run_id,
+                "timestamp": timestamp,
+                "files": files,
+                "_mtime": latest_mtime,
+            })
 
-        results_list = list(results_map.values())
-        results_list.sort(key=lambda x: x['timestamp'], reverse=True)
+        results_list.sort(key=lambda x: x["_mtime"], reverse=True)
+        for item in results_list:
+            item.pop("_mtime", None)
 
         return jsonify({"results": results_list})
 
@@ -331,33 +340,44 @@ def api_search_results():
         if not os.path.exists(HQ_OUTPUT_DIR):
             return jsonify({"results": []})
 
-        mkv_files = glob.glob(os.path.join(HQ_OUTPUT_DIR, "*.mkv"))
+        run_dirs = [
+            name for name in os.listdir(HQ_OUTPUT_DIR)
+            if os.path.isdir(os.path.join(HQ_OUTPUT_DIR, name))
+        ]
         results_list = []
-
         host_url = request.host_url.rstrip('/')
 
-        for mkv_path in mkv_files:
-            filename = os.path.basename(mkv_path)
-            if filename.startswith(analysis_id) and filename.endswith(".mkv"):
-                pid = os.path.splitext(filename)[0]
+        for run_id in run_dirs:
+            if analysis_id and not run_id.startswith(analysis_id):
+                continue
 
-                csv_filename = f"{pid}.csv"
-                csv_path = os.path.join(HQ_OUTPUT_DIR, csv_filename)
-                
-                stat = os.stat(mkv_path)
-                creation_time = datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
-                size_mb = round(stat.st_size / (1024 * 1024), 2)
+            run_path = os.path.join(HQ_OUTPUT_DIR, run_id)
+            video_filename = f"{run_id}.mkv"
+            csv_filename = f"{run_id}.csv"
+            video_path = os.path.join(run_path, video_filename)
+            csv_path = os.path.join(run_path, csv_filename)
 
-                video_url = f"{host_url}/download/{filename}"
-                csv_url = f"{host_url}/download/{csv_filename}" if os.path.exists(csv_path) else None
+            if not os.path.exists(video_path) and not os.path.exists(csv_path):
+                continue
 
-                results_list.append({
-                    "analysis_id": pid,
-                    "timestamp": creation_time,
-                    "video_size": f"{size_mb} MB",
-                    "video_url": video_url,
-                    "csv_url": csv_url
-                })
+            latest_mtime = 0
+            for file_path in (video_path, csv_path):
+                if os.path.exists(file_path):
+                    latest_mtime = max(latest_mtime, os.stat(file_path).st_mtime)
+
+            creation_time = datetime.fromtimestamp(latest_mtime).strftime('%Y-%m-%d %H:%M:%S') if latest_mtime else "-"
+            size_mb = round(os.path.getsize(video_path) / (1024 * 1024), 2) if os.path.exists(video_path) else None
+
+            video_url = f"{host_url}/download/{run_id}/{video_filename}" if os.path.exists(video_path) else None
+            csv_url = f"{host_url}/download/{run_id}/{csv_filename}" if os.path.exists(csv_path) else None
+
+            results_list.append({
+                "analysis_id": run_id,
+                "timestamp": creation_time,
+                "video_size": f"{size_mb} MB" if size_mb is not None else None,
+                "video_url": video_url,
+                "csv_url": csv_url,
+            })
 
         results_list.sort(key=lambda x: x['timestamp'], reverse=True)
 
@@ -389,22 +409,16 @@ def api_delete_result(pid):
         if not pid or ".." in pid or "/" in pid:
             return jsonify({"error": "Invalid ID"}), 400
 
-        mkv_filename = f"output-hq-{pid}.mkv"
-        csv_filename = f"output-hq-{pid}.csv"
-        
-        mkv_path = os.path.join(HQ_OUTPUT_DIR, mkv_filename)
-        csv_path = os.path.join(HQ_OUTPUT_DIR, csv_filename)
-        
+        run_dir = os.path.join(HQ_OUTPUT_DIR, pid)
         deleted_files = []
 
-        if os.path.exists(mkv_path):
-            os.remove(mkv_path)
-            deleted_files.append(mkv_filename)
-        
-        if os.path.exists(csv_path):
-            os.remove(csv_path)
-            deleted_files.append(csv_filename)
-            
+        if os.path.isdir(run_dir):
+            for root, _, files in os.walk(run_dir):
+                for name in files:
+                    rel_path = os.path.relpath(os.path.join(root, name), HQ_OUTPUT_DIR)
+                    deleted_files.append(rel_path)
+            shutil.rmtree(run_dir)
+
         LOGGER.info(f"Deleted results for ID {pid}: {deleted_files}")
         return jsonify({"success": True, "deleted": deleted_files})
 

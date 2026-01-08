@@ -22,6 +22,11 @@ a:hover { text-decoration: underline; }
 .empty { padding: 20px; text-align: center; color: #777; font-style: italic; }
 .back-link { display: inline-block; margin-bottom: 20px; color: #888; text-decoration: none; font-size: 14px;}
 .back-link:hover { color: #eee; }
+.folder-row td { background: #191919; font-weight: 600; color: #cfcfcf; }
+.folder-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.folder-meta { color: #888; font-weight: 400; font-size: 12px; }
+.file-row td { padding-left: 28px; }
+.file-type { color: #888; text-transform: uppercase; font-size: 11px; letter-spacing: 0.04em; }
 </style>
 </head>
 <body>
@@ -35,10 +40,9 @@ a:hover { text-decoration: underline; }
 <table id="resultsTable" style="display:none;">
     <thead>
         <tr>
-            <th>Analysis / Pipeline ID</th>
-            <th>Date</th>
-            <th>Video Output</th>
-            <th>Data Output</th>
+            <th>Folder / File</th>
+            <th>Type</th>
+            <th>Size</th>
             <th>Actions</th>
         </tr>
     </thead>
@@ -70,26 +74,39 @@ async function loadResults() {
         table.style.display = 'table';
 
         data.results.forEach(item => {
-            const tr = document.createElement('tr');
-            tr.id = `row-${item.id}`;
-            
-            const csvLink = item.csv 
-                ? `<a href="/download/${item.csv}" download>Download CSV</a>` 
-                : '<span style="color:#555">No CSV</span>';
-
-            tr.innerHTML = `
-                <td style="font-family:monospace; color:#aaa;">${item.id}</td>
-                <td>${item.timestamp}</td>
-                <td>
-                    <a href="/download/${item.video}" download>Download Video</a>
-                    <span style="font-size:11px; color:#666; margin-left:8px;">(${item.video_size})</span>
-                </td>
-                <td>${csvLink}</td>
-                <td>
-                    <button class="btn-del" onclick="deleteResult('${item.id}')">Remove</button>
+            const folderRow = document.createElement('tr');
+            folderRow.className = 'folder-row';
+            folderRow.dataset.folder = item.id;
+            folderRow.innerHTML = `
+                <td colspan="4">
+                    <div class="folder-line">
+                        <span style="font-family:monospace;">${item.id}</span>
+                        <span class="folder-meta">${item.timestamp}</span>
+                        <button class="btn-del" onclick="deleteResult('${item.id}')">Remove</button>
+                    </div>
                 </td>
             `;
-            tbody.appendChild(tr);
+            tbody.appendChild(folderRow);
+
+            (item.files || []).forEach(file => {
+                const tr = document.createElement('tr');
+                tr.className = 'file-row';
+                tr.dataset.folder = item.id;
+                const ext = (file.name || '').split('.').pop().toLowerCase();
+                let typeLabel = 'file';
+                if (ext === 'mkv') typeLabel = 'video';
+                else if (ext === 'csv') typeLabel = 'csv';
+                else if (ext === 'jpg' || ext === 'jpeg') typeLabel = 'image';
+
+                const fileUrl = `/download/${encodeURI(file.path)}`;
+                tr.innerHTML = `
+                    <td>${file.name}</td>
+                    <td class="file-type">${typeLabel}</td>
+                    <td>${file.size || '-'}</td>
+                    <td><a href="${fileUrl}" download>Download</a></td>
+                `;
+                tbody.appendChild(tr);
+            });
         });
 
     } catch(e) {
@@ -106,12 +123,11 @@ async function deleteResult(pid) {
         const j = await res.json();
         
         if (j.success) {
-            const row = document.getElementById(`row-${pid}`);
-            if(row) row.remove();
-            
-            // Reload if empty to show empty message
+            const rows = document.querySelectorAll(`[data-folder="${pid}"]`);
+            rows.forEach(row => row.remove());
+
             const tbody = document.getElementById('resultsBody');
-            if(tbody.children.length === 0) location.reload();
+            if (tbody.children.length === 0) location.reload();
         } else {
             alert("Error: " + (j.error || "Unknown error"));
         }
