@@ -73,16 +73,32 @@ def extract_id_or_date(filename):
 
 @app.route("/")
 def index():
+    """Serve the main dashboard."""
     return send_file("index.html")
 
 
 @app.route("/results")
 def results_page():
+    """Serve the results UI."""
     return send_file("results.html")
 
 
 @app.route("/api/config")
 def api_config():
+    """
+    Get basic runtime configuration.
+    ---
+    tags:
+      - Configuration
+    responses:
+      200:
+        description: Basic configuration values
+        schema:
+          type: object
+          properties:
+            stream_port:
+              type: integer
+    """
     return jsonify({"stream_port": 8889})
 
 
@@ -432,7 +448,23 @@ def api_delete_result(pid):
 
 @app.route("/download/<path:filename>")
 def download_file(filename):
-    """Download a file from the HQ output directory."""
+    """
+    Download a file from the HQ output directory.
+    ---
+    tags:
+      - Results
+    parameters:
+      - name: filename
+        in: path
+        type: string
+        required: true
+        description: Relative file path within the results directory
+    responses:
+      200:
+        description: File download
+      404:
+        description: Not found
+    """
     try:
         return send_from_directory(HQ_OUTPUT_DIR, filename, as_attachment=True)
     except Exception as e:
@@ -450,7 +482,23 @@ def vendor_file(filename):
 
 @app.route("/api/results/<pid>/download")
 def api_download_result(pid):
-    """Download a result folder as a ZIP archive."""
+    """
+    Download a result folder as a ZIP archive.
+    ---
+    tags:
+      - Results
+    parameters:
+      - name: pid
+        in: path
+        type: string
+        required: true
+        description: The Analysis ID to download
+    responses:
+      200:
+        description: ZIP archive of the result folder
+      404:
+        description: Not found
+    """
     try:
         if not pid or ".." in pid or "/" in pid:
             return jsonify({"error": "Invalid ID"}), 400

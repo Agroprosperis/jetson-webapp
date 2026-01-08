@@ -37,6 +37,27 @@ curl -X GET "http://localhost/api/cameras" \
 
 ---
 
+## Get basic runtime configuration.
+**GET** `/api/config`
+
+
+
+### Request Sample
+```shell
+curl -X GET "http://localhost/api/config" \
+  -H "accept: application/json" \
+```
+
+### Response
+**200 OK**: Basic configuration values
+```json
+{
+  "stream_port": 0
+}
+```
+
+---
+
 ## List available *.engine models.
 **GET** `/api/models`
 
@@ -133,6 +154,21 @@ curl -X DELETE "http://localhost/api/results/{pid}" \
 **200 OK**: Files deleted successfully
 ---
 
+## Download a result folder as a ZIP archive.
+**GET** `/api/results/{pid}/download`
+
+
+
+### Request Sample
+```shell
+curl -X GET "http://localhost/api/results/{pid}/download" \
+  -H "accept: application/json" \
+```
+
+### Response
+**200 OK**: ZIP archive of the result folder
+---
+
 ## Start the inference pipeline.
 **POST** `/api/start`
 
@@ -217,4 +253,19 @@ curl -X POST "http://localhost/api/upload" \
 }
 ```
 
+---
+
+## Download a file from the HQ output directory.
+**GET** `/download/{filename}`
+
+
+
+### Request Sample
+```shell
+curl -X GET "http://localhost/download/{filename}" \
+  -H "accept: application/json" \
+```
+
+### Response
+**200 OK**: File download
 ---
