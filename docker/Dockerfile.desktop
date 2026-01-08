@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y \
     gstreamer1.0-tools gstreamer1.0-libav \
     gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
     gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. Remove any prebuilt OpenCV wheels that come with Ultralytics
@@ -58,5 +59,11 @@ RUN python3 -m pip install --no-cache-dir \
 
 RUN python3 -m pip install  --no-cache-dir tensorrt
 RUN python3 -m pip install --no-cache-dir flasgger
+
+RUN mkdir -p /opt/web/vendor/glightbox /opt/web/vendor/sweetalert2 && \
+    curl -fsSL "https://cdn.jsdelivr.net/npm/glightbox/dist/css/glightbox.min.css" -o /opt/web/vendor/glightbox/glightbox.min.css && \
+    curl -fsSL "https://cdn.jsdelivr.net/npm/glightbox/dist/js/glightbox.min.js" -o /opt/web/vendor/glightbox/glightbox.min.js && \
+    curl -fsSL "https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css" -o /opt/web/vendor/sweetalert2/sweetalert2.min.css && \
+    curl -fsSL "https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.js" -o /opt/web/vendor/sweetalert2/sweetalert2.min.js
 
 WORKDIR /workspace

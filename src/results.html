@@ -4,7 +4,8 @@
 <meta charset='utf-8'/>
 <title>Analysis Results</title>
 <meta name='viewport' content='width=device-width,initial-scale=1'/>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/glightbox/dist/css/glightbox.min.css" />
+<link rel="stylesheet" href="/vendor/glightbox/glightbox.min.css" />
+<link rel="stylesheet" href="/vendor/sweetalert2/sweetalert2.min.css" />
 <style>
 body { margin:0; background:#111; color:#eee; font-family:system-ui, Segoe UI, Roboto, Arial; padding: 20px; }
 h1 { margin-bottom: 20px; font-weight: 300; }
@@ -20,6 +21,11 @@ a:hover { text-decoration: underline; }
     border-radius: 4px; cursor: pointer; font-size: 12px;
 }
 .btn-del:hover { background: #dc2626; }
+.btn-download {
+    background: #2563eb; color: white; border: none; padding: 6px 12px;
+    border-radius: 4px; cursor: pointer; font-size: 12px;
+}
+.btn-download:hover { background: #1d4ed8; }
 .empty { padding: 20px; text-align: center; color: #777; font-style: italic; }
 .back-link { display: inline-block; margin-bottom: 20px; color: #888; text-decoration: none; font-size: 14px;}
 .back-link:hover { color: #eee; }
@@ -92,7 +98,10 @@ async function loadResults() {
                     <div class="folder-line folder-toggle">
                         <span style="font-family:monospace;"><span class="folder-caret">▸</span>${item.id}</span>
                         <span class="folder-meta">${item.timestamp}</span>
-                        <button class="btn-del" onclick="deleteResult('${item.id}')">Remove</button>
+                        <span>
+                            <button class="btn-download" onclick="downloadResultZip('${item.id}')">Download ZIP</button>
+                            <button class="btn-del" onclick="deleteResult('${item.id}')">Remove</button>
+                        </span>
                     </div>
                 </td>
             `;
@@ -177,9 +186,48 @@ async function deleteResult(pid) {
     }
 }
 
+async function downloadResultZip(pid) {
+    try {
+        if (window.Swal) {
+            Swal.fire({
+                title: 'Preparing download',
+                text: 'Creating ZIP file...',
+                allowOutsideClick: false,
+                didOpen: () => Swal.showLoading(),
+            });
+        }
+
+        const res = await fetch(`/api/results/${encodeURIComponent(pid)}/download`);
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || 'Failed to download');
+        }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${pid}.zip`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+
+        if (window.Swal) {
+            Swal.close();
+        }
+    } catch (e) {
+        if (window.Swal) {
+            Swal.fire({ icon: 'error', title: 'Download failed', text: e.message });
+        } else {
+            alert("Failed to download: " + e.message);
+        }
+    }
+}
+
 window.onload = loadResults;
 </script>
-<script src="https://cdn.jsdelivr.net/npm/glightbox/dist/js/glightbox.min.js"></script>
+<script src="/vendor/glightbox/glightbox.min.js"></script>
+<script src="/vendor/sweetalert2/sweetalert2.min.js"></script>
 
 </body>
 </html>

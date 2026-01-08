@@ -5,6 +5,8 @@ import os
 import uuid
 import glob
 import shutil
+import io
+import zipfile
 import socket
 import re
 from datetime import datetime
@@ -22,6 +24,7 @@ LOGGER = logging.getLogger("app")
 CONFIG_FILEPATH = "/app/config.json"
 HQ_OUTPUT_DIR = "/app/output_hq"
 MODEL_DIR = "/app/model"
+VENDOR_DIR = "/opt/web/vendor"
 
 app = Flask(__name__)
 
@@ -434,6 +437,46 @@ def download_file(filename):
         return send_from_directory(HQ_OUTPUT_DIR, filename, as_attachment=True)
     except Exception as e:
         return jsonify({"error": str(e)}), 404
+
+
+@app.route("/vendor/<path:filename>")
+def vendor_file(filename):
+    """Serve bundled frontend assets."""
+    try:
+        return send_from_directory(VENDOR_DIR, filename)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 404
+
+
+@app.route("/api/results/<pid>/download")
+def api_download_result(pid):
+    """Download a result folder as a ZIP archive."""
+    try:
+        if not pid or ".." in pid or "/" in pid:
+            return jsonify({"error": "Invalid ID"}), 400
+
+        run_dir = os.path.join(HQ_OUTPUT_DIR, pid)
+        if not os.path.isdir(run_dir):
+            return jsonify({"error": "Not found"}), 404
+
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for root, _, files in os.walk(run_dir):
+                for name in files:
+                    full_path = os.path.join(root, name)
+                    rel_path = os.path.relpath(full_path, run_dir)
+                    zf.write(full_path, rel_path)
+
+        archive.seek(0)
+        return send_file(
+            archive,
+            mimetype="application/zip",
+            as_attachment=True,
+            download_name=f"{pid}.zip",
+        )
+    except Exception as e:
+        LOGGER.error(f"Failed to create zip for {pid}: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/start", methods=["POST"])
