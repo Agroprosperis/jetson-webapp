@@ -538,10 +538,43 @@ def inference_loop(frame_queue: queue.Queue, result_queue: queue.Queue, stop_eve
             .record("capture_queue", frame_queue.qsize()).record("output_queue", result_queue.qsize())
 
 
+def dump_screenshot(result, vis, hq_output_dir, pipeline_id, saved_track_ids) -> None:
+    for row in result:
+        track_id = int(row[4])
+        if track_id < 0 or track_id in saved_track_ids:
+            continue
+        
+        cv2.imwrite(
+            os.path.join(hq_output_dir, f"{pipeline_id}-{track_id:06d}.jpg"),
+            vis,
+            [cv2.IMWRITE_JPEG_QUALITY, 100],
+        )
+        saved_track_ids.add(track_id)
+
+
+def dump_csv_line(csv_writer, frame_count, pipeline_id, total_unique_objects, result) -> None:
+    if csv_writer is None:
+        return
+
+    detections_serialized = ""
+    det_parts = []
+    for row in result:
+        x0, y0, x1, y1 = row[:4]
+        conf_val = float(row[5])
+        cls_id = int(row[6])
+        det_parts.append(f"x0={int(x0)}_y0={int(y0)}_x1={int(x1)}_y1={int(y1)}_class={cls_id}_conf={conf_val:.3f}")
+    detections_serialized = "|".join(det_parts)
+
+    s_value = round((total_unique_objects * 1111.0) / 100.0, 1)
+    csv_writer.writerow([frame_count, pipeline_id, s_value, total_unique_objects, detections_serialized])
+
+
 def output_loop(result_queue: queue.Queue, stop_event: threading.Event, args) -> None:
     output_writer, csv_file, csv_writer = None, None, None
     frame_count = 0
     pipeline_id = getattr(args, "pipeline_id", "unknown")
+    hq_output_dir = getattr(args, "hq_output_dir", "/app")
+    saved_track_ids = set()
     try:
         while not stop_event.is_set():
             frame, result = result_queue.get()
@@ -558,10 +591,8 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, args) ->
             
             if output_writer is None:
                 h, w = frame.shape[:2]
-                hq_output_dir = getattr(args, "hq_output_dir", "/app")
                 os.makedirs(hq_output_dir, exist_ok=True)
-                hq_filename = f"{pipeline_id}.mkv"
-                hq_path = os.path.join(hq_output_dir, hq_filename)
+                hq_path = os.path.join(hq_output_dir, f"{pipeline_id}.mkv")
                 out_pipeline = build_rtsp_and_hq_gst(args.stream_host, args.stream_port, args.output_path, w, h, args.fps, hq_path)
                 output_writer = cv2.VideoWriter(out_pipeline, cv2.CAP_GSTREAMER, 0, args.fps, (w, h), True)
                 hq_csv_path = os.path.join(hq_output_dir, f"{pipeline_id}.csv")
@@ -569,20 +600,9 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, args) ->
                 csv_writer = csv.writer(csv_file)
                 csv_writer.writerow(["frame", "analysis_number", "s_value", "total_unique_objects", "detections"])
             
-            detections_serialized = ""
-            
-            if result is not None and len(result) > 0:
-                det_parts = []
-                for row in result:
-                    x0, y0, x1, y1 = row[:4]
-                    conf_val = float(row[5])
-                    cls_id = int(row[6])
-                    det_parts.append(f"x0={int(x0)}_y0={int(y0)}_x1={int(x1)}_y1={int(y1)}_class={cls_id}_conf={conf_val:.3f}")
-                detections_serialized = "|".join(det_parts)
-            
-            if csv_writer is not None:
-                s_value = round((total_unique_objects * 1111.0) / 100.0, 1)
-                csv_writer.writerow([frame_count, pipeline_id, s_value, total_unique_objects, detections_serialized])
+            safe_result = result if result is not None else []
+            dump_screenshot(safe_result, vis, hq_output_dir, pipeline_id, saved_track_ids)
+            dump_csv_line(csv_writer, frame_count, pipeline_id, total_unique_objects, safe_result)
             
             if output_writer is not None:
                 output_writer.write(vis)
