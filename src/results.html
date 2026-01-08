@@ -4,6 +4,7 @@
 <meta charset='utf-8'/>
 <title>Analysis Results</title>
 <meta name='viewport' content='width=device-width,initial-scale=1'/>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/glightbox/dist/css/glightbox.min.css" />
 <style>
 body { margin:0; background:#111; color:#eee; font-family:system-ui, Segoe UI, Roboto, Arial; padding: 20px; }
 h1 { margin-bottom: 20px; font-weight: 300; }
@@ -28,6 +29,11 @@ a:hover { text-decoration: underline; }
 .file-row td { padding-left: 28px; }
 .file-row { display: none; }
 .file-row.is-visible { display: table-row; }
+.gallery-row { display: none; }
+.gallery-row.is-visible { display: table-row; }
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; padding: 8px 0; }
+.gallery img { width: 100%; height: 90px; object-fit: cover; border-radius: 4px; border: 1px solid #333; }
+.gallery-empty { color: #777; font-style: italic; padding: 8px 0; }
 .folder-toggle { cursor: pointer; }
 .folder-caret { color: #888; margin-right: 8px; }
 .file-type { color: #888; text-transform: uppercase; font-size: 11px; letter-spacing: 0.04em; }
@@ -92,6 +98,22 @@ async function loadResults() {
             `;
             tbody.appendChild(folderRow);
 
+            const imageFiles = (item.files || []).filter(file => {
+                const ext = (file.name || '').split('.').pop().toLowerCase();
+                return ext === 'jpg' || ext === 'jpeg' || ext === 'png';
+            });
+            const galleryRow = document.createElement('tr');
+            galleryRow.className = 'gallery-row';
+            galleryRow.dataset.folder = item.id;
+            const galleryItems = imageFiles.length === 0
+                ? '<div class="gallery-empty">No screenshots</div>'
+                : imageFiles.map(file => {
+                    const fileUrl = `/download/${encodeURI(file.path)}`;
+                    return `<a class="gallery-link" href="${fileUrl}" data-gallery="run-${item.id}"><img src="${fileUrl}" loading="lazy" alt="${file.name}" /></a>`;
+                }).join('');
+            galleryRow.innerHTML = `<td colspan="4"><div class="gallery">${galleryItems}</div></td>`;
+            tbody.appendChild(galleryRow);
+
             (item.files || []).forEach(file => {
                 const tr = document.createElement('tr');
                 tr.className = 'file-row';
@@ -114,13 +136,19 @@ async function loadResults() {
 
             folderRow.addEventListener('click', (event) => {
                 if (event.target && event.target.closest('button')) return;
-                const rows = document.querySelectorAll(`.file-row[data-folder="${item.id}"]`);
+                const rows = document.querySelectorAll(
+                    `.file-row[data-folder="${item.id}"], .gallery-row[data-folder="${item.id}"]`
+                );
                 const caret = folderRow.querySelector('.folder-caret');
                 const isVisible = rows.length > 0 && rows[0].classList.contains('is-visible');
                 rows.forEach(row => row.classList.toggle('is-visible', !isVisible));
                 if (caret) caret.textContent = isVisible ? '▸' : '▾';
             });
         });
+
+        if (window.GLightbox) {
+            GLightbox({ selector: '.gallery-link' });
+        }
 
     } catch(e) {
         document.getElementById('loading').textContent = 'Error loading results.';
@@ -151,6 +179,7 @@ async function deleteResult(pid) {
 
 window.onload = loadResults;
 </script>
+<script src="https://cdn.jsdelivr.net/npm/glightbox/dist/js/glightbox.min.js"></script>
 
 </body>
 </html>
