@@ -155,12 +155,16 @@ def visualize_frame_with_supervision(
 def build_labels_from_tracks(detections: sv.Detections, args) -> list[str]:
     names = getattr(args, "class_names", None)
     labels = []
+    tracker_ids = detections.tracker_id
 
     for i in range(len(detections)):
         cls_id = int(detections.class_id[i]) if detections.class_id is not None else 0
         conf = float(detections.confidence[i]) if detections.confidence is not None else 1.0
-
         name = names[cls_id] if names is not None and cls_id < len(names) else str(cls_id)
-        labels.append(f"{name} {conf:.2f}")
+        if tracker_ids is not None:
+            track_id = int(tracker_ids[i])
+            labels.append(f"{name} {conf:.2f} id:{track_id}")
+        else:
+            labels.append(f"{name} {conf:.2f}")
 
     return labels

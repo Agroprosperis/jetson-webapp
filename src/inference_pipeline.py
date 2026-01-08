@@ -538,14 +538,22 @@ def inference_loop(frame_queue: queue.Queue, result_queue: queue.Queue, stop_eve
             .record("capture_queue", frame_queue.qsize()).record("output_queue", result_queue.qsize())
 
 
-def dump_screenshot(result, vis, hq_output_dir, pipeline_id, saved_track_ids) -> None:
+def dump_screenshot(result, vis, hq_output_dir, pipeline_id, saved_track_ids, frame_count, fps) -> None:
+    if fps and fps > 0:
+        frame_ts_ms = int(round((frame_count - 1) * 1000.0 / fps))
+    else:
+        frame_ts_ms = 0
+
     for row in result:
         track_id = int(row[4])
         if track_id < 0 or track_id in saved_track_ids:
             continue
         
         cv2.imwrite(
-            os.path.join(hq_output_dir, f"{pipeline_id}-{track_id:06d}.jpg"),
+            os.path.join(
+                hq_output_dir,
+                f"{pipeline_id}-fn-{frame_count:06d}-ms-{frame_ts_ms:06d}-oid-{track_id:06d}.jpg",
+            ),
             vis,
             [cv2.IMWRITE_JPEG_QUALITY, 100],
         )
@@ -575,6 +583,7 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, args) ->
     pipeline_id = getattr(args, "pipeline_id", "unknown")
     hq_output_dir = getattr(args, "hq_output_dir", "/app")
     saved_track_ids = set()
+    fps = getattr(args, "fps", 0)
     try:
         while not stop_event.is_set():
             frame, result = result_queue.get()
@@ -601,7 +610,7 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, args) ->
                 csv_writer.writerow(["frame", "analysis_number", "s_value", "total_unique_objects", "detections"])
             
             safe_result = result if result is not None else []
-            dump_screenshot(safe_result, vis, hq_output_dir, pipeline_id, saved_track_ids)
+            dump_screenshot(safe_result, vis, hq_output_dir, pipeline_id, saved_track_ids, frame_count, fps)
             dump_csv_line(csv_writer, frame_count, pipeline_id, total_unique_objects, safe_result)
             
             if output_writer is not None:
