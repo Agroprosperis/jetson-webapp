@@ -26,6 +26,10 @@ a:hover { text-decoration: underline; }
 .folder-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .folder-meta { color: #888; font-weight: 400; font-size: 12px; }
 .file-row td { padding-left: 28px; }
+.file-row { display: none; }
+.file-row.is-visible { display: table-row; }
+.folder-toggle { cursor: pointer; }
+.folder-caret { color: #888; margin-right: 8px; }
 .file-type { color: #888; text-transform: uppercase; font-size: 11px; letter-spacing: 0.04em; }
 </style>
 </head>
@@ -79,8 +83,8 @@ async function loadResults() {
             folderRow.dataset.folder = item.id;
             folderRow.innerHTML = `
                 <td colspan="4">
-                    <div class="folder-line">
-                        <span style="font-family:monospace;">${item.id}</span>
+                    <div class="folder-line folder-toggle">
+                        <span style="font-family:monospace;"><span class="folder-caret">▸</span>${item.id}</span>
                         <span class="folder-meta">${item.timestamp}</span>
                         <button class="btn-del" onclick="deleteResult('${item.id}')">Remove</button>
                     </div>
@@ -106,6 +110,15 @@ async function loadResults() {
                     <td><a href="${fileUrl}" download>Download</a></td>
                 `;
                 tbody.appendChild(tr);
+            });
+
+            folderRow.addEventListener('click', (event) => {
+                if (event.target && event.target.closest('button')) return;
+                const rows = document.querySelectorAll(`.file-row[data-folder="${item.id}"]`);
+                const caret = folderRow.querySelector('.folder-caret');
+                const isVisible = rows.length > 0 && rows[0].classList.contains('is-visible');
+                rows.forEach(row => row.classList.toggle('is-visible', !isVisible));
+                if (caret) caret.textContent = isVisible ? '▸' : '▾';
             });
         });
 
