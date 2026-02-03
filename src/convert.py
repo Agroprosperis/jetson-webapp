@@ -3,6 +3,7 @@ import glob
 import subprocess
 import sys
 import shutil
+import argparse
 
 # 1. Ensure rfdetr is installed
 try:
@@ -156,15 +157,28 @@ def load_and_export(pt_file, output_path):
         traceback.print_exc()
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", help="Path to a single .pt model to compile")
+    args = parser.parse_args()
+
     model_dir = "/app/model/rf"
-    
+    if args.model:
+        model_dir = os.path.dirname(args.model) or model_dir
+
     # Safety check for mount
     if not os.path.exists(model_dir):
         print(f"ERROR: {model_dir} does not exist.")
         print("Did you forget to mount your models? (-v /local/path:/app/model/rf)")
         sys.exit(1)
 
-    files = glob.glob(os.path.join(model_dir, "*.pt"))
+    if args.model:
+        if not os.path.exists(args.model):
+            print(f"ERROR: {args.model} does not exist.")
+            sys.exit(1)
+        files = [args.model]
+    else:
+        files = glob.glob(os.path.join(model_dir, "*.pt"))
+
     if not files:
         print(f"No .pt files found in {model_dir}")
         return
@@ -173,12 +187,12 @@ def main():
 
     for pt_file in files:
         base = os.path.splitext(os.path.basename(pt_file))[0]
-        out_name = os.path.join(model_dir, f"{base}-fp16.engine")
-        
+        out_name = os.path.join(os.path.dirname(pt_file), f"{base}-fp16.engine")
+
         if os.path.exists(out_name):
             print(f"Skipping {out_name} (already exists)")
             continue
-            
+
         load_and_export(pt_file, out_name)
 
 if __name__ == "__main__":

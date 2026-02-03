@@ -9,7 +9,11 @@ import io
 import zipfile
 import socket
 import re
+import sys
+import threading
+import subprocess
 from datetime import datetime
+from collections import deque
 
 import cv2
 import requests
@@ -43,6 +47,112 @@ pipeline = None  # type: StreamPipeline | None
 current_config = {}
 last_error = None  # type: str | None
 pipeline_id = None  # type: str | None
+compile_jobs = {}
+compile_jobs_lock = threading.Lock()
+
+
+def _append_compile_log(job_id, line):
+    with compile_jobs_lock:
+        job = compile_jobs.get(job_id)
+        if job is None:
+            return
+        job["logs"].append(line)
+
+
+def _run_compile_job(job_id, command, cwd=None):
+    with compile_jobs_lock:
+        job = compile_jobs.get(job_id)
+        if job is None:
+            return
+        job["status"] = "running"
+        job["started_at"] = datetime.utcnow().isoformat() + "Z"
+        job["command"] = command
+
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True,
+        )
+    except Exception as exc:
+        _append_compile_log(job_id, f"Failed to start compile: {exc}")
+        with compile_jobs_lock:
+            job = compile_jobs.get(job_id)
+            if job is not None:
+                job["status"] = "error"
+                job["finished_at"] = datetime.utcnow().isoformat() + "Z"
+                job["returncode"] = None
+        return
+
+    try:
+        for line in process.stdout:
+            if line:
+                _append_compile_log(job_id, line.rstrip())
+    except Exception as exc:
+        _append_compile_log(job_id, f"Error reading output: {exc}")
+
+    process.wait()
+    with compile_jobs_lock:
+        job = compile_jobs.get(job_id)
+        if job is not None:
+            job["returncode"] = process.returncode
+            job["finished_at"] = datetime.utcnow().isoformat() + "Z"
+            job["status"] = "done" if process.returncode == 0 else "error"
+
+
+def build_model_catalog():
+    model_map = {}
+    model_types = ["ul", "rf"]
+    model_exts = [".onnx", ".pt"]
+
+    for model_type in model_types:
+        base_dir = os.path.join(MODEL_DIR, model_type)
+        if not os.path.isdir(base_dir):
+            continue
+
+        for ext in model_exts:
+            for path in glob.glob(os.path.join(base_dir, f"*{ext}")):
+                filename = os.path.basename(path)
+                base = os.path.splitext(filename)[0]
+                key = (model_type, base)
+                entry = model_map.get(key)
+                if entry is None:
+                    entry = {
+                        "name": base,
+                        "type": model_type,
+                        "sources": [],
+                        "source_paths": [],
+                    }
+                    model_map[key] = entry
+
+                entry["sources"].append(ext.lstrip("."))
+                entry["source_paths"].append(path)
+
+    models = []
+    for (model_type, base), entry in sorted(model_map.items(), key=lambda item: item[0]):
+        base_dir = os.path.join(MODEL_DIR, model_type)
+        engine_name = f"{base}.engine"
+        engine_path = os.path.join(base_dir, engine_name)
+        engine = None
+
+        if os.path.exists(engine_path):
+            engine = {"name": engine_name, "path": engine_path}
+        elif not base.endswith("-fp16"):
+            fp16_name = f"{base}-fp16.engine"
+            fp16_path = os.path.join(base_dir, fp16_name)
+            if os.path.exists(fp16_path):
+                engine = {"name": fp16_name, "path": fp16_path}
+
+        entry["engine"] = engine
+        entry["compiled"] = engine is not None
+        entry["display"] = f"[{model_type.upper()}] {base}"
+        models.append(entry)
+
+    return models
 
 
 def is_pipeline_running():
@@ -81,6 +191,12 @@ def index():
 def results_page():
     """Serve the results UI."""
     return send_file("results.html")
+
+
+@app.route("/models")
+def models_page():
+    """Serve the models catalog UI."""
+    return send_file("models.html")
 
 
 @app.route("/api/config")
@@ -152,6 +268,156 @@ def api_models():
     except Exception as e:
         LOGGER.error(f"Failed to list models: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/model-catalog")
+def api_model_catalog():
+    """
+    List available model sources and their TensorRT engines (if compiled).
+    ---
+    tags:
+      - Configuration
+    responses:
+      200:
+        description: List of model files and their TensorRT engines
+        schema:
+          type: object
+          properties:
+            models:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  type:
+                    type: string
+                  sources:
+                    type: array
+                    items:
+                      type: string
+                  source_paths:
+                    type: array
+                    items:
+                      type: string
+                  engine:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      path:
+                        type: string
+                  compiled:
+                    type: boolean
+    """
+    try:
+        return jsonify({"models": build_model_catalog()})
+    except Exception as e:
+        LOGGER.error(f"Failed to list model catalog: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/model-compile", methods=["POST"])
+def api_model_compile():
+    """
+    Start async model compilation to TensorRT (FP16).
+    ---
+    tags:
+      - Configuration
+    consumes:
+      - application/json
+    responses:
+      200:
+        description: Compile job queued
+    """
+    payload = request.get_json(silent=True) or {}
+    model_type = payload.get("type")
+    model_name = payload.get("name")
+
+    if model_type not in ("ul", "rf") or not model_name:
+        return jsonify({"error": "Invalid model type or name."}), 400
+
+    catalog = build_model_catalog()
+    entry = next(
+        (item for item in catalog if item["type"] == model_type and item["name"] == model_name),
+        None,
+    )
+    if entry is None:
+        return jsonify({"error": "Model not found."}), 404
+
+    if entry.get("compiled"):
+        return jsonify({"error": "Model already compiled."}), 400
+
+    source_paths = entry.get("source_paths", [])
+    source_pt = next((p for p in source_paths if p.endswith(".pt")), None)
+    if not source_pt:
+        return jsonify({"error": "No .pt source found for compilation."}), 400
+
+    if model_type == "ul":
+        command = [
+            "yolo",
+            "export",
+            "format=engine",
+            f"model={source_pt}",
+            "imgsz=640",
+            "half",
+        ]
+    else:
+        command = [sys.executable, "/app/convert.py", "--model", source_pt]
+
+    job_id = uuid.uuid4().hex
+    with compile_jobs_lock:
+        compile_jobs[job_id] = {
+            "id": job_id,
+            "status": "queued",
+            "logs": deque(maxlen=500),
+            "created_at": datetime.utcnow().isoformat() + "Z",
+            "model": {
+                "type": model_type,
+                "name": model_name,
+                "source": source_pt,
+            },
+        }
+
+    thread = threading.Thread(
+        target=_run_compile_job,
+        args=(job_id, command, "/app"),
+        daemon=True,
+    )
+    thread.start()
+
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/model-compile/<job_id>")
+def api_model_compile_status(job_id):
+    """
+    Get compile job status and logs.
+    ---
+    tags:
+      - Configuration
+    responses:
+      200:
+        description: Compile job status
+    """
+    with compile_jobs_lock:
+        job = compile_jobs.get(job_id)
+        if job is None:
+            return jsonify({"error": "Job not found."}), 404
+
+        return jsonify(
+            {
+                "id": job["id"],
+                "status": job["status"],
+                "created_at": job.get("created_at"),
+                "started_at": job.get("started_at"),
+                "finished_at": job.get("finished_at"),
+                "returncode": job.get("returncode"),
+                "command": job.get("command"),
+                "model": job.get("model"),
+                "logs": list(job.get("logs", [])),
+            }
+        )
 
 
 @app.route("/api/cameras")
