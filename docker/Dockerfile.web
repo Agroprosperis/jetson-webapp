@@ -1,0 +1,6 @@
+FROM opencv-gst:latest
+
+WORKDIR /app
+COPY src/ /app/
+
+CMD ["python", "/app/app.py"]
