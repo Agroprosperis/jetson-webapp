@@ -1,0 +1,15 @@
+[Unit]
+Description=Tilletia App Stack
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=__DEPLOY_DIR__/start.sh
+ExecStop=__DEPLOY_DIR__/stop.sh
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,27 @@
+services:
+  tilletia-app-mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: tilletia-app-mediamtx
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ${MEDIAMTX_CONFIG_PATH:-/etc/tilletia-app/mediamtx.yml}:/mediamtx.yml:ro
+
+  tilletia-app-web:
+    image: tilletia-app-web:latest
+    container_name: tilletia-app-web
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.web
+    command: ["python", "/app/app.py"]
+    network_mode: host
+    restart: unless-stopped
+    runtime: nvidia
+    privileged: true
+    environment:
+      - NVIDIA_DRIVER_CAPABILITIES=all
+    volumes:
+      - /dev:/dev
+      - ${TILLETIA_DATA_ROOT:-/var/lib/tilletia-app}/model:/app/model
+      - ${TILLETIA_DATA_ROOT:-/var/lib/tilletia-app}/output_hq:/app/output_hq
+      - ${TILLETIA_DATA_ROOT:-/var/lib/tilletia-app}/runs:/app/runs
