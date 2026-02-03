@@ -54,9 +54,8 @@ class V4L2StreamReader(StreamReader):
 
     @staticmethod
     def _build_v4l2_gst_pipeline(device: str, width: int, height: int, fps: int, pixel_format: str) -> str:
-        # Determine caps based on requested format
-        # Note: On Jetson, 'image/jpeg' is standard for USB MJPEG cams.
-        # 'video/x-raw' is used for YUYV/UYVY.
+        # Determine caps based on requested format:
+        # 'image/jpeg' for MJPEG cameras, 'video/x-raw' for uncompressed formats.
         
         if pixel_format == "MJPG" or pixel_format == "MJPEG":
             caps = f"image/jpeg,width={width},height={height},framerate={fps}/1"

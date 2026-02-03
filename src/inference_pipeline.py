@@ -136,7 +136,7 @@ class BotSortTrackerBackend(InferenceBackend):
 
         tracker = BOTSORT(argparse.Namespace(**self.tracker_cfg), frame_rate=args.fps)
         scale_factor = max(max(frame_shape) // 640, 1)
-        tracker.gmc = JetsonOptimizedGMC(downscale=scale_factor)
+        tracker.gmc = OptimizedGMC(downscale=scale_factor)
         
         LOGGER.info(f'Tracker initialized. Scaling is {scale_factor}')
         return tracker
@@ -211,9 +211,9 @@ class BotSortTrackerBackend(InferenceBackend):
         return tracks, time.perf_counter() - start_time
 
 
-class JetsonOptimizedGMC(GMC):
+class OptimizedGMC(GMC):
     """
-    Optimized GMC for Jetson/Microscopy.
+    Optimized GMC for desktop microscopy workloads.
     - Uses sparseOptFlow with increased search depth (maxLevel=6)
     - Fixes coordinate scaling bug
     - Exposes flow points for external debug visualization
@@ -452,18 +452,6 @@ class ModelManager:
             self.current_model_path = requested_path
 
         return self.current_backend.predict(frame, args)
-
-
-def is_jetson():
-    try:
-        if os.path.exists("/proc/device-tree/model"):
-            with open("/proc/device-tree/model", "r") as f:
-                model = f.read().lower()
-                return "nvidia" in model or "jetson" in model
-    except Exception:
-        pass
-    return False
-
 
 def build_rtsp_and_hq_gst(host: str, port: int, path: str, width: int, height: int, fps: int, hq_path: str) -> str:
     bitrate_kbit = 8000

@@ -12,6 +12,7 @@ import re
 import sys
 import threading
 import subprocess
+import time
 from datetime import datetime
 from collections import deque
 
@@ -34,7 +35,7 @@ app = Flask(__name__)
 
 # --- SWAGGER CONFIGURATION ---
 app.config['SWAGGER'] = {
-    'title': 'Jetson Inference Pipeline API',
+    'title': 'Desktop Inference Pipeline API',
     'uiversion': 3,
     'specs_route': '/api/docs/'  # The URL where Swagger UI will be available
 }
@@ -59,6 +60,90 @@ def _append_compile_log(job_id, line):
         job["logs"].append(line)
 
 
+def _find_active_job_for_model(model_type, model_name):
+    active_states = {"queued", "running"}
+    selected = None
+    for job in compile_jobs.values():
+        model = job.get("model") or {}
+        if model.get("type") != model_type or model.get("name") != model_name:
+            continue
+        if job.get("status") not in active_states:
+            continue
+        created = job.get("created_at", "")
+        if selected is None or created > selected.get("created_at", ""):
+            selected = job
+    return selected
+
+
+def _normalize_ul_engine_output(job_id):
+    with compile_jobs_lock:
+        job = compile_jobs.get(job_id)
+        if job is None:
+            return
+        model = job.get("model", {})
+        source_pt = model.get("source")
+        started_ts = job.get("started_ts", time.time())
+
+    if not source_pt:
+        return
+
+    source_dir = os.path.dirname(source_pt)
+    source_base = os.path.splitext(os.path.basename(source_pt))[0]
+    expected_engine = os.path.join(source_dir, f"{source_base}.engine")
+    if os.path.exists(expected_engine):
+        _append_compile_log(job_id, f"Engine ready: {expected_engine}")
+        return
+
+    candidates = []
+    search_patterns = [
+        os.path.join(source_dir, "*.engine"),
+        "/app/*.engine",
+        "/app/runs/**/*.engine",
+    ]
+    for pattern in search_patterns:
+        for path in glob.glob(pattern, recursive=True):
+            if not os.path.isfile(path):
+                continue
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                continue
+            if mtime + 2 < started_ts:
+                continue
+            score = 0
+            filename = os.path.basename(path)
+            if source_base in filename:
+                score += 10
+            if path.startswith(source_dir):
+                score += 5
+            candidates.append((score, mtime, path))
+
+    if not candidates:
+        _append_compile_log(
+            job_id,
+            "Compile finished, but no engine artifact was found in expected paths.",
+        )
+        return
+
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    best_path = candidates[0][2]
+    if best_path == expected_engine:
+        _append_compile_log(job_id, f"Engine ready: {expected_engine}")
+        return
+
+    try:
+        shutil.move(best_path, expected_engine)
+        _append_compile_log(
+            job_id,
+            f"Moved engine artifact to model folder: {expected_engine}",
+        )
+    except Exception as exc:
+        _append_compile_log(
+            job_id,
+            f"Failed to move engine artifact to {expected_engine}: {exc}",
+        )
+
+
 def _run_compile_job(job_id, command, cwd=None):
     with compile_jobs_lock:
         job = compile_jobs.get(job_id)
@@ -66,6 +151,7 @@ def _run_compile_job(job_id, command, cwd=None):
             return
         job["status"] = "running"
         job["started_at"] = datetime.utcnow().isoformat() + "Z"
+        job["started_ts"] = time.time()
         job["command"] = command
 
     try:
@@ -88,14 +174,35 @@ def _run_compile_job(job_id, command, cwd=None):
                 job["returncode"] = None
         return
 
+    total_lines = 0
+    last_heartbeat = time.time()
     try:
         for line in process.stdout:
             if line:
-                _append_compile_log(job_id, line.rstrip())
+                total_lines += 1
+                clean = line.rstrip()
+                _append_compile_log(job_id, clean)
+
+                now = time.time()
+                if now - last_heartbeat >= 15:
+                    with compile_jobs_lock:
+                        job = compile_jobs.get(job_id)
+                        started_ts = (job or {}).get("started_ts", now)
+                    elapsed = int(now - started_ts)
+                    _append_compile_log(
+                        job_id,
+                        f"[still running] {elapsed}s elapsed, processed {total_lines} output lines",
+                    )
+                    last_heartbeat = now
     except Exception as exc:
         _append_compile_log(job_id, f"Error reading output: {exc}")
 
     process.wait()
+    with compile_jobs_lock:
+        model_type = (compile_jobs.get(job_id) or {}).get("model", {}).get("type")
+    if process.returncode == 0 and model_type == "ul":
+        _normalize_ul_engine_output(job_id)
+
     with compile_jobs_lock:
         job = compile_jobs.get(job_id)
         if job is not None:
@@ -131,6 +238,17 @@ def build_model_catalog():
 
                 entry["sources"].append(ext.lstrip("."))
                 entry["source_paths"].append(path)
+        for path in glob.glob(os.path.join(base_dir, "*.engine")):
+            filename = os.path.basename(path)
+            base = os.path.splitext(filename)[0]
+            key = (model_type, base)
+            if key not in model_map:
+                model_map[key] = {
+                    "name": base,
+                    "type": model_type,
+                    "sources": [],
+                    "source_paths": [],
+                }
 
     models = []
     for (model_type, base), entry in sorted(model_map.items(), key=lambda item: item[0]):
@@ -247,8 +365,8 @@ def api_models():
         models = []
         # Search in UL and RF folders for engine files
         search_paths = [
-            os.path.join(MODEL_DIR, "ul", "*fp16.engine"),
-            os.path.join(MODEL_DIR, "rf", "*.engine") 
+            os.path.join(MODEL_DIR, "ul", "*.engine"),
+            os.path.join(MODEL_DIR, "rf", "*.engine")
         ]
         
         for p in search_paths:
@@ -348,6 +466,11 @@ def api_model_compile():
     if entry.get("compiled"):
         return jsonify({"error": "Model already compiled."}), 400
 
+    with compile_jobs_lock:
+        existing_job = _find_active_job_for_model(model_type, model_name)
+        if existing_job is not None:
+            return jsonify({"job_id": existing_job["id"], "already_running": True})
+
     source_paths = entry.get("source_paths", [])
     source_pt = next((p for p in source_paths if p.endswith(".pt")), None)
     if not source_pt:
@@ -387,6 +510,35 @@ def api_model_compile():
     thread.start()
 
     return jsonify({"job_id": job_id})
+
+
+@app.route("/api/model-compile-jobs")
+def api_model_compile_jobs():
+    """
+    List compile jobs for UI restore after close/refresh.
+    ---
+    tags:
+      - Configuration
+    responses:
+      200:
+        description: Compile job list
+    """
+    with compile_jobs_lock:
+        jobs = []
+        for job in compile_jobs.values():
+            jobs.append(
+                {
+                    "id": job["id"],
+                    "status": job.get("status"),
+                    "created_at": job.get("created_at"),
+                    "started_at": job.get("started_at"),
+                    "finished_at": job.get("finished_at"),
+                    "returncode": job.get("returncode"),
+                    "model": job.get("model"),
+                }
+            )
+    jobs.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    return jsonify({"jobs": jobs})
 
 
 @app.route("/api/model-compile/<job_id>")

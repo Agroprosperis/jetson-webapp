@@ -1,4 +1,4 @@
-# Jetson Inference Pipeline API
+# Desktop Inference Pipeline API
 
 **Version:** 0.0.1
 
@@ -56,6 +56,88 @@ curl -X GET "http://localhost/api/config" \
 }
 ```
 
+---
+
+## List available model sources and their TensorRT engines (if compiled).
+**GET** `/api/model-catalog`
+
+
+
+### Request Sample
+```shell
+curl -X GET "http://localhost/api/model-catalog" \
+  -H "accept: application/json" \
+```
+
+### Response
+**200 OK**: List of model files and their TensorRT engines
+```json
+{
+  "models": [
+    {
+      "compiled": true,
+      "engine": {
+        "name": "string",
+        "path": "string"
+      },
+      "name": "string",
+      "source_paths": [
+        "string"
+      ],
+      "sources": [
+        "string"
+      ],
+      "type": "string"
+    }
+  ]
+}
+```
+
+---
+
+## Start async model compilation to TensorRT (FP16).
+**POST** `/api/model-compile`
+
+
+
+### Request Sample
+```shell
+curl -X POST "http://localhost/api/model-compile" \
+  -H "accept: application/json" \
+```
+
+### Response
+**200 OK**: Compile job queued
+---
+
+## List compile jobs for UI restore after close/refresh.
+**GET** `/api/model-compile-jobs`
+
+
+
+### Request Sample
+```shell
+curl -X GET "http://localhost/api/model-compile-jobs" \
+  -H "accept: application/json" \
+```
+
+### Response
+**200 OK**: Compile job list
+---
+
+## Get compile job status and logs.
+**GET** `/api/model-compile/{job_id}`
+
+
+
+### Request Sample
+```shell
+curl -X GET "http://localhost/api/model-compile/{job_id}" \
+  -H "accept: application/json" \
+```
+
+### Response
+**200 OK**: Compile job status
 ---
 
 ## List available *.engine models.

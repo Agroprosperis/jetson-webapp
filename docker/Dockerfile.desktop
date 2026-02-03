@@ -1,5 +1,4 @@
 FROM ultralytics/ultralytics:latest
-#FROM ultralytics/ultralytics:latest-jetson-jetpack6
 
 ENV DEBIAN_FRONTEND=noninteractive
 

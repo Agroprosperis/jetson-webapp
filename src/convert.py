@@ -28,8 +28,7 @@ except ImportError:
         print(f"SUCCESS: Installed TensorRT {trt.__version__}")
     except Exception as e:
         print("\nCRITICAL ERROR: Could not install 'tensorrt' python package.")
-        print("On Jetson, this usually requires: sudo apt-get install python3-libnvinfer")
-        print("On Desktop, this requires network access to PyPI.")
+        print("Desktop setup requires network access to PyPI to install TensorRT.")
         print(f"Error details: {e}")
         sys.exit(1)
 
