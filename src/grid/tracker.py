@@ -20,6 +20,7 @@ class GridTracker:
         track_memory_min_conf: float = 0.05,
         track_align_max_corr_px: float = 6.0,
         track_align_min_cands: int = 2,
+        track_flow_min_side_px: int = 320,
     ) -> None:
         """
         Initialize the grid tracker.
@@ -52,6 +53,9 @@ class GridTracker:
                 allowed for the tracker-to-candidate alignment shift.
             track_align_min_cands: Minimum number of current candidates needed
                 before alignment correction is estimated.
+            track_flow_min_side_px: Short-side resolution used for the
+                optical-flow pass. The estimated motion is scaled back to the
+                analysis frame size before it is applied to tracks.
         """
         self._track_match_max_dist_px = track_match_max_dist_px
         self._track_shift_max_px = track_shift_max_px
@@ -65,19 +69,27 @@ class GridTracker:
         self._track_memory_min_conf = track_memory_min_conf
         self._track_align_max_corr_px = track_align_max_corr_px
         self._track_align_min_cands = track_align_min_cands
+        self._track_flow_min_side_px = max(int(track_flow_min_side_px), 0)
         self._state: dict[str, dict[str, any]] = {
             "vertical": {"tracks": [], "next_id": 1, "frames_seen": 0},
             "horizontal": {"tracks": [], "next_id": 1, "frames_seen": 0},
         }
         self._prev_gray: np.ndarray | None = None
 
+    @property
+    def warmup_frames(self) -> int:
+        return int(self._track_warmup_frames)
+
     def __call__(
         self,
         clustered_lines: list[dict[str, any]],
         analysis_gray: np.ndarray,
     ) -> dict[str, any]:
-        flow_dx, flow_dy = self._estimate_optical_flow_shift(self._prev_gray, analysis_gray)
-        self._prev_gray = analysis_gray.copy()
+        flow_gray, flow_scale_x, flow_scale_y = self._prepare_flow_frame(analysis_gray)
+        flow_dx, flow_dy = self._estimate_optical_flow_shift(self._prev_gray, flow_gray)
+        flow_dx = self._clamp(flow_dx * flow_scale_x, -self._track_shift_max_px, self._track_shift_max_px)
+        flow_dy = self._clamp(flow_dy * flow_scale_y, -self._track_shift_max_px, self._track_shift_max_px)
+        self._prev_gray = flow_gray.copy()
         predicted: dict[str, list[dict[str, any]]] = {}
         reference: dict[str, list[dict[str, any]]] = {}
         
@@ -93,6 +105,25 @@ class GridTracker:
             "reference": reference,
             "flow_shift": {"dx": float(flow_dx), "dy": float(flow_dy)},
         }
+
+    def _prepare_flow_frame(
+        self,
+        analysis_gray: np.ndarray,
+    ) -> tuple[np.ndarray, float, float]:
+        height, width = analysis_gray.shape[:2]
+        short_side = min(height, width)
+        target_min_side = self._track_flow_min_side_px
+
+        if target_min_side <= 0 or short_side <= 0 or short_side <= target_min_side:
+            return analysis_gray, 1.0, 1.0
+
+        scale = float(target_min_side) / float(short_side)
+        resized_w = max(1, int(round(width * scale)))
+        resized_h = max(1, int(round(height * scale)))
+        resized = cv2.resize(analysis_gray, (resized_w, resized_h), interpolation=cv2.INTER_AREA)
+        scale_x = float(width) / float(resized_w)
+        scale_y = float(height) / float(resized_h)
+        return resized, scale_x, scale_y
 
     def _update_orientation(
         self,
@@ -280,8 +311,6 @@ class GridTracker:
             dx = self._median_value([float(curr[0] - prev[0]) for prev, curr in zip(tracked_prev, tracked_curr)])
             dy = self._median_value([float(curr[1] - prev[1]) for prev, curr in zip(tracked_prev, tracked_curr)])
         
-        dx = self._clamp(dx, -self._track_shift_max_px, self._track_shift_max_px)
-        dy = self._clamp(dy, -self._track_shift_max_px, self._track_shift_max_px)
         return dx, dy
 
     def _median_value(self, values: list[float]) -> float:

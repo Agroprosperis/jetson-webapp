@@ -17,7 +17,10 @@ CUMULATIVE_OBJECTS: int = 0
 LOGGER = logging.getLogger("visualization")
 
 
-def _update_cumulative_objects(detections: sv.Detections) -> int:
+def _update_cumulative_objects(
+    detections: sv.Detections,
+    allowed_track_ids: set[int] | None = None,
+) -> int:
     """
     Cumulative unique objects over the whole run.
     Uses tracker IDs if available (preferred), otherwise falls back to
@@ -34,6 +37,8 @@ def _update_cumulative_objects(detections: sv.Detections) -> int:
     if tracker_ids is not None:
         ids = np.asarray(tracker_ids)
         ids = ids[ids >= 0]
+        if allowed_track_ids is not None:
+            ids = np.asarray([track_id for track_id in ids.tolist() if int(track_id) in allowed_track_ids])
         if ids.size == 0:
             return CUMULATIVE_OBJECTS
 
@@ -120,11 +125,13 @@ def visualize_frame_with_supervision(
     frame: np.ndarray,
     tracks: np.ndarray,
     args,
+    count_track_ids: set[int] | None = None,
 ) -> np.ndarray:
     vis = frame.copy()
 
     # convert tracker output to supervision.Detections
-    detections = tracks_to_sv_detections(tracks)
+    all_detections = tracks_to_sv_detections(tracks)
+    detections = all_detections
 
     vis_conf = getattr(args, "vis_conf", 0.75)
     vis_strategy = getattr(args, "vis_strategy", "confidence")
@@ -142,7 +149,7 @@ def visualize_frame_with_supervision(
         vis = BOX_ANNOTATOR.annotate(vis, detections)
         vis = LABEL_ANNOTATOR.annotate(vis, detections, labels=labels)
 
-    cumulative_count = _update_cumulative_objects(detections)
+    cumulative_count = _update_cumulative_objects(all_detections, allowed_track_ids=count_track_ids)
     s_metric = round((cumulative_count * 1111. / 100.), 1)
     
     p_id = getattr(args, "pipeline_id", "unknown")

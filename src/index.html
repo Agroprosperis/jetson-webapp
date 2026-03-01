@@ -35,7 +35,7 @@ header {
 }
 
 /* Standard Elements */
-input, select, button {
+input:not([type="checkbox"]), select, button {
   padding: 6px 10px;
   border-radius: 6px;
   border: 1px solid #333;
@@ -43,6 +43,8 @@ input, select, button {
   color: #eee;
   font-size: 13px;
 }
+
+input[type="checkbox"] { accent-color: #eab308; }
 
 button { cursor: pointer; transition: transform .06s ease, opacity .2s; }
 button:active { transform: scale(0.98); }
@@ -131,6 +133,11 @@ select { border: 1px solid #444; }
         <input id="confThreshold" type="number" min="0.1" max="1.0" step="0.05" value="0.75" style="width: 100px;" title="Detection Confidence Threshold"/>
     </div>
 
+    <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:#ddd;">
+      <input id="gridEnabled" type="checkbox" checked />
+      Grid
+    </label>
+
     <div style="flex:1"></div> <button id='run' class="btn-primary" style="min-width: 80px;">Run</button>
     <button id='stop' type='button' style="min-width: 60px;">Stop</button>
 
@@ -169,6 +176,7 @@ const refreshCamsBtn = document.getElementById('refreshCams');
 const confThresholdEl = document.getElementById('confThreshold');
 const analysisNumEl = document.getElementById('analysisNum');
 const modelSelectEl = document.getElementById('modelSelect'); 
+const gridEnabledEl = document.getElementById('gridEnabled');
 
 const uploadBtn=document.getElementById('uploadBtn'); 
 const uploadInput=document.getElementById('upload');
@@ -234,6 +242,18 @@ function updateModes() {
 
 camDeviceEl.onchange = updateModes;
 refreshCamsBtn.onclick = loadCameras;
+
+gridEnabledEl.onchange = async () => {
+    try {
+        await fetch('/api/runtime-options', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ grid_render_enabled: gridEnabledEl.checked })
+        });
+    } catch(e) {
+        console.error(e);
+    }
+};
 
 // Load Models
 async function loadModels() {
@@ -308,6 +328,10 @@ function applyState(j){
   let msg='status: '+state+' pid:' + ((j&&j.pipeline_id)||'-') + mtxStatus;
   
   if(j&&j.last_error&&state!=='running') msg+=' fail: '+j.last_error;
+
+  if (j && j.runtime && typeof j.runtime.grid_render_enabled === 'boolean') {
+    gridEnabledEl.checked = j.runtime.grid_render_enabled;
+  }
   
   if(state === 'running' && j.config) {
       if(j.config.video_reference) msg += ` [${j.config.video_reference}]`;
@@ -375,7 +399,8 @@ btnRun.onclick=async()=>{
   let common = {
       vis_conf: confVal,
       analysis_number: analysisVal,
-      model_path: modelVal
+      model_path: modelVal,
+      grid_enabled: gridEnabledEl.checked
   };
 
   if(sourceTypeEl.value === 'camera') {

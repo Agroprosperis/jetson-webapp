@@ -8,7 +8,6 @@ MEDIAMTX_CONFIG="/etc/tilletia-app/mediamtx.yml"
 LOCAL_MEDIAMTX_CONFIG="$APP_DIR/config/mediamtx.yml"
 LOCAL_DATA_ROOT="$APP_DIR/data"
 BASE_IMAGE="opencv-gst:latest"
-APP_IMAGE="tilletia-app-web:latest"
 BASE_DOCKERFILE="$APP_DIR/docker/Dockerfile.desktop"
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -36,16 +35,12 @@ mkdir -p \
   "$TILLETIA_DATA_ROOT/output_hq" \
   "$TILLETIA_DATA_ROOT/runs"
 
-if ! docker image inspect "$APP_IMAGE" >/dev/null 2>&1; then
-  echo "App image $APP_IMAGE not found, building..."
-  if ! docker image inspect "$BASE_IMAGE" >/dev/null 2>&1; then
-    echo "Base image $BASE_IMAGE not found, building from $BASE_DOCKERFILE..."
-    docker build -t "$BASE_IMAGE" -f "$BASE_DOCKERFILE" "$APP_DIR"
-  fi
-  docker compose -f "$COMPOSE_FILE" build tilletia-app-web
+if ! docker image inspect "$BASE_IMAGE" >/dev/null 2>&1; then
+  echo "Base image $BASE_IMAGE not found, building from $BASE_DOCKERFILE..."
+  docker build -t "$BASE_IMAGE" -f "$BASE_DOCKERFILE" "$APP_DIR"
 fi
 
-docker compose -f "$COMPOSE_FILE" up -d
+docker compose -f "$COMPOSE_FILE" up --build -d
 
 echo "Started services"
 docker compose -f "$COMPOSE_FILE" ps
@@ -69,4 +64,9 @@ if command -v curl >/dev/null 2>&1; then
   fi
 
   echo "Web app is healthy: http://127.0.0.1:8000/"
+fi
+
+if [[ -t 1 ]]; then
+  echo "Interactive terminal detected. Attaching to service logs..."
+  exec docker compose -f "$COMPOSE_FILE" logs -f
 fi

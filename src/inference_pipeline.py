@@ -22,6 +22,7 @@ from ultralytics.trackers.utils.gmc import GMC
 from profiler import Profiler
 from stream_readers import StreamReader, FileReader
 from visualize import visualize_frame_with_supervision, reset_object_counter
+from grid_runtime import GridProcessor
 
 
 LOGGER = logging.getLogger("inference_pipeline")
@@ -565,6 +566,80 @@ def dump_csv_line(csv_writer, frame_count, pipeline_id, total_unique_objects, re
     csv_writer.writerow([frame_count, pipeline_id, s_value, total_unique_objects, detections_serialized])
 
 
+def _grid_render_enabled(args) -> bool:
+    getter = getattr(args, "grid_render_enabled_getter", None)
+    if callable(getter):
+        try:
+            return bool(getter())
+        except Exception:
+            LOGGER.exception("Failed to read grid render toggle")
+    return bool(getattr(args, "grid_render_enabled", True))
+
+
+def _viewport_polygon(grid_overlay) -> np.ndarray | None:
+    corners = getattr(grid_overlay, "viewport_corners", None)
+    if not corners or len(corners) != 4:
+        return None
+    return np.asarray(corners, dtype=np.float32)
+
+
+def _track_ids_inside_viewport(result, grid_overlay) -> set[int]:
+    if result is None or len(result) == 0:
+        return set()
+
+    viewport = _viewport_polygon(grid_overlay)
+    if viewport is None:
+        return set()
+
+    viewport_cv = viewport.reshape((-1, 1, 2))
+    inside_ids: set[int] = set()
+    for row in result:
+        track_id = int(row[4])
+        if track_id < 0:
+            continue
+
+        x0, y0, x1, y1 = [float(value) for value in row[:4]]
+        if x1 <= x0 or y1 <= y0:
+            continue
+
+        box_poly = np.asarray(
+            [
+                [x0, y0],
+                [x1, y0],
+                [x1, y1],
+                [x0, y1],
+            ],
+            dtype=np.float32,
+        ).reshape((-1, 1, 2))
+
+        try:
+            overlap_area, _ = cv2.intersectConvexConvex(viewport_cv, box_poly)
+            if overlap_area > 0.0:
+                inside_ids.add(track_id)
+                continue
+        except cv2.error:
+            pass
+
+        center = ((x0 + x1) * 0.5, (y0 + y1) * 0.5)
+        if cv2.pointPolygonTest(viewport_cv, center, False) >= 0:
+            inside_ids.add(track_id)
+
+    return inside_ids
+
+
+def _filter_tracks_by_ids(result, allowed_track_ids: set[int]):
+    if result is None:
+        return []
+    if len(result) == 0 or not allowed_track_ids:
+        return result[:0] if isinstance(result, np.ndarray) else []
+
+    if isinstance(result, np.ndarray):
+        mask = np.asarray([int(row[4]) in allowed_track_ids for row in result], dtype=bool)
+        return result[mask]
+
+    return [row for row in result if int(row[4]) in allowed_track_ids]
+
+
 def output_loop(result_queue: queue.Queue, stop_event: threading.Event, args) -> None:
     output_writer, csv_file, csv_writer = None, None, None
     frame_count = 0
@@ -572,15 +647,27 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, args) ->
     hq_output_dir = getattr(args, "hq_output_dir", "/app")
     run_dir = None
     saved_track_ids = set()
+    qualified_track_ids: set[int] = set()
     fps = getattr(args, "fps", 0)
+    grid_processor = GridProcessor()
     try:
         while not stop_event.is_set():
             frame, result = result_queue.get()
             if frame is None: 
                 break
 
+            grid_overlay = grid_processor.process(frame)
+            qualified_track_ids.update(_track_ids_inside_viewport(result, grid_overlay))
+
             start_vis = time.time()
-            vis, total_unique_objects = visualize_frame_with_supervision(frame, result, args)
+            vis, total_unique_objects = visualize_frame_with_supervision(
+                frame,
+                result,
+                args,
+                count_track_ids=qualified_track_ids,
+            )
+            if _grid_render_enabled(args):
+                vis = grid_processor.render(vis, grid_overlay)
             PROFILER.record('vis', time.time() - start_vis)
 
             frame = np.ascontiguousarray(frame, dtype=np.uint8)
@@ -600,8 +687,17 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, args) ->
                 csv_writer.writerow(["frame", "analysis_number", "s_value", "total_unique_objects", "detections"])
             
             safe_result = result if result is not None else []
-            dump_screenshot(safe_result, vis, run_dir or hq_output_dir, pipeline_id, saved_track_ids, frame_count, fps)
-            dump_csv_line(csv_writer, frame_count, pipeline_id, total_unique_objects, safe_result)
+            reactive_result = _filter_tracks_by_ids(safe_result, qualified_track_ids)
+            dump_screenshot(
+                reactive_result,
+                vis,
+                run_dir or hq_output_dir,
+                pipeline_id,
+                saved_track_ids,
+                frame_count,
+                fps,
+            )
+            dump_csv_line(csv_writer, frame_count, pipeline_id, total_unique_objects, reactive_result)
             
             if output_writer is not None:
                 output_writer.write(vis)

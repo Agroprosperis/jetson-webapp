@@ -1,6 +1,21 @@
 FROM opencv-gst:latest
 
+ENV PYTHONPATH=/app:/opt/linea
+ARG LINEA_REPO_URL=https://github.com/SebastianJanampa/LINEA.git
+ARG LINEA_COMMIT=475c5ceea64114a48495c15888094e12f1a2d267
+ARG LINEA_CHECKPOINT_URL=https://github.com/SebastianJanampa/storage/releases/download/LINEA/linea_hgnetv2_n.pth
+
 WORKDIR /app
+
+RUN python3 -m pip install --no-cache-dir scipy addict yapf
+
+RUN git clone "$LINEA_REPO_URL" /opt/linea \
+    && cd /opt/linea \
+    && git checkout "$LINEA_COMMIT" \
+    && mkdir -p /opt/linea/weights \
+    && curl -LfsS "$LINEA_CHECKPOINT_URL" -o /opt/linea/weights/linea_hgnetv2_n.pth \
+    && rm -rf /opt/linea/.git
+
 COPY src/ /app/
 
 CMD ["python", "/app/app.py"]

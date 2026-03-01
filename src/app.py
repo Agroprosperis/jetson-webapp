@@ -50,6 +50,35 @@ last_error = None  # type: str | None
 pipeline_id = None  # type: str | None
 compile_jobs = {}
 compile_jobs_lock = threading.Lock()
+runtime_options = {"grid_render_enabled": True}
+runtime_options_lock = threading.Lock()
+
+
+def _coerce_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def get_grid_render_enabled():
+    with runtime_options_lock:
+        return bool(runtime_options.get("grid_render_enabled", True))
+
+
+def set_grid_render_enabled(enabled):
+    coerced = _coerce_bool(enabled)
+    with runtime_options_lock:
+        runtime_options["grid_render_enabled"] = coerced
+        return runtime_options["grid_render_enabled"]
+
+
+def get_runtime_options():
+    with runtime_options_lock:
+        return {"grid_render_enabled": bool(runtime_options.get("grid_render_enabled", True))}
 
 
 def _append_compile_log(job_id, line):
@@ -334,6 +363,31 @@ def api_config():
               type: integer
     """
     return jsonify({"stream_port": 8889})
+
+
+@app.route("/api/runtime-options", methods=["GET", "POST"])
+def api_runtime_options():
+    """
+    Get or update runtime UI options.
+    ---
+    tags:
+      - Configuration
+    responses:
+      200:
+        description: Runtime options
+    """
+    if request.method == "GET":
+        return jsonify(get_runtime_options())
+
+    payload = request.get_json(silent=True) or {}
+    if "grid_render_enabled" in payload:
+        enabled = payload.get("grid_render_enabled")
+    elif "grid_enabled" in payload:
+        enabled = payload.get("grid_enabled")
+    else:
+        return jsonify({"error": "Missing grid_render_enabled"}), 400
+
+    return jsonify({"grid_render_enabled": set_grid_render_enabled(enabled)})
 
 
 @app.route("/api/models")
@@ -660,6 +714,7 @@ def api_status():
         "pipeline_id": pid_value,
         "last_error": last_error,
         "mediamtx": { "whep": mtx_whep, "rtsp": mtx_rtsp }, 
+        "runtime": get_runtime_options(),
         "config": {
             "video_reference": video_desc,
             "model": os.path.basename(current_model) if current_model else ""
@@ -1014,6 +1069,7 @@ def api_start():
         data = request.json or {}
         
         source_type = data.get("source_type", "file")
+        set_grid_render_enabled(data.get("grid_enabled", get_grid_render_enabled()))
         
         args_dict = dict()
         if os.path.exists(CONFIG_FILEPATH):
@@ -1098,6 +1154,9 @@ def api_start():
                 if f_fps > 0:
                     args.fps = int(f_fps)
                 LOGGER.info(f"File probed: {args.width}x{args.height} @ {args.fps}")
+
+        args.grid_render_enabled = get_grid_render_enabled()
+        args.grid_render_enabled_getter = get_grid_render_enabled
 
         LOGGER.info(f"Starting pipeline: {args}")
         tmp_pipeline = StreamPipeline(reader, args)
