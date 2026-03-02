@@ -10,14 +10,14 @@ class GridTracker:
         self,
         track_match_max_dist_px: float = 18.0,
         track_shift_max_px: float = 45.0,
-        track_max_miss: int = 16,
+        track_max_miss: int = 15,
         track_rho_smooth: float = 0.65,
         track_theta_smooth: float = 0.55,
         track_conf_decay: float = 0.92,
         track_min_conf: float = 0.02,
         track_warmup_frames: int = 3,
-        track_memory_max_miss: int = 8,
-        track_memory_min_conf: float = 0.05,
+        track_memory_max_miss: int = 15,
+        track_memory_min_conf: float = 0.0,
         track_align_max_corr_px: float = 6.0,
         track_align_min_cands: int = 2,
         track_flow_min_side_px: int = 320,
@@ -75,17 +75,36 @@ class GridTracker:
             "horizontal": {"tracks": [], "next_id": 1, "frames_seen": 0},
         }
         self._prev_gray: np.ndarray | None = None
+        self._last_debug: dict[str, any] = {}
+        self._last_flow_debug: dict[str, any] = {}
 
     @property
     def warmup_frames(self) -> int:
         return int(self._track_warmup_frames)
 
     def estimate_flow_shift(self, analysis_gray: np.ndarray) -> dict[str, float]:
+        analysis_h, analysis_w = analysis_gray.shape[:2]
         flow_gray, flow_scale_x, flow_scale_y = self._prepare_flow_frame(analysis_gray)
-        flow_dx, flow_dy = self._estimate_optical_flow_shift(self._prev_gray, flow_gray)
-        flow_dx = self._clamp(flow_dx * flow_scale_x, -self._track_shift_max_px, self._track_shift_max_px)
-        flow_dy = self._clamp(flow_dy * flow_scale_y, -self._track_shift_max_px, self._track_shift_max_px)
+        flow_dx_raw, flow_dy_raw, flow_debug = self._estimate_optical_flow_shift(self._prev_gray, flow_gray)
+        flow_dx_scaled = flow_dx_raw * flow_scale_x
+        flow_dy_scaled = flow_dy_raw * flow_scale_y
+        flow_dx = self._clamp(flow_dx_scaled, -self._track_shift_max_px, self._track_shift_max_px)
+        flow_dy = self._clamp(flow_dy_scaled, -self._track_shift_max_px, self._track_shift_max_px)
         self._prev_gray = flow_gray.copy()
+        flow_h, flow_w = flow_gray.shape[:2]
+        self._last_flow_debug = {
+            "analysis_shape": {"height": int(analysis_h), "width": int(analysis_w)},
+            "flow_shape": {"height": int(flow_h), "width": int(flow_w)},
+            "scale_x": float(flow_scale_x),
+            "scale_y": float(flow_scale_y),
+            "raw_dx": float(flow_dx_raw),
+            "raw_dy": float(flow_dy_raw),
+            "scaled_dx_before_clamp": float(flow_dx_scaled),
+            "scaled_dy_before_clamp": float(flow_dy_scaled),
+            "dx": float(flow_dx),
+            "dy": float(flow_dy),
+            **flow_debug,
+        }
         return {"dx": float(flow_dx), "dy": float(flow_dy)}
 
     def __call__(
@@ -107,6 +126,11 @@ class GridTracker:
         flow_dy = float(flow_data["dy"])
         predicted: dict[str, list[dict[str, any]]] = {}
         reference: dict[str, list[dict[str, any]]] = {}
+        call_debug = {
+            "flow_shift": {"dx": float(flow_dx), "dy": float(flow_dy)},
+            "flow_estimation": dict(self._last_flow_debug),
+            "orientations": {},
+        }
         
         for orientation in ("vertical", "horizontal"):
             lines = [line for line in clustered_lines if line["orientation"] == orientation]
@@ -114,11 +138,24 @@ class GridTracker:
             updated = self._update_orientation(orientation, lines, flow_shift)
             predicted[orientation] = updated["predicted"]
             reference[orientation] = updated["reference"]
+            call_debug["orientations"][orientation] = updated["debug"]
+        
+        self._last_debug = call_debug
         
         return {
             "predicted": predicted,
             "reference": reference,
             "flow_shift": {"dx": float(flow_dx), "dy": float(flow_dy)},
+            "debug": call_debug,
+        }
+
+    def debug_snapshot(self) -> dict[str, any]:
+        return {
+            "last_call": dict(self._last_debug),
+            "state": {
+                "vertical": self._snapshot_orientation_state("vertical"),
+                "horizontal": self._snapshot_orientation_state("horizontal"),
+            },
         }
 
     def _prepare_flow_frame(
@@ -149,6 +186,9 @@ class GridTracker:
         st = self._state[orientation]
         st["frames_seen"] += 1
         tracks = st["tracks"]
+        original_track_count = len(tracks)
+        tracks_before = self._snapshot_tracks(tracks)
+        candidates_debug = [self._public_candidate(candidate, idx) for idx, candidate in enumerate(candidates)]
         
         for track in tracks:
             track["rho_pred"] = track["rho"] + self._clamp(
@@ -156,17 +196,30 @@ class GridTracker:
                 -self._track_shift_max_px,
                 self._track_shift_max_px,
             )
+        tracks_after_flow = self._snapshot_tracks(tracks)
         
         align_shift = self._estimate_alignment_delta(tracks, candidates)
         if abs(align_shift) > 1e-6:
             for track in tracks:
                 track["rho_pred"] += align_shift
+        tracks_after_alignment = self._snapshot_tracks(tracks)
         
         matches, used_tracks, used_candidates = self._match(tracks, candidates)
+        match_debug = []
         for track_idx, candidate_idx in matches:
             track = tracks[track_idx]
             candidate = candidates[candidate_idx]
             pred_rho = track.get("rho_pred", track["rho"])
+            match_debug.append(
+                {
+                    "track_index": int(track_idx),
+                    "track_id": int(track["id"]),
+                    "candidate_index": int(candidate_idx),
+                    "track_rho_pred": float(pred_rho),
+                    "candidate_rho": float(candidate["rho"]),
+                    "delta": float(candidate["rho"] - pred_rho),
+                }
+            )
             track["rho"] = (1.0 - self._track_rho_smooth) * pred_rho + self._track_rho_smooth * candidate["rho"]
             track["theta"] = self._angle_blend(track["theta"], candidate["theta"], self._track_theta_smooth)
             track["conf"] = 0.7 * track["conf"] + 0.3 * candidate["conf"]
@@ -183,9 +236,10 @@ class GridTracker:
         for idx, candidate in enumerate(candidates):
             if idx in used_candidates:
                 continue
+            new_track_id = st["next_id"]
             tracks.append(
                 {
-                    "id": st["next_id"],
+                    "id": new_track_id,
                     "orientation": orientation,
                     "rho": float(candidate["rho"]),
                     "theta": float(candidate["theta"]),
@@ -197,12 +251,19 @@ class GridTracker:
             )
             st["next_id"] += 1
         
-        st["tracks"] = [
+        tracks_before_prune = self._snapshot_tracks(tracks)
+        
+        kept_tracks = [
             track
             for track in tracks
             if track["miss"] <= self._track_max_miss
             and (track["hits"] >= self._track_warmup_frames or track["miss"] == 0)
         ]
+        kept_ids = {int(track["id"]) for track in kept_tracks}
+        dropped_track_ids = [
+            int(track["id"]) for track in tracks if int(track["id"]) not in kept_ids
+        ]
+        st["tracks"] = kept_tracks
         
         warming_up = st["frames_seen"] <= self._track_warmup_frames
         reference_tracks = [
@@ -218,12 +279,39 @@ class GridTracker:
         else:
             predicted_tracks = [
                 track.copy()
-                for track in sorted(st["tracks"], key=lambda item: (item["miss"], -item["conf"]))
+                for track in sorted(st["tracks"], key=lambda item: item["rho"])
                 if 0 < track["miss"] <= self._track_memory_max_miss
                 and track["conf"] >= self._track_memory_min_conf
                 and track["hits"] >= self._track_warmup_frames
             ]
-        return {"reference": reference_tracks, "predicted": predicted_tracks}
+        matched_track_ids = [int(tracks[track_idx]["id"]) for track_idx, _ in matches]
+        unmatched_track_ids = [
+            int(tracks[idx]["id"]) for idx in range(original_track_count) if idx not in used_tracks
+        ]
+        debug_info = {
+            "orientation": orientation,
+            "frames_seen": int(st["frames_seen"]),
+            "warming_up": bool(warming_up),
+            "flow_shift": float(flow_shift),
+            "align_shift": float(align_shift),
+            "candidates": candidates_debug,
+            "tracks_before": tracks_before,
+            "tracks_after_flow": tracks_after_flow,
+            "tracks_after_alignment": tracks_after_alignment,
+            "matches": match_debug,
+            "matched_track_ids": matched_track_ids,
+            "matched_candidate_indices": sorted(int(idx) for idx in used_candidates),
+            "unmatched_track_ids": unmatched_track_ids,
+            "unmatched_candidate_indices": [
+                int(idx) for idx in range(len(candidates)) if idx not in used_candidates
+            ],
+            "tracks_before_prune": tracks_before_prune,
+            "dropped_track_ids": dropped_track_ids,
+            "tracks_after": self._snapshot_tracks(st["tracks"]),
+            "reference_output": [self._public_track(track) for track in reference_tracks],
+            "predicted_output": [self._public_track(track) for track in predicted_tracks],
+        }
+        return {"reference": reference_tracks, "predicted": predicted_tracks, "debug": debug_info}
 
     def _estimate_alignment_delta(
         self,
@@ -232,15 +320,16 @@ class GridTracker:
     ) -> float:
         if not tracks or len(candidates) < self._track_align_min_cands:
             return 0.0
-        cand_rhos = [candidate["rho"] for candidate in candidates]
-        deltas: list[float] = []
-
-        for track in tracks:
-            pred_rho = track.get("rho_pred", track["rho"])
-            nearest = min(cand_rhos, key=lambda value: abs(value - pred_rho))
-            deltas.append(nearest - pred_rho)
-
-        if not deltas:
+        prelim_matches, _, _ = self._match(
+            tracks,
+            candidates,
+            max_dist_px=self._track_match_max_dist_px + self._track_align_max_corr_px,
+        )
+        deltas = [
+            float(candidates[candidate_idx]["rho"] - tracks[track_idx].get("rho_pred", tracks[track_idx]["rho"]))
+            for track_idx, candidate_idx in prelim_matches
+        ]
+        if len(deltas) < self._track_align_min_cands:
             return 0.0
         
         delta = self._median_value(deltas)
@@ -250,37 +339,102 @@ class GridTracker:
         self,
         tracks: list[dict[str, any]],
         candidates: list[dict[str, any]],
+        max_dist_px: float | None = None,
     ) -> tuple[list[tuple[int, int]], set[int], set[int]]:
-        pairs: list[tuple[float, int, int]] = []
-        
-        for track_idx, track in enumerate(tracks):
-            pred_rho = track.get("rho_pred", track["rho"])
-            for candidate_idx, candidate in enumerate(candidates):
-                dist = abs(pred_rho - candidate["rho"])
-                if dist <= self._track_match_max_dist_px:
-                    pairs.append((dist, track_idx, candidate_idx))
-        
-        pairs.sort(key=lambda item: item[0])
-        used_tracks = set()
-        used_candidates = set()
+        if not tracks or not candidates:
+            return [], set(), set()
+
+        dist_limit = self._track_match_max_dist_px if max_dist_px is None else float(max_dist_px)
+        track_order = sorted(
+            range(len(tracks)),
+            key=lambda idx: tracks[idx].get("rho_pred", tracks[idx]["rho"]),
+        )
+        candidate_order = sorted(
+            range(len(candidates)),
+            key=lambda idx: candidates[idx]["rho"],
+        )
+        track_count = len(track_order)
+        candidate_count = len(candidate_order)
+        dp_matches = [[0] * (candidate_count + 1) for _ in range(track_count + 1)]
+        dp_cost = [[0.0] * (candidate_count + 1) for _ in range(track_count + 1)]
+        choice = [[0] * (candidate_count + 1) for _ in range(track_count + 1)]
+
+        for i in range(1, track_count + 1):
+            for j in range(1, candidate_count + 1):
+                best_matches = dp_matches[i - 1][j]
+                best_cost = dp_cost[i - 1][j]
+                best_choice = 1
+
+                skip_candidate_matches = dp_matches[i][j - 1]
+                skip_candidate_cost = dp_cost[i][j - 1]
+                if self._is_better_match_state(
+                    skip_candidate_matches,
+                    skip_candidate_cost,
+                    best_matches,
+                    best_cost,
+                ):
+                    best_matches = skip_candidate_matches
+                    best_cost = skip_candidate_cost
+                    best_choice = 2
+
+                track_idx = track_order[i - 1]
+                candidate_idx = candidate_order[j - 1]
+                pred_rho = tracks[track_idx].get("rho_pred", tracks[track_idx]["rho"])
+                dist = abs(pred_rho - candidates[candidate_idx]["rho"])
+                if dist <= dist_limit:
+                    match_matches = dp_matches[i - 1][j - 1] + 1
+                    match_cost = dp_cost[i - 1][j - 1] + dist
+                    if self._is_better_match_state(
+                        match_matches,
+                        match_cost,
+                        best_matches,
+                        best_cost,
+                    ):
+                        best_matches = match_matches
+                        best_cost = match_cost
+                        best_choice = 3
+
+                dp_matches[i][j] = best_matches
+                dp_cost[i][j] = best_cost
+                choice[i][j] = best_choice
+
         matches = []
-        
-        for _, track_idx, candidate_idx in pairs:
-            if track_idx in used_tracks or candidate_idx in used_candidates:
-                continue
-            used_tracks.add(track_idx)
-            used_candidates.add(candidate_idx)
-            matches.append((track_idx, candidate_idx))
-        
+        i = track_count
+        j = candidate_count
+        while i > 0 and j > 0:
+            decision = choice[i][j]
+            if decision == 3:
+                matches.append((track_order[i - 1], candidate_order[j - 1]))
+                i -= 1
+                j -= 1
+            elif decision == 2:
+                j -= 1
+            else:
+                i -= 1
+
+        matches.reverse()
+        used_tracks = {track_idx for track_idx, _ in matches}
+        used_candidates = {candidate_idx for _, candidate_idx in matches}
         return matches, used_tracks, used_candidates
+
+    def _is_better_match_state(
+        self,
+        cand_matches: int,
+        cand_cost: float,
+        best_matches: int,
+        best_cost: float,
+    ) -> bool:
+        if cand_matches != best_matches:
+            return cand_matches > best_matches
+        return cand_cost < best_cost - 1e-6
 
     def _estimate_optical_flow_shift(
         self,
         prev_gray: np.ndarray | None,
         curr_gray: np.ndarray | None,
-    ) -> tuple[float, float]:
+    ) -> tuple[float, float, dict[str, any]]:
         if prev_gray is None or curr_gray is None:
-            return 0.0, 0.0
+            return 0.0, 0.0, {"status": "missing_previous_frame", "feature_count": 0, "tracked_count": 0}
         
         prev_pts = cv2.goodFeaturesToTrack(
             prev_gray,
@@ -290,8 +444,17 @@ class GridTracker:
             blockSize=7,
         )
         
-        if prev_pts is None or len(prev_pts) < 16:
-            return 0.0, 0.0
+        feature_count = 0 if prev_pts is None else int(len(prev_pts))
+        if prev_pts is None or feature_count < 16:
+            return (
+                0.0,
+                0.0,
+                {
+                    "status": "insufficient_features",
+                    "feature_count": feature_count,
+                    "tracked_count": 0,
+                },
+            )
         
         curr_pts, status, _ = cv2.calcOpticalFlowPyrLK(
             prev_gray,
@@ -304,13 +467,30 @@ class GridTracker:
         )
         
         if curr_pts is None or status is None:
-            return 0.0, 0.0
+            return (
+                0.0,
+                0.0,
+                {
+                    "status": "tracking_failed",
+                    "feature_count": feature_count,
+                    "tracked_count": 0,
+                },
+            )
         mask = status.reshape(-1).astype(bool)
         tracked_prev = prev_pts.reshape(-1, 2)[mask]
         tracked_curr = curr_pts.reshape(-1, 2)[mask]
+        tracked_count = int(len(tracked_prev))
         
-        if len(tracked_prev) < 16:
-            return 0.0, 0.0
+        if tracked_count < 16:
+            return (
+                0.0,
+                0.0,
+                {
+                    "status": "insufficient_tracked_points",
+                    "feature_count": feature_count,
+                    "tracked_count": tracked_count,
+                },
+            )
         
         affine, _ = cv2.estimateAffinePartial2D(
             tracked_prev,
@@ -322,11 +502,65 @@ class GridTracker:
         if affine is not None:
             dx = float(affine[0, 2])
             dy = float(affine[1, 2])
+            method = "affine_partial_2d"
         else:
             dx = self._median_value([float(curr[0] - prev[0]) for prev, curr in zip(tracked_prev, tracked_curr)])
             dy = self._median_value([float(curr[1] - prev[1]) for prev, curr in zip(tracked_prev, tracked_curr)])
+            method = "median_delta"
         
-        return dx, dy
+        return (
+            dx,
+            dy,
+            {
+                "status": "ok",
+                "feature_count": feature_count,
+                "tracked_count": tracked_count,
+                "method": method,
+            },
+        )
+
+    def _snapshot_orientation_state(self, orientation: str) -> dict[str, any]:
+        st = self._state[orientation]
+        return {
+            "frames_seen": int(st["frames_seen"]),
+            "next_id": int(st["next_id"]),
+            "tracks": self._snapshot_tracks(st["tracks"]),
+        }
+
+    def _snapshot_tracks(self, tracks: list[dict[str, any]]) -> list[dict[str, any]]:
+        return [self._public_track(track, idx) for idx, track in enumerate(tracks)]
+
+    def _public_track(
+        self,
+        track: dict[str, any],
+        track_index: int | None = None,
+    ) -> dict[str, any]:
+        public = {
+            "id": int(track["id"]) if track.get("id") is not None else None,
+            "orientation": track.get("orientation"),
+            "rho": float(track["rho"]),
+            "rho_pred": float(track.get("rho_pred", track["rho"])),
+            "theta": float(track["theta"]),
+            "conf": float(track["conf"]),
+            "hits": int(track.get("hits", 0)),
+            "miss": int(track.get("miss", 0)),
+        }
+        if track_index is not None:
+            public["track_index"] = int(track_index)
+        return public
+
+    def _public_candidate(
+        self,
+        candidate: dict[str, any],
+        candidate_index: int,
+    ) -> dict[str, any]:
+        return {
+            "candidate_index": int(candidate_index),
+            "orientation": candidate.get("orientation"),
+            "rho": float(candidate["rho"]),
+            "theta": float(candidate["theta"]),
+            "conf": float(candidate.get("conf", 0.0)),
+        }
 
     def _median_value(self, values: list[float]) -> float:
         if not values:

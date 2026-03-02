@@ -15,7 +15,7 @@ class TemporalLineAccumulator:
     def __init__(
         self,
         history_size: int = 5,
-        keep_top_ratio: float = 0.25,
+        keep_top_ratio: float = 1.0,
         min_keep_per_orientation: int = 4,
         score_decay: float = 0.9,
     ) -> None:

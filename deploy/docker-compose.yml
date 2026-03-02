@@ -20,6 +20,8 @@ services:
     privileged: true
     environment:
       - NVIDIA_DRIVER_CAPABILITIES=all
+      - GRID_LINEA_CONFIG=${GRID_LINEA_CONFIG:-/opt/linea/configs/linea/linea_hgnetv2_s.py}
+      - GRID_LINEA_CHECKPOINT=${GRID_LINEA_CHECKPOINT:-/opt/linea/weights/linea_hgnetv2_s.pth}
     volumes:
       - /dev:/dev
       - ${TILLETIA_DATA_ROOT:-/var/lib/tilletia-app}/model:/app/model

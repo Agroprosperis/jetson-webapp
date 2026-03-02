@@ -13,9 +13,9 @@ import numpy as np
 LOGGER = logging.getLogger("grid_runtime")
 
 DEFAULT_GRID_COLOR = (0, 255, 255)
-DEFAULT_LINEA_CONFIG = "configs/linea/linea_hgnetv2_n.py"
-DEFAULT_LINEA_CHECKPOINT = "weights/linea_hgnetv2_n.pth"
-DEFAULT_APP_CHECKPOINT = "/app/model/linea/linea_hgnetv2_n.pth"
+DEFAULT_LINEA_CONFIG = "configs/linea/linea_hgnetv2_s.py"
+DEFAULT_LINEA_CHECKPOINT = "weights/linea_hgnetv2_s.pth"
+DEFAULT_APP_CHECKPOINT = "/app/model/linea/linea_hgnetv2_s.pth"
 
 
 @dataclass(slots=True)
@@ -92,6 +92,7 @@ class GridProcessor:
                 overlay_lines = self._overlay_lines_from_grid_state(grid_state)
             else:
                 overlay_lines = self._tracking_only_overlay_lines(current_grid, gap_info, tracker_state)
+            overlay_lines = self._filter_lines_within_frame(overlay_lines, analysis_shape)
 
             viewport_corners = self._build_viewport_corners(
                 overlay_lines,
@@ -220,6 +221,36 @@ class GridProcessor:
 
         grid_state = self._grid_builder.integrate_predictions(current_grid, gap_info, tracker_state)
         return self._overlay_lines_from_grid_state(grid_state)
+
+    def _filter_lines_within_frame(
+        self,
+        lines: dict[str, list[dict[str, Any]]],
+        analysis_shape: tuple[int, int],
+    ) -> dict[str, list[dict[str, Any]]]:
+        return {
+            "vertical": [
+                dict(line)
+                for line in lines.get("vertical", [])
+                if self._line_rho_in_bounds("vertical", line, analysis_shape)
+            ],
+            "horizontal": [
+                dict(line)
+                for line in lines.get("horizontal", [])
+                if self._line_rho_in_bounds("horizontal", line, analysis_shape)
+            ],
+        }
+
+    def _line_rho_in_bounds(
+        self,
+        orientation: str,
+        line_state: dict[str, Any],
+        analysis_shape: tuple[int, int],
+    ) -> bool:
+        analysis_h, analysis_w = analysis_shape
+        rho = float(line_state["rho"])
+        if orientation == "vertical":
+            return 0.0 <= rho <= float(max(analysis_w - 1, 0))
+        return 0.0 <= rho <= float(max(analysis_h - 1, 0))
 
     def _append_linea_import_path(self) -> None:
         for candidate in self._linea_root_candidates():
