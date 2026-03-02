@@ -80,16 +80,31 @@ class GridTracker:
     def warmup_frames(self) -> int:
         return int(self._track_warmup_frames)
 
-    def __call__(
-        self,
-        clustered_lines: list[dict[str, any]],
-        analysis_gray: np.ndarray,
-    ) -> dict[str, any]:
+    def estimate_flow_shift(self, analysis_gray: np.ndarray) -> dict[str, float]:
         flow_gray, flow_scale_x, flow_scale_y = self._prepare_flow_frame(analysis_gray)
         flow_dx, flow_dy = self._estimate_optical_flow_shift(self._prev_gray, flow_gray)
         flow_dx = self._clamp(flow_dx * flow_scale_x, -self._track_shift_max_px, self._track_shift_max_px)
         flow_dy = self._clamp(flow_dy * flow_scale_y, -self._track_shift_max_px, self._track_shift_max_px)
         self._prev_gray = flow_gray.copy()
+        return {"dx": float(flow_dx), "dy": float(flow_dy)}
+
+    def __call__(
+        self,
+        clustered_lines: list[dict[str, any]],
+        analysis_gray: np.ndarray | None = None,
+        flow_shift: dict[str, float] | None = None,
+    ) -> dict[str, any]:
+        if flow_shift is None:
+            if analysis_gray is None:
+                raise ValueError("analysis_gray is required when flow_shift is not provided.")
+            flow_data = self.estimate_flow_shift(analysis_gray)
+        else:
+            flow_data = {
+                "dx": float(flow_shift.get("dx", 0.0)),
+                "dy": float(flow_shift.get("dy", 0.0)),
+            }
+        flow_dx = float(flow_data["dx"])
+        flow_dy = float(flow_data["dy"])
         predicted: dict[str, list[dict[str, any]]] = {}
         reference: dict[str, list[dict[str, any]]] = {}
         

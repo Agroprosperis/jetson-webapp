@@ -1,3 +1,4 @@
+from .accumulation import TemporalLineAccumulator
 from .clusterization import LineClusterizer
 from .gap_analysis import GapAnalyzer
 from .grid import GridBuilder
@@ -12,6 +13,7 @@ __all__ = [
     "FramePreprocessor",
     "Line",
     "LineDetector",
+    "TemporalLineAccumulator",
     "LineClusterizer",
     "LineRegularizer",
     "GapAnalyzer",

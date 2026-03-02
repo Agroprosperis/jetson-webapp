@@ -48,6 +48,7 @@ class GridProcessor:
         self._regularizer = None
         self._gap_analyzer = None
         self._tracker = None
+        self._accumulator = None
         self._grid_builder = None
 
     def process(self, frame_bgr: np.ndarray) -> GridOverlay | None:
@@ -60,12 +61,14 @@ class GridProcessor:
             analysis_rgb = self._preprocess(frame_bgr)
             analysis_shape = analysis_rgb.shape[:2]
             analysis_gray = cv2.cvtColor(analysis_rgb, cv2.COLOR_RGB2GRAY)
+            flow_shift = self._tracker.estimate_flow_shift(analysis_gray)
             self._processed_frames += 1
             run_full_detection = self._should_run_full_detection()
 
             if run_full_detection:
                 raw_lines = self._detector(analysis_rgb)
-                clustered_lines = self._clusterizer(raw_lines, analysis_shape)
+                accumulated_lines = self._accumulator(raw_lines, flow_shift)
+                clustered_lines = self._clusterizer(accumulated_lines, analysis_shape)
                 regularized_lines = self._regularizer(clustered_lines)
                 gap_info = self._gap_analyzer(regularized_lines)
                 current_grid = self._grid_builder.build_current(regularized_lines, gap_info)
@@ -78,10 +81,11 @@ class GridProcessor:
                     "vertical": list(self._last_gap_info["vertical"]),
                     "horizontal": list(self._last_gap_info["horizontal"]),
                 }
+                self._accumulator([], flow_shift)
                 current_grid = self._empty_grid_state()
 
             tracker_input = current_grid["accepted"]["vertical"] + current_grid["accepted"]["horizontal"]
-            tracker_state = self._tracker(tracker_input, analysis_gray)
+            tracker_state = self._tracker(tracker_input, flow_shift=flow_shift)
 
             if run_full_detection:
                 grid_state = self._grid_builder.integrate_predictions(current_grid, gap_info, tracker_state)
@@ -142,6 +146,7 @@ class GridProcessor:
                 LineClusterizer,
                 LineDetector,
                 LineRegularizer,
+                TemporalLineAccumulator,
             )
 
             config_path = self._resolve_linea_config_path()
@@ -156,6 +161,7 @@ class GridProcessor:
             self._regularizer = LineRegularizer()
             self._gap_analyzer = GapAnalyzer()
             self._tracker = GridTracker()
+            self._accumulator = TemporalLineAccumulator()
             self._detection_warmup_frames = max(int(self._tracker.warmup_frames), 0)
             self._grid_builder = GridBuilder()
             self._initialized = True
