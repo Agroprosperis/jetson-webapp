@@ -27,6 +27,7 @@ from grid_runtime import GridProcessor
 
 LOGGER = logging.getLogger("inference_pipeline")
 PROFILER = Profiler()
+GRID_SCORE_RESET_THRESHOLD = 0.40
 
 
 class CustomBOTrack(BOTrack):
@@ -566,14 +567,45 @@ def dump_csv_line(csv_writer, frame_count, pipeline_id, total_unique_objects, re
     csv_writer.writerow([frame_count, pipeline_id, s_value, total_unique_objects, detections_serialized])
 
 
-def _grid_render_enabled(args) -> bool:
-    getter = getattr(args, "grid_render_enabled_getter", None)
+def _grid_count_enabled(args) -> bool:
+    getter = getattr(args, "grid_count_enabled_getter", None)
     if callable(getter):
         try:
             return bool(getter())
         except Exception:
-            LOGGER.exception("Failed to read grid render toggle")
-    return bool(getattr(args, "grid_render_enabled", True))
+            LOGGER.exception("Failed to read grid counting toggle")
+    return bool(getattr(args, "grid_count_enabled", True))
+
+
+def _grid_score_threshold(args) -> float:
+    getter = getattr(args, "grid_score_threshold_getter", None)
+    if callable(getter):
+        try:
+            return max(float(getter()), 0.0)
+        except Exception:
+            LOGGER.exception("Failed to read grid score threshold")
+    return max(float(getattr(args, "grid_score_threshold", 0.0)), 0.0)
+
+
+def _set_grid_count_enabled(args, enabled: bool, *, auto: bool = False) -> bool:
+    setter = getattr(args, "grid_count_enabled_setter", None)
+    if callable(setter):
+        try:
+            return bool(setter(enabled, auto=auto))
+        except TypeError:
+            return bool(setter(enabled))
+        except Exception:
+            LOGGER.exception("Failed to update grid counting toggle")
+    return bool(enabled)
+
+
+def _publish_grid_score(args, score: float | None) -> None:
+    setter = getattr(args, "grid_score_setter", None)
+    if callable(setter):
+        try:
+            setter(score)
+        except Exception:
+            LOGGER.exception("Failed to publish grid score")
 
 
 def _viewport_polygon(grid_overlay) -> np.ndarray | None:
@@ -650,23 +682,58 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, args) ->
     qualified_track_ids: set[int] = set()
     fps = getattr(args, "fps", 0)
     grid_processor = GridProcessor()
+    grid_processing_active = False
+    grid_reset_armed = True
     try:
         while not stop_event.is_set():
             frame, result = result_queue.get()
             if frame is None: 
                 break
 
-            grid_overlay = grid_processor.process(frame)
-            qualified_track_ids.update(_track_ids_inside_viewport(result, grid_overlay))
+            grid_count_enabled = _grid_count_enabled(args)
+            grid_score_threshold = _grid_score_threshold(args)
+            grid_overlay = None
+            if grid_count_enabled:
+                if not grid_processing_active:
+                    grid_processor = GridProcessor()
+                grid_overlay = grid_processor.process(frame)
+            grid_processing_active = grid_count_enabled
+
+            grid_score = getattr(grid_overlay, "score", None) if grid_overlay is not None else None
+            grid_score_raw = getattr(grid_overlay, "score_raw", None) if grid_overlay is not None else None
+            if grid_score is not None:
+                _publish_grid_score(args, grid_score)
+            if grid_score_raw is not None:
+                if grid_score_raw > GRID_SCORE_RESET_THRESHOLD:
+                    grid_reset_armed = True
+                elif grid_count_enabled and grid_reset_armed:
+                    grid_processor.reset_state()
+                    grid_reset_armed = False
+            if (
+                grid_count_enabled
+                and grid_score is not None
+                and grid_score_threshold > 0.0
+                and grid_score <= grid_score_threshold
+            ):
+                _set_grid_count_enabled(args, False, auto=True)
+                grid_count_enabled = False
+                grid_overlay = None
+                grid_processing_active = False
+
+            if grid_count_enabled:
+                qualified_track_ids.update(_track_ids_inside_viewport(result, grid_overlay))
+                count_track_ids: set[int] | None = qualified_track_ids
+            else:
+                count_track_ids = None
 
             start_vis = time.time()
             vis, total_unique_objects = visualize_frame_with_supervision(
                 frame,
                 result,
                 args,
-                count_track_ids=qualified_track_ids,
+                count_track_ids=count_track_ids,
             )
-            if _grid_render_enabled(args):
+            if grid_count_enabled:
                 vis = grid_processor.render(vis, grid_overlay)
             PROFILER.record('vis', time.time() - start_vis)
 
@@ -687,7 +754,10 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, args) ->
                 csv_writer.writerow(["frame", "analysis_number", "s_value", "total_unique_objects", "detections"])
             
             safe_result = result if result is not None else []
-            reactive_result = _filter_tracks_by_ids(safe_result, qualified_track_ids)
+            if grid_count_enabled:
+                reactive_result = _filter_tracks_by_ids(safe_result, qualified_track_ids)
+            else:
+                reactive_result = safe_result
             dump_screenshot(
                 reactive_result,
                 vis,

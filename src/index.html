@@ -134,9 +134,14 @@ select { border: 1px solid #444; }
     </div>
 
     <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:#ddd;">
-      <input id="gridEnabled" type="checkbox" checked />
-      Grid
+      <input id="gridCountEnabled" type="checkbox" checked />
+      Grid Counting
     </label>
+
+    <div class="controls">
+        <label for="gridScoreThreshold" style="font-size:12px; opacity:0.8;">Grid Min:</label>
+        <input id="gridScoreThreshold" type="number" min="0.00" max="1.00" step="0.05" value="0.30" style="width: 90px;" title="Auto-disable grid counting when grid score is at or below this threshold"/>
+    </div>
 
     <div style="flex:1"></div> <button id='run' class="btn-primary" style="min-width: 80px;">Run</button>
     <button id='stop' type='button' style="min-width: 60px;">Stop</button>
@@ -176,7 +181,8 @@ const refreshCamsBtn = document.getElementById('refreshCams');
 const confThresholdEl = document.getElementById('confThreshold');
 const analysisNumEl = document.getElementById('analysisNum');
 const modelSelectEl = document.getElementById('modelSelect'); 
-const gridEnabledEl = document.getElementById('gridEnabled');
+const gridCountEnabledEl = document.getElementById('gridCountEnabled');
+const gridScoreThresholdEl = document.getElementById('gridScoreThreshold');
 
 const uploadBtn=document.getElementById('uploadBtn'); 
 const uploadInput=document.getElementById('upload');
@@ -243,12 +249,24 @@ function updateModes() {
 camDeviceEl.onchange = updateModes;
 refreshCamsBtn.onclick = loadCameras;
 
-gridEnabledEl.onchange = async () => {
+gridCountEnabledEl.onchange = async () => {
     try {
         await fetch('/api/runtime-options', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ grid_render_enabled: gridEnabledEl.checked })
+            body: JSON.stringify({ grid_count_enabled: gridCountEnabledEl.checked })
+        });
+    } catch(e) {
+        console.error(e);
+    }
+};
+
+gridScoreThresholdEl.onchange = async () => {
+    try {
+        await fetch('/api/runtime-options', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ grid_score_threshold: parseFloat(gridScoreThresholdEl.value || '0') })
         });
     } catch(e) {
         console.error(e);
@@ -329,8 +347,21 @@ function applyState(j){
   
   if(j&&j.last_error&&state!=='running') msg+=' fail: '+j.last_error;
 
-  if (j && j.runtime && typeof j.runtime.grid_render_enabled === 'boolean') {
-    gridEnabledEl.checked = j.runtime.grid_render_enabled;
+  if (j && j.runtime && typeof j.runtime.grid_count_enabled === 'boolean') {
+    gridCountEnabledEl.checked = j.runtime.grid_count_enabled;
+  }
+  if (j && j.runtime && typeof j.runtime.grid_score_threshold === 'number') {
+    gridScoreThresholdEl.value = j.runtime.grid_score_threshold.toFixed(2);
+  }
+  if (j && j.runtime && typeof j.runtime.grid_score === 'number') {
+    msg += ` [Grid score: ${j.runtime.grid_score.toFixed(2)}`;
+    if (typeof j.runtime.grid_score_threshold === 'number' && j.runtime.grid_score_threshold > 0) {
+      msg += ` / ${j.runtime.grid_score_threshold.toFixed(2)}`;
+    }
+    if (j.runtime.grid_auto_disabled) {
+      msg += ' auto-off';
+    }
+    msg += ']';
   }
   
   if(state === 'running' && j.config) {
@@ -400,7 +431,8 @@ btnRun.onclick=async()=>{
       vis_conf: confVal,
       analysis_number: analysisVal,
       model_path: modelVal,
-      grid_enabled: gridEnabledEl.checked
+      grid_count_enabled: gridCountEnabledEl.checked,
+      grid_score_threshold: parseFloat(gridScoreThresholdEl.value || '0')
   };
 
   if(sourceTypeEl.value === 'camera') {

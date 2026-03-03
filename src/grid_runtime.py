@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import sys
 from dataclasses import dataclass
@@ -23,6 +24,8 @@ class GridOverlay:
     analysis_shape: tuple[int, int]
     lines: dict[str, list[dict[str, Any]]]
     viewport_corners: list[tuple[int, int]] | None
+    score: float | None
+    score_raw: float | None
 
 
 class GridProcessor:
@@ -30,15 +33,19 @@ class GridProcessor:
         self,
         color: tuple[int, int, int] = DEFAULT_GRID_COLOR,
         detect_every_n_frames: int = 1,
+        score_ema_alpha: float = 0.25,
     ) -> None:
         self._color = color
         self._detect_every_n_frames = max(int(detect_every_n_frames), 1)
+        self._score_ema_alpha = min(max(float(score_ema_alpha), 0.0), 1.0)
         self._detection_warmup_frames = 3
         self._processed_frames = 0
         self._last_gap_info: dict[str, list[float]] = {
             "vertical": [],
             "horizontal": [],
         }
+        self._last_score: float | None = None
+        self._last_score_raw: float | None = None
         self._initialized = False
         self._init_failed = False
         self._processing_failed = False
@@ -47,6 +54,9 @@ class GridProcessor:
         self._clusterizer = None
         self._regularizer = None
         self._gap_analyzer = None
+        self._tracker_cls = None
+        self._accumulator_cls = None
+        self._grid_builder_cls = None
         self._tracker = None
         self._accumulator = None
         self._grid_builder = None
@@ -64,6 +74,7 @@ class GridProcessor:
             flow_shift = self._tracker.estimate_flow_shift(analysis_gray)
             self._processed_frames += 1
             run_full_detection = self._should_run_full_detection()
+            score_raw: float | None = None
 
             if run_full_detection:
                 raw_lines = self._detector(analysis_rgb)
@@ -72,6 +83,9 @@ class GridProcessor:
                 regularized_lines = self._regularizer(clustered_lines)
                 gap_info = self._gap_analyzer(regularized_lines)
                 current_grid = self._grid_builder.build_current(regularized_lines, gap_info)
+                score_raw = self._compute_grid_score(current_grid)
+                self._last_score_raw = score_raw
+                self._last_score = self._update_score_ema(score_raw)
                 self._last_gap_info = {
                     "vertical": list(gap_info["vertical"]),
                     "horizontal": list(gap_info["horizontal"]),
@@ -103,6 +117,8 @@ class GridProcessor:
                 analysis_shape=analysis_shape,
                 lines=overlay_lines,
                 viewport_corners=viewport_corners,
+                score=self._last_score,
+                score_raw=score_raw,
             )
         except Exception:
             self._processing_failed = True
@@ -130,6 +146,23 @@ class GridProcessor:
                 )
 
         return frame_bgr
+
+    def reset_state(self, *, preserve_score: bool = True) -> None:
+        self._processed_frames = 0
+        self._last_gap_info = {
+            "vertical": [],
+            "horizontal": [],
+        }
+        if not preserve_score:
+            self._last_score = None
+        self._last_score_raw = None
+        if self._tracker_cls is not None:
+            self._tracker = self._tracker_cls()
+            self._detection_warmup_frames = max(int(self._tracker.warmup_frames), 0)
+        if self._accumulator_cls is not None:
+            self._accumulator = self._accumulator_cls()
+        if self._grid_builder_cls is not None:
+            self._grid_builder = self._grid_builder_cls()
 
     def _ensure_initialized(self) -> bool:
         if self._initialized:
@@ -161,10 +194,10 @@ class GridProcessor:
             self._clusterizer = LineClusterizer()
             self._regularizer = LineRegularizer()
             self._gap_analyzer = GapAnalyzer()
-            self._tracker = GridTracker()
-            self._accumulator = TemporalLineAccumulator()
-            self._detection_warmup_frames = max(int(self._tracker.warmup_frames), 0)
-            self._grid_builder = GridBuilder()
+            self._tracker_cls = GridTracker
+            self._accumulator_cls = TemporalLineAccumulator
+            self._grid_builder_cls = GridBuilder
+            self.reset_state(preserve_score=False)
             self._initialized = True
             LOGGER.info(
                 "Grid processor initialized with config=%s checkpoint=%s",
@@ -190,6 +223,43 @@ class GridProcessor:
             "accepted": {"vertical": [], "horizontal": []},
             "rejected": {"vertical": [], "horizontal": []},
         }
+
+    def _compute_grid_score(
+        self,
+        current_grid: dict[str, dict[str, list[dict[str, Any]]]],
+    ) -> float | None:
+        orientation_scores: list[float] = []
+        any_evidence = False
+
+        for orientation in ("vertical", "horizontal"):
+            accepted = current_grid["accepted"][orientation]
+            rejected = current_grid["rejected"][orientation]
+            total_count = len(accepted) + len(rejected)
+            accepted_support = self._line_support_sum(accepted)
+            rejected_support = self._line_support_sum(rejected)
+            total_support = accepted_support + rejected_support
+            if total_count > 0 or total_support > 1e-9:
+                any_evidence = True
+
+            count_ratio = 1.0 if total_count <= 0 else float(len(accepted)) / float(total_count)
+            support_ratio = 1.0 if total_support <= 1e-9 else accepted_support / total_support
+            # Weight support more than count so sparse-but-clean grids still score well.
+            orientation_scores.append(0.25 * count_ratio + 0.75 * support_ratio)
+
+        if not any_evidence:
+            return None
+        return math.sqrt(max(orientation_scores[0], 0.0) * max(orientation_scores[1], 0.0))
+
+    def _update_score_ema(self, score: float | None) -> float | None:
+        if score is None:
+            return self._last_score
+        if self._last_score is None:
+            return score
+        alpha = self._score_ema_alpha
+        return ((1.0 - alpha) * float(self._last_score)) + (alpha * float(score))
+
+    def _line_support_sum(self, lines: list[dict[str, Any]]) -> float:
+        return sum(max(float(line.get("conf", 0.0)), 0.0) for line in lines)
 
     def _overlay_lines_from_grid_state(
         self,

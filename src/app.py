@@ -50,7 +50,12 @@ last_error = None  # type: str | None
 pipeline_id = None  # type: str | None
 compile_jobs = {}
 compile_jobs_lock = threading.Lock()
-runtime_options = {"grid_render_enabled": True}
+runtime_options = {
+    "grid_count_enabled": True,
+    "grid_score": None,
+    "grid_score_threshold": 0.30,
+    "grid_auto_disabled": False,
+}
 runtime_options_lock = threading.Lock()
 
 
@@ -64,21 +69,79 @@ def _coerce_bool(value):
     return bool(value)
 
 
-def get_grid_render_enabled():
+def _coerce_score(value):
+    if value is None or value == "":
+        return None
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return None
+    if score < 0.0:
+        return 0.0
+    if score > 1.0:
+        return 1.0
+    return score
+
+
+def _coerce_threshold(value):
+    if value is None or value == "":
+        return 0.0
+    try:
+        threshold = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if threshold < 0.0:
+        return 0.0
+    if threshold > 1.0:
+        return 1.0
+    return threshold
+
+
+def get_grid_count_enabled():
     with runtime_options_lock:
-        return bool(runtime_options.get("grid_render_enabled", True))
+        return bool(runtime_options.get("grid_count_enabled", True))
 
 
-def set_grid_render_enabled(enabled):
+def get_grid_score():
+    with runtime_options_lock:
+        return runtime_options.get("grid_score")
+
+
+def get_grid_score_threshold():
+    with runtime_options_lock:
+        return float(runtime_options.get("grid_score_threshold", 0.30))
+
+
+def set_grid_count_enabled(enabled, *, auto: bool = False):
     coerced = _coerce_bool(enabled)
     with runtime_options_lock:
-        runtime_options["grid_render_enabled"] = coerced
-        return runtime_options["grid_render_enabled"]
+        runtime_options["grid_count_enabled"] = coerced
+        runtime_options["grid_auto_disabled"] = bool(auto and not coerced)
+        return runtime_options["grid_count_enabled"]
+
+
+def set_grid_score(score):
+    coerced = _coerce_score(score)
+    with runtime_options_lock:
+        runtime_options["grid_score"] = coerced
+        return runtime_options["grid_score"]
+
+
+def set_grid_score_threshold(value):
+    coerced = _coerce_threshold(value)
+    with runtime_options_lock:
+        runtime_options["grid_score_threshold"] = coerced
+        return runtime_options["grid_score_threshold"]
 
 
 def get_runtime_options():
     with runtime_options_lock:
-        return {"grid_render_enabled": bool(runtime_options.get("grid_render_enabled", True))}
+        return {
+            "grid_count_enabled": bool(runtime_options.get("grid_count_enabled", True)),
+            "grid_score": runtime_options.get("grid_score"),
+            "grid_score_threshold": float(runtime_options.get("grid_score_threshold", 0.30)),
+            "grid_auto_disabled": bool(runtime_options.get("grid_auto_disabled", False)),
+        }
 
 
 def _append_compile_log(job_id, line):
@@ -380,14 +443,25 @@ def api_runtime_options():
         return jsonify(get_runtime_options())
 
     payload = request.get_json(silent=True) or {}
-    if "grid_render_enabled" in payload:
-        enabled = payload.get("grid_render_enabled")
+    updated = False
+    if "grid_count_enabled" in payload:
+        set_grid_count_enabled(payload.get("grid_count_enabled"))
+        updated = True
+    elif "grid_counting_enabled" in payload:
+        set_grid_count_enabled(payload.get("grid_counting_enabled"))
+        updated = True
     elif "grid_enabled" in payload:
-        enabled = payload.get("grid_enabled")
-    else:
-        return jsonify({"error": "Missing grid_render_enabled"}), 400
+        set_grid_count_enabled(payload.get("grid_enabled"))
+        updated = True
 
-    return jsonify({"grid_render_enabled": set_grid_render_enabled(enabled)})
+    if "grid_score_threshold" in payload:
+        set_grid_score_threshold(payload.get("grid_score_threshold"))
+        updated = True
+
+    if not updated:
+        return jsonify({"error": "Missing runtime options"}), 400
+
+    return jsonify(get_runtime_options())
 
 
 @app.route("/api/models")
@@ -1069,7 +1143,19 @@ def api_start():
         data = request.json or {}
         
         source_type = data.get("source_type", "file")
-        set_grid_render_enabled(data.get("grid_enabled", get_grid_render_enabled()))
+        set_grid_score(None)
+        set_grid_count_enabled(
+            data.get(
+                "grid_count_enabled",
+                data.get(
+                    "grid_counting_enabled",
+                    data.get("grid_enabled", get_grid_count_enabled()),
+                ),
+            )
+        )
+        set_grid_score_threshold(
+            data.get("grid_score_threshold", get_grid_score_threshold())
+        )
         
         args_dict = dict()
         if os.path.exists(CONFIG_FILEPATH):
@@ -1155,8 +1241,12 @@ def api_start():
                     args.fps = int(f_fps)
                 LOGGER.info(f"File probed: {args.width}x{args.height} @ {args.fps}")
 
-        args.grid_render_enabled = get_grid_render_enabled()
-        args.grid_render_enabled_getter = get_grid_render_enabled
+        args.grid_count_enabled = get_grid_count_enabled()
+        args.grid_count_enabled_getter = get_grid_count_enabled
+        args.grid_count_enabled_setter = set_grid_count_enabled
+        args.grid_score_setter = set_grid_score
+        args.grid_score_threshold = get_grid_score_threshold()
+        args.grid_score_threshold_getter = get_grid_score_threshold
 
         LOGGER.info(f"Starting pipeline: {args}")
         tmp_pipeline = StreamPipeline(reader, args)
