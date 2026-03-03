@@ -144,6 +144,33 @@ def get_runtime_options():
         }
 
 
+def get_grid_api_state():
+    options = get_runtime_options()
+    return {
+        "enabled": options["grid_count_enabled"],
+        "score": options["grid_score"],
+        "score_threshold": options["grid_score_threshold"],
+        "auto_disabled": options["grid_auto_disabled"],
+    }
+
+
+def apply_grid_api_update(payload):
+    if not isinstance(payload, dict):
+        return False
+
+    updated = False
+
+    if "enabled" in payload:
+        set_grid_count_enabled(payload.get("enabled"))
+        updated = True
+
+    if "score_threshold" in payload:
+        set_grid_score_threshold(payload.get("score_threshold"))
+        updated = True
+
+    return updated
+
+
 def _append_compile_log(job_id, line):
     with compile_jobs_lock:
         job = compile_jobs.get(job_id)
@@ -428,40 +455,80 @@ def api_config():
     return jsonify({"stream_port": 8889})
 
 
-@app.route("/api/runtime-options", methods=["GET", "POST"])
-def api_runtime_options():
+@app.route("/api/grid", methods=["GET"])
+def api_get_grid():
     """
-    Get or update runtime UI options.
+    Get the current grid feature state.
     ---
     tags:
-      - Configuration
+      - Grid
     responses:
       200:
-        description: Runtime options
+        description: Current grid feature state
+        schema:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+              description: True when grid detection and viewport-based counting are enabled.
+            score:
+              type: number
+              description: Current EMA grid quality score in the 0..1 range, or null before the first processed frame.
+            score_threshold:
+              type: number
+              description: EMA score threshold that auto-disables the grid feature. 0 disables auto-off.
+            auto_disabled:
+              type: boolean
+              description: True when the feature was switched off automatically because the EMA score dropped below the threshold.
     """
-    if request.method == "GET":
-        return jsonify(get_runtime_options())
+    return jsonify(get_grid_api_state())
 
+
+@app.route("/api/grid", methods=["PUT"])
+def api_put_grid():
+    """
+    Update grid feature settings.
+    ---
+    tags:
+      - Grid
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          additionalProperties: false
+          properties:
+            enabled:
+              type: boolean
+              description: Enable grid detection, grid overlay, and viewport-based counting.
+            score_threshold:
+              type: number
+              minimum: 0
+              maximum: 1
+              description: EMA grid score threshold that auto-disables the grid feature. Use 0 to disable auto-off.
+    responses:
+      200:
+        description: Updated grid feature state
+        schema:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+            score:
+              type: number
+            score_threshold:
+              type: number
+            auto_disabled:
+              type: boolean
+      400:
+        description: Missing grid settings in request body
+    """
     payload = request.get_json(silent=True) or {}
-    updated = False
-    if "grid_count_enabled" in payload:
-        set_grid_count_enabled(payload.get("grid_count_enabled"))
-        updated = True
-    elif "grid_counting_enabled" in payload:
-        set_grid_count_enabled(payload.get("grid_counting_enabled"))
-        updated = True
-    elif "grid_enabled" in payload:
-        set_grid_count_enabled(payload.get("grid_enabled"))
-        updated = True
+    if not apply_grid_api_update(payload):
+        return jsonify({"error": "Missing grid settings"}), 400
 
-    if "grid_score_threshold" in payload:
-        set_grid_score_threshold(payload.get("grid_score_threshold"))
-        updated = True
-
-    if not updated:
-        return jsonify({"error": "Missing runtime options"}), 400
-
-    return jsonify(get_runtime_options())
+    return jsonify(get_grid_api_state())
 
 
 @app.route("/api/models")
@@ -761,6 +828,21 @@ def api_status():
               enum: ['idle', 'running']
             pipeline_id:
               type: string
+            runtime:
+              type: object
+              properties:
+                grid_count_enabled:
+                  type: boolean
+                  description: True when the grid feature is enabled.
+                grid_score:
+                  type: number
+                  description: Current EMA grid quality score in the 0..1 range, or null before the first processed frame.
+                grid_score_threshold:
+                  type: number
+                  description: EMA score threshold that auto-disables the grid feature. 0 disables auto-off.
+                grid_auto_disabled:
+                  type: boolean
+                  description: True when the grid feature was auto-disabled by the score threshold.
             mediamtx:
               type: object
               properties:
@@ -1110,6 +1192,14 @@ def api_start():
               type: string
             vis_conf:
               type: number
+            grid_count_enabled:
+              type: boolean
+              description: Optional initial grid feature state. When enabled, grid detection runs and counting is limited to the detected viewport.
+            grid_score_threshold:
+              type: number
+              minimum: 0
+              maximum: 1
+              description: Optional EMA grid score threshold used to auto-disable the grid feature. Use 0 to disable auto-off.
     responses:
       200:
         description: Pipeline started successfully
@@ -1145,13 +1235,7 @@ def api_start():
         source_type = data.get("source_type", "file")
         set_grid_score(None)
         set_grid_count_enabled(
-            data.get(
-                "grid_count_enabled",
-                data.get(
-                    "grid_counting_enabled",
-                    data.get("grid_enabled", get_grid_count_enabled()),
-                ),
-            )
+            data.get("grid_count_enabled", get_grid_count_enabled())
         )
         set_grid_score_threshold(
             data.get("grid_score_threshold", get_grid_score_threshold())

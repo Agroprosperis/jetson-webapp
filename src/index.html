@@ -249,13 +249,22 @@ function updateModes() {
 camDeviceEl.onchange = updateModes;
 refreshCamsBtn.onclick = loadCameras;
 
+async function updateGridSettings() {
+    const parsedThreshold = parseFloat(gridScoreThresholdEl.value || '0');
+    const scoreThreshold = Number.isFinite(parsedThreshold) ? parsedThreshold : 0;
+    await fetch('/api/grid', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            enabled: gridCountEnabledEl.checked,
+            score_threshold: scoreThreshold
+        })
+    });
+}
+
 gridCountEnabledEl.onchange = async () => {
     try {
-        await fetch('/api/runtime-options', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ grid_count_enabled: gridCountEnabledEl.checked })
-        });
+        await updateGridSettings();
     } catch(e) {
         console.error(e);
     }
@@ -263,11 +272,7 @@ gridCountEnabledEl.onchange = async () => {
 
 gridScoreThresholdEl.onchange = async () => {
     try {
-        await fetch('/api/runtime-options', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ grid_score_threshold: parseFloat(gridScoreThresholdEl.value || '0') })
-        });
+        await updateGridSettings();
     } catch(e) {
         console.error(e);
     }

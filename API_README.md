@@ -58,6 +58,56 @@ curl -X GET "http://localhost/api/config" \
 
 ---
 
+## Get the current grid feature state.
+**GET** `/api/grid`
+
+
+
+### Request Sample
+```shell
+curl -X GET "http://localhost/api/grid" \
+  -H "accept: application/json" \
+```
+
+### Response
+**200 OK**: Current grid feature state
+```json
+{
+  "auto_disabled": true,
+  "enabled": true,
+  "score": 0.0,
+  "score_threshold": 0.0
+}
+```
+
+---
+
+## Update grid feature settings.
+**PUT** `/api/grid`
+
+
+
+### Request Sample
+```shell
+curl -X PUT "http://localhost/api/grid" \
+  -H "accept: application/json" \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": true, "score_threshold": 0.0}'
+```
+
+### Response
+**200 OK**: Updated grid feature state
+```json
+{
+  "auto_disabled": true,
+  "enabled": true,
+  "score": 0.0,
+  "score_threshold": 0.0
+}
+```
+
+---
+
 ## List available model sources and their TensorRT engines (if compiled).
 **GET** `/api/model-catalog`
 
@@ -261,7 +311,7 @@ curl -X GET "http://localhost/api/results/{pid}/download" \
 curl -X POST "http://localhost/api/start" \
   -H "accept: application/json" \
   -H "Content-Type: application/json" \
-  -d '{"analysis_number": "string", "device": "string", "fps": 0, "height": 0, "model_path": "string", "source_type": "camera", "video": "string", "vis_conf": 0.0, "width": 0}'
+  -d '{"analysis_number": "string", "device": "string", "fps": 0, "grid_count_enabled": true, "grid_score_threshold": 0.0, "height": 0, "model_path": "string", "source_type": "camera", "video": "string", "vis_conf": 0.0, "width": 0}'
 ```
 
 ### Response
@@ -295,6 +345,12 @@ curl -X GET "http://localhost/api/status" \
     "whep": true
   },
   "pipeline_id": "string",
+  "runtime": {
+    "grid_auto_disabled": true,
+    "grid_count_enabled": true,
+    "grid_score": 0.0,
+    "grid_score_threshold": 0.0
+  },
   "state": "idle"
 }
 ```
