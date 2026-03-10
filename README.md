@@ -70,6 +70,8 @@ cd ${REPO_DIR}
 docker run --network host --runtime=nvidia --rm -it -e NVIDIA_DRIVER_CAPABILITIES=all -v "$(pwd)/data/model:/app/model" tilletia-app:latest yolo export format=engine model=/app/model/ul/yolo11-tilletia-detection-yolov8-seg-twxa6-41-fp16.pt imgsz=640 half
 ```
 
+The `/models` page can also manage model artifacts directly: compile missing engines, choose the Ultralytics task used at runtime (`segment`, `detect`, `auto`), and delete all artifacts for a model with confirmation.
+
 To convert Roboflow RF-DETR object detection models:
 ```
 cd ${REPO_DIR}

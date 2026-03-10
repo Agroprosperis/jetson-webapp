@@ -305,14 +305,21 @@ class UltralyticsBackend(BotSortTrackerBackend):
         super().__init__()
         LOGGER.info(f"Initializing Ultralytics Backend with model: {model_path}")
         self.model_path = model_path
-        self.model = self._load_model(model_path)
+        self.model_task = self._normalize_model_task(getattr(args, "model_task", None))
+        self.model = self._load_model(model_path, self.model_task)
         
         args.class_names = self.model.names
         LOGGER.info(f"Model initialized with class names: {self.model.names}")
 
-    def _load_model(self, path: str):
+    def _normalize_model_task(self, task):
+        if task in ("segment", "detect"):
+            return task
+        return None
+
+    def _load_model(self, path: str, task=None):
         try:
-            return YOLO(model=path, task=None)
+            LOGGER.info(f"Loading Ultralytics model with task: {task or 'auto'}")
+            return YOLO(model=path, task=task)
         except Exception as e:
             LOGGER.error(f"Failed to load UL model {path}: {e}")
             raise e

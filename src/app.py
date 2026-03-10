@@ -29,7 +29,9 @@ LOGGER = logging.getLogger("app")
 CONFIG_FILEPATH = "/app/config.json"
 HQ_OUTPUT_DIR = "/app/output_hq"
 MODEL_DIR = "/app/model"
+MODEL_TASKS_FILEPATH = os.path.join(MODEL_DIR, "model_tasks.json")
 VENDOR_DIR = "/opt/web/vendor"
+VALID_UL_MODEL_TASKS = ("segment", "detect", "auto")
 
 app = Flask(__name__)
 
@@ -50,6 +52,7 @@ last_error = None  # type: str | None
 pipeline_id = None  # type: str | None
 compile_jobs = {}
 compile_jobs_lock = threading.Lock()
+model_task_overrides_lock = threading.Lock()
 runtime_options = {
     "grid_count_enabled": True,
     "grid_score": None,
@@ -192,6 +195,158 @@ def _find_active_job_for_model(model_type, model_name):
         if selected is None or created > selected.get("created_at", ""):
             selected = job
     return selected
+
+
+def _model_task_key(model_type, model_name):
+    return f"{model_type}:{model_name}"
+
+
+def _sanitize_ul_model_task(task):
+    if not isinstance(task, str):
+        return None
+    normalized = task.strip().lower()
+    if normalized in VALID_UL_MODEL_TASKS:
+        return normalized
+    return None
+
+
+def _read_model_task_overrides_unlocked():
+    if not os.path.exists(MODEL_TASKS_FILEPATH):
+        return {}
+
+    try:
+        with open(MODEL_TASKS_FILEPATH, "r") as task_input:
+            data = json.load(task_input)
+    except FileNotFoundError:
+        return {}
+    except Exception as exc:
+        LOGGER.error("Failed to read model task config %s: %s", MODEL_TASKS_FILEPATH, exc)
+        return {}
+
+    if not isinstance(data, dict):
+        return {}
+
+    overrides = {}
+    for key, value in data.items():
+        if not isinstance(key, str):
+            continue
+        task = _sanitize_ul_model_task(value)
+        if task is not None:
+            overrides[key] = task
+    return overrides
+
+
+def _write_model_task_overrides_unlocked(overrides):
+    sanitized = {}
+    for key, value in (overrides or {}).items():
+        if not isinstance(key, str):
+            continue
+        task = _sanitize_ul_model_task(value)
+        if task is not None:
+            sanitized[key] = task
+
+    os.makedirs(os.path.dirname(MODEL_TASKS_FILEPATH), exist_ok=True)
+    tmp_path = f"{MODEL_TASKS_FILEPATH}.tmp"
+    with open(tmp_path, "w") as task_output:
+        json.dump(sanitized, task_output, indent=2, sort_keys=True)
+        task_output.write("\n")
+    os.replace(tmp_path, MODEL_TASKS_FILEPATH)
+
+
+def get_catalog_model_task(model_type, model_name):
+    if model_type != "ul":
+        return None
+
+    with model_task_overrides_lock:
+        overrides = _read_model_task_overrides_unlocked()
+    return overrides.get(_model_task_key(model_type, model_name), "segment")
+
+
+def set_catalog_model_task(model_type, model_name, task):
+    if model_type != "ul":
+        raise ValueError("Task override is only supported for Ultralytics models.")
+
+    normalized_task = _sanitize_ul_model_task(task)
+    if normalized_task is None:
+        raise ValueError("Invalid model task.")
+
+    with model_task_overrides_lock:
+        overrides = _read_model_task_overrides_unlocked()
+        key = _model_task_key(model_type, model_name)
+        if normalized_task == "segment":
+            overrides.pop(key, None)
+        else:
+            overrides[key] = normalized_task
+        _write_model_task_overrides_unlocked(overrides)
+
+    return normalized_task
+
+
+def clear_catalog_model_task(model_type, model_name):
+    with model_task_overrides_lock:
+        overrides = _read_model_task_overrides_unlocked()
+        changed = False
+        for candidate in {model_name, model_name.removesuffix("-fp16")}:
+            key = _model_task_key(model_type, candidate)
+            if key in overrides:
+                overrides.pop(key, None)
+                changed = True
+        if changed:
+            _write_model_task_overrides_unlocked(overrides)
+
+
+def resolve_model_task_for_path(model_path):
+    if not model_path:
+        return "segment"
+
+    normalized = os.path.normpath(model_path)
+    try:
+        relative = os.path.relpath(normalized, MODEL_DIR)
+    except ValueError:
+        return "segment"
+
+    parts = relative.split(os.sep)
+    if len(parts) < 2:
+        return "segment"
+
+    model_type = parts[0]
+    if model_type != "ul":
+        return "auto"
+
+    base_name = os.path.splitext(parts[-1])[0]
+    candidates = [base_name]
+    if base_name.endswith("-fp16"):
+        candidates.append(base_name[:-5])
+
+    with model_task_overrides_lock:
+        overrides = _read_model_task_overrides_unlocked()
+
+    for candidate in candidates:
+        task = overrides.get(_model_task_key(model_type, candidate))
+        if task is not None:
+            return task
+    return "segment"
+
+
+def collect_model_artifact_paths(entry):
+    if not entry:
+        return []
+
+    base_dir = os.path.join(MODEL_DIR, entry["type"])
+    base_name = entry["name"]
+    artifacts = set(entry.get("source_paths") or [])
+
+    engine = entry.get("engine") or {}
+    engine_path = engine.get("path")
+    if engine_path:
+        artifacts.add(engine_path)
+
+    for suffix in (".pt", ".onnx", ".engine"):
+        artifacts.add(os.path.join(base_dir, f"{base_name}{suffix}"))
+    if not base_name.endswith("-fp16"):
+        artifacts.add(os.path.join(base_dir, f"{base_name}-fp16.engine"))
+
+    return sorted(path for path in artifacts if os.path.isfile(path))
 
 
 def _normalize_ul_engine_output(job_id):
@@ -387,6 +542,7 @@ def build_model_catalog():
         entry["engine"] = engine
         entry["compiled"] = engine is not None
         entry["display"] = f"[{model_type.upper()}] {base}"
+        entry["task"] = get_catalog_model_task(model_type, base)
         models.append(entry)
 
     return models
@@ -620,6 +776,10 @@ def api_model_catalog():
                         type: string
                       path:
                         type: string
+                  task:
+                    type: string
+                    enum: ['segment', 'detect', 'auto']
+                    description: Saved Ultralytics task override for this model. Null for non-UL models.
                   compiled:
                     type: boolean
     """
@@ -705,6 +865,78 @@ def api_model_compile():
     thread.start()
 
     return jsonify({"job_id": job_id})
+
+
+@app.route("/api/model-task", methods=["POST"])
+def api_model_task():
+    payload = request.get_json(silent=True) or {}
+    model_type = payload.get("type")
+    model_name = payload.get("name")
+    task = payload.get("task")
+
+    if model_type != "ul" or not model_name:
+        return jsonify({"error": "Invalid model type or name."}), 400
+
+    catalog = build_model_catalog()
+    entry = next(
+        (item for item in catalog if item["type"] == model_type and item["name"] == model_name),
+        None,
+    )
+    if entry is None:
+        return jsonify({"error": "Model not found."}), 404
+
+    try:
+        selected_task = set_catalog_model_task(model_type, model_name, task)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    return jsonify({
+        "type": model_type,
+        "name": model_name,
+        "task": selected_task,
+    })
+
+
+@app.route("/api/model-delete", methods=["POST"])
+def api_model_delete():
+    payload = request.get_json(silent=True) or {}
+    model_type = payload.get("type")
+    model_name = payload.get("name")
+
+    if model_type not in ("ul", "rf") or not model_name:
+        return jsonify({"error": "Invalid model type or name."}), 400
+
+    catalog = build_model_catalog()
+    entry = next(
+        (item for item in catalog if item["type"] == model_type and item["name"] == model_name),
+        None,
+    )
+    if entry is None:
+        return jsonify({"error": "Model not found."}), 404
+
+    artifact_paths = collect_model_artifact_paths(entry)
+    current_model_path = current_config.get("model_path")
+    if is_pipeline_running() and current_model_path in artifact_paths:
+        return jsonify({"error": "Cannot delete the model that is currently running."}), 409
+
+    deleted = []
+    for path in artifact_paths:
+        try:
+            os.remove(path)
+            deleted.append(path)
+        except FileNotFoundError:
+            continue
+        except Exception as exc:
+            LOGGER.error("Failed to delete model artifact %s: %s", path, exc)
+            return jsonify({"error": f"Failed to delete {path}: {exc}"}), 500
+
+    clear_catalog_model_task(model_type, model_name)
+
+    return jsonify({
+        "type": model_type,
+        "name": model_name,
+        "deleted": deleted,
+    })
 
 
 @app.route("/api/model-compile-jobs")
@@ -873,7 +1105,8 @@ def api_status():
         "runtime": get_runtime_options(),
         "config": {
             "video_reference": video_desc,
-            "model": os.path.basename(current_model) if current_model else ""
+            "model": os.path.basename(current_model) if current_model else "",
+            "model_task": current_config.get("model_task"),
         },
         "threads": live_threads,
     })
@@ -1190,6 +1423,10 @@ def api_start():
               description: Path to uploaded video file
             model_path:
               type: string
+            model_task:
+              type: string
+              enum: ['segment', 'detect', 'auto']
+              description: Optional Ultralytics task override. When omitted, the saved catalog setting is used and defaults to segment.
             vis_conf:
               type: number
             grid_count_enabled:
@@ -1258,6 +1495,9 @@ def api_start():
         if not model_path:
             model_path = "/app/model/weights-fp16.engine"
 
+        requested_model_task = _sanitize_ul_model_task(data.get("model_task"))
+        resolved_model_task = requested_model_task or resolve_model_task_for_path(model_path)
+
         requested_conf = float(data.get("vis_conf", 0.75))
         vis_strategy = data.get("vis_strategy", "tracker")
         
@@ -1274,6 +1514,7 @@ def api_start():
             hq_output_dir=HQ_OUTPUT_DIR,
             output_stream='WebRTC',
             model_path=model_path,
+            model_task=resolved_model_task,
         ))
 
         if source_type == "camera":
@@ -1339,7 +1580,8 @@ def api_start():
 
         current_config = {
             "video_description": video_desc,
-            "model_path": model_path
+            "model_path": model_path,
+            "model_task": resolved_model_task,
         }
 
         return jsonify({"success": True, "pipeline_id": pipeline_id})

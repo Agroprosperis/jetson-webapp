@@ -26,6 +26,11 @@ tr:hover { background: #2a2a2a; }
   border-radius: 6px; cursor: pointer; font-size: 12px;
 }
 .btn-ghost:hover { background: #3c3c3c; }
+.btn-danger {
+  background: #5b1f1f; color: #fee2e2; border: 1px solid #7f1d1d; padding: 6px 10px;
+  border-radius: 6px; cursor: pointer; font-size: 12px;
+}
+.btn-danger:hover { background: #7f1d1d; }
 .tag { display: inline-block; padding: 4px 8px; border-radius: 999px; font-size: 11px; }
 .tag-ok { background: #0f2f1f; color: #6ee7b7; border: 1px solid #14532d; }
 .tag-warn { background: #2a1b00; color: #facc15; border: 1px solid #713f12; }
@@ -98,6 +103,7 @@ tr:hover { background: #2a2a2a; }
               <th>Model</th>
               <th>Sources</th>
               <th>TensorRT Engine</th>
+              <th>Task</th>
               <th>Action</th>
           </tr>
       </thead>
@@ -136,6 +142,15 @@ function filenameFromPath(path) {
 
 function modelKey(type, name) {
     return `${type || ''}::${name || ''}`;
+}
+
+function taskOptionsHtml(selectedTask) {
+    const selected = selectedTask || 'segment';
+    return ['segment', 'detect', 'auto'].map(task => {
+        const label = task === 'segment' ? 'segment (default)' : task;
+        const isSelected = task === selected ? ' selected' : '';
+        return `<option value="${task}"${isSelected}>${label}</option>`;
+    }).join('');
 }
 
 function formatDuration(sec) {
@@ -192,6 +207,7 @@ async function loadModels() {
     const table = document.getElementById('modelsTable');
     const tbody = document.getElementById('modelsBody');
     const loading = document.getElementById('loading');
+    document.querySelectorAll('.empty[data-model-empty="1"]').forEach(el => el.remove());
 
     try {
         const res = await fetch('/api/model-catalog');
@@ -203,6 +219,7 @@ async function loadModels() {
         if (!res.ok) {
             const msg = document.createElement('div');
             msg.className = 'empty';
+            msg.setAttribute('data-model-empty', '1');
             msg.textContent = data.error || 'Failed to load model catalog.';
             document.body.appendChild(msg);
             return;
@@ -213,6 +230,7 @@ async function loadModels() {
             table.style.display = 'none';
             const msg = document.createElement('div');
             msg.className = 'empty';
+            msg.setAttribute('data-model-empty', '1');
             msg.textContent = 'No models found.';
             document.body.appendChild(msg);
             return;
@@ -227,6 +245,7 @@ async function loadModels() {
             const sourcesLabel = sourceFiles.length > 0 ? sourceFiles.join(', ') : '-';
             const latestJob = getLatestJobForModel(model.type, model.name);
             const isCompiling = latestJob && (latestJob.status === 'queued' || latestJob.status === 'running');
+            const selectedTask = model.task || 'segment';
 
             let engineHtml = '<span class="tag tag-warn">Not compiled</span>';
             if (model.compiled && model.engine) {
@@ -235,13 +254,24 @@ async function loadModels() {
             }
 
             const hasPtSource = (model.sources || []).includes('pt');
-            const actionHtml = isCompiling
-                ? `<button type="button" class="btn-ghost btn-open-job" data-job-id="${latestJob.id}" data-job-title="Compiling ${model.type.toUpperCase()} / ${model.name}">View Logs</button>`
-                : (model.compiled
-                ? '<span class="tag tag-ok">Compiled</span>'
-                : (hasPtSource
-                    ? `<button type="button" class="btn-compile" data-name="${model.name}" data-type="${model.type}">Compile</button>`
-                    : '<span class="tag tag-warn">No .pt</span>'));
+            const taskHtml = model.type === 'ul'
+                ? `<select class="task-select" data-name="${model.name}" data-type="${model.type}" data-previous="${selectedTask}">
+                    ${taskOptionsHtml(selectedTask)}
+                   </select>
+                   <div class="meta">Controls the Ultralytics task.</div>`
+                : '<span class="meta">N/A</span>';
+            const actionParts = [];
+            if (isCompiling) {
+                actionParts.push(`<button type="button" class="btn-ghost btn-open-job" data-job-id="${latestJob.id}" data-job-title="Compiling ${model.type.toUpperCase()} / ${model.name}">View Logs</button>`);
+            } else if (model.compiled) {
+                actionParts.push('<span class="tag tag-ok">Compiled</span>');
+            } else if (hasPtSource) {
+                actionParts.push(`<button type="button" class="btn-compile" data-name="${model.name}" data-type="${model.type}">Compile</button>`);
+            } else {
+                actionParts.push('<span class="tag tag-warn">No .pt</span>');
+            }
+            actionParts.push(`<button type="button" class="btn-danger btn-delete-model" data-name="${model.name}" data-type="${model.type}" ${isCompiling ? 'disabled' : ''}>Delete</button>`);
+            const actionHtml = actionParts.join(' ');
             const statusMeta = isCompiling ? `<div class="meta"><span class="tag tag-run">${latestJob.status}</span></div>` : '';
 
             tr.innerHTML = `
@@ -254,6 +284,7 @@ async function loadModels() {
                     <div class="meta">${(model.sources || []).join(', ')}</div>
                 </td>
                 <td>${engineHtml}${statusMeta}</td>
+                <td>${taskHtml}</td>
                 <td>${actionHtml}</td>
             `;
 
@@ -274,10 +305,21 @@ async function loadModels() {
                 openCompileLogs(jobId, title);
             });
         });
+        tbody.querySelectorAll('.task-select').forEach(select => {
+            select.addEventListener('change', () => updateModelTask(select));
+        });
+        tbody.querySelectorAll('.btn-delete-model').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const name = btn.getAttribute('data-name');
+                const type = btn.getAttribute('data-type');
+                deleteModel(btn, { name, type });
+            });
+        });
     } catch (err) {
         loading.style.display = 'none';
         const msg = document.createElement('div');
         msg.className = 'empty';
+        msg.setAttribute('data-model-empty', '1');
         msg.textContent = 'Failed to load model catalog.';
         document.body.appendChild(msg);
     }
@@ -331,6 +373,65 @@ async function startCompile(buttonEl, model) {
         buttonEl.disabled = false;
         buttonEl.textContent = originalText;
         alert('Failed to start compilation.');
+    }
+}
+
+async function updateModelTask(selectEl) {
+    const name = selectEl.getAttribute('data-name');
+    const type = selectEl.getAttribute('data-type');
+    const previous = selectEl.getAttribute('data-previous') || 'segment';
+    const task = selectEl.value;
+
+    if (!name || type !== 'ul') return;
+
+    selectEl.disabled = true;
+    try {
+        const res = await fetch('/api/model-task', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, type, task })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            throw new Error(data.error || 'Failed to save task.');
+        }
+        const selectedTask = data.task || 'segment';
+        selectEl.value = selectedTask;
+        selectEl.setAttribute('data-previous', selectedTask);
+    } catch (err) {
+        selectEl.value = previous;
+        alert(err.message || 'Failed to save task.');
+    } finally {
+        selectEl.disabled = false;
+    }
+}
+
+async function deleteModel(buttonEl, model) {
+    if (!model || !model.name || !model.type) return;
+
+    const confirmed = confirm(`Delete all artifacts for ${model.type.toUpperCase()} / ${model.name}? This removes .pt, .onnx, and .engine files.`);
+    if (!confirmed) return;
+
+    buttonEl.disabled = true;
+    const originalText = buttonEl.textContent;
+    buttonEl.textContent = 'Deleting...';
+
+    try {
+        const res = await fetch('/api/model-delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: model.name, type: model.type })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            throw new Error(data.error || 'Failed to delete model.');
+        }
+        await loadCompileJobs();
+        await loadModels();
+    } catch (err) {
+        buttonEl.disabled = false;
+        buttonEl.textContent = originalText;
+        alert(err.message || 'Failed to delete model.');
     }
 }
 

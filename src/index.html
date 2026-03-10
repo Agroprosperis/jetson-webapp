@@ -372,6 +372,7 @@ function applyState(j){
   if(state === 'running' && j.config) {
       if(j.config.video_reference) msg += ` [${j.config.video_reference}]`;
       if(j.config.model) msg += ` [Model: ${j.config.model}]`;
+      if(j.config.model_task) msg += ` [Task: ${j.config.model_task}]`;
   }
   statusEl.textContent=msg;
   
