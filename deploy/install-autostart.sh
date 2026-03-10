@@ -20,9 +20,7 @@ SERVICE_PATH="/etc/systemd/system/tilletia-app.service"
 ENV_DIR="/etc/tilletia-app"
 MEDIAMTX_TEMPLATE="$APP_DIR/config/mediamtx.yml"
 MEDIAMTX_CONFIG="$ENV_DIR/mediamtx.yml"
-BASE_IMAGE="opencv-gst:latest"
-APP_IMAGE="tilletia-app-web:latest"
-BASE_DOCKERFILE="$APP_DIR/docker/Dockerfile.desktop"
+APP_IMAGE="tilletia-app:latest"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "docker is not installed or not in PATH"
@@ -42,7 +40,7 @@ paths: {}
 EOF
   fi
   export TILLETIA_DATA_ROOT="${TILLETIA_DATA_ROOT:-$APP_DIR/data}"
-  docker compose -f "$COMPOSE_FILE" down || true
+  docker compose -f "$COMPOSE_FILE" down --remove-orphans || true
 
   if systemctl list-unit-files | grep -q '^tilletia-app\.service'; then
     systemctl stop tilletia-app.service || true
@@ -97,13 +95,8 @@ if [[ -d "$APP_DIR/data/runs" ]]; then
   cp -an "$APP_DIR/data/runs/." /var/lib/tilletia-app/runs/
 fi
 
-if ! docker image inspect "$BASE_IMAGE" >/dev/null 2>&1; then
-  echo "Building base image $BASE_IMAGE from $BASE_DOCKERFILE..."
-  docker build -t "$BASE_IMAGE" -f "$BASE_DOCKERFILE" "$APP_DIR"
-fi
-
 echo "Building app image $APP_IMAGE..."
-docker compose -f "$COMPOSE_FILE" build tilletia-app-web
+docker compose -f "$COMPOSE_FILE" build tilletia-app
 
 sed "s|__DEPLOY_DIR__|$SCRIPT_DIR|g" "$SERVICE_TEMPLATE" > "$SERVICE_PATH"
 chmod 0644 "$SERVICE_PATH"

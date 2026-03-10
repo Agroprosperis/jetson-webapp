@@ -36,20 +36,22 @@ Optional: Run stack without installing service:
 cd ${REPO_DIR}/deploy
 ./start.sh
 ```
-This mode mounts models from `${REPO_DIR}/data/model`, and uses `${REPO_DIR}/data/output_hq` and `${REPO_DIR}/data/runs` for outputs.
+This mode builds the `tilletia-app:latest` image from the current tree, mounts models from `${REPO_DIR}/data/model`, and uses `${REPO_DIR}/data/output_hq` and `${REPO_DIR}/data/runs` for outputs.
 Missing runtime folders under `data/` are created automatically by deploy scripts.
 
 # Development tips&tricks
 
-On the very first run build docker image with all dependencies:
+Build the runtime image from the single Dockerfile:
 ```
-cd ${REPO_DIR}/docker
-docker build -t opencv-gst:latest -f Dockerfile.desktop .
+cd ${REPO_DIR}
+sudo docker build -t tilletia-app:latest -f docker/Dockerfile.desktop .
 ```
 
-Optional: test the docker image by trying to compile as tensorrt the pre-trained ultralytics yolon model. You should see `TensorRT: export success ✅ 200.1s, saved as 'yolo11n.engine' (11.9 MB)` at the end:
+This image includes OpenCV, the pinned LINEA runtime, and the application code. Use `${REPO_DIR}` as the build context, not `${REPO_DIR}/docker`, because the image copies files from `src/`.
+
+Optional: test the docker image by trying to compile as TensorRT the pre-trained Ultralytics YOLO model. You should see `TensorRT: export success ✅ 200.1s, saved as 'yolo11n.engine' (11.9 MB)` at the end:
 ```
-docker run --network host --runtime=nvidia --rm -it -e NVIDIA_DRIVER_CAPABILITIES=all -v $(pwd):/app opencv-gst:latest yolo export format=engine
+docker run --network host --runtime=nvidia --rm -it -e NVIDIA_DRIVER_CAPABILITIES=all -v $(pwd):/app tilletia-app:latest yolo export format=engine
 ```
 
 Ensure NVIDIA Container Toolkit is installed on the host if you run Docker with GPU acceleration.
@@ -65,7 +67,7 @@ Model must be compiled as tensorrt (once new model is added). Ultralytics models
 4. Compile the model to tensorrt
 ```
 cd ${REPO_DIR}
-docker run --network host --runtime=nvidia --rm -it -e NVIDIA_DRIVER_CAPABILITIES=all -v "$(pwd)/data/model:/app/model" opencv-gst:latest yolo export format=engine model=/app/model/ul/yolo11-tilletia-detection-yolov8-seg-twxa6-41-fp16.pt imgsz=640 half
+docker run --network host --runtime=nvidia --rm -it -e NVIDIA_DRIVER_CAPABILITIES=all -v "$(pwd)/data/model:/app/model" tilletia-app:latest yolo export format=engine model=/app/model/ul/yolo11-tilletia-detection-yolov8-seg-twxa6-41-fp16.pt imgsz=640 half
 ```
 
 To convert Roboflow RF-DETR object detection models:
@@ -89,7 +91,7 @@ docker run --network host --runtime=nvidia --rm -it --device=/dev/video0 \
   -v "$(pwd)/data/model:/app/model" \
   -v "$(pwd)/data/output_hq:/app/output_hq" \
   -v "$(pwd)/data/runs:/app/runs" \
-  opencv-gst:latest python /app/app.py
+  tilletia-app:latest python /app/app.py
 ```
 
 

@@ -7,8 +7,6 @@ COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 MEDIAMTX_CONFIG="/etc/tilletia-app/mediamtx.yml"
 LOCAL_MEDIAMTX_CONFIG="$APP_DIR/config/mediamtx.yml"
 LOCAL_DATA_ROOT="$APP_DIR/data"
-BASE_IMAGE="opencv-gst:latest"
-BASE_DOCKERFILE="$APP_DIR/docker/Dockerfile.desktop"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "docker is not installed or not in PATH"
@@ -35,12 +33,7 @@ mkdir -p \
   "$TILLETIA_DATA_ROOT/output_hq" \
   "$TILLETIA_DATA_ROOT/runs"
 
-if ! docker image inspect "$BASE_IMAGE" >/dev/null 2>&1; then
-  echo "Base image $BASE_IMAGE not found, building from $BASE_DOCKERFILE..."
-  docker build -t "$BASE_IMAGE" -f "$BASE_DOCKERFILE" "$APP_DIR"
-fi
-
-docker compose -f "$COMPOSE_FILE" up --build -d
+docker compose -f "$COMPOSE_FILE" up --build --remove-orphans -d
 
 echo "Started services"
 docker compose -f "$COMPOSE_FILE" ps
@@ -58,8 +51,8 @@ if command -v curl >/dev/null 2>&1; then
 
   if [[ "$healthy" -ne 1 ]]; then
     echo "Web app is not reachable on port 8000 after startup."
-    echo "Last logs from tilletia-app-web:"
-    docker compose -f "$COMPOSE_FILE" logs --tail=120 tilletia-app-web || true
+    echo "Last logs from tilletia-app:"
+    docker compose -f "$COMPOSE_FILE" logs --tail=120 tilletia-app || true
     exit 1
   fi
 

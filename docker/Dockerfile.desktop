@@ -1,6 +1,13 @@
 FROM ultralytics/ultralytics:latest
 
-ENV DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONPATH=/app:/opt/linea \
+    GRID_LINEA_CONFIG=/opt/linea/configs/linea/linea_hgnetv2_s.py \
+    GRID_LINEA_CHECKPOINT=/opt/linea/weights/linea_hgnetv2_s.pth
+
+ARG LINEA_REPO_URL=https://github.com/SebastianJanampa/LINEA.git
+ARG LINEA_COMMIT=475c5ceea64114a48495c15888094e12f1a2d267
+ARG LINEA_CHECKPOINT_URL=https://github.com/SebastianJanampa/storage/releases/download/LINEA/linea_hgnetv2_s.pth
 
 # 1. System deps + GStreamer + CMake (Ubuntu's 3.22)
 RUN apt-get update && apt-get install -y \
@@ -18,10 +25,21 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. Remove any prebuilt OpenCV wheels that come with Ultralytics
-RUN python3 -m pip uninstall -y opencv-python opencv-contrib-python opencv-python-headless || true
+# 2. Install runtime Python packages first; some of them pull opencv-python transitively.
+RUN apt update && apt install -y gstreamer1.0-rtsp && rm -rf /var/lib/apt/lists/*
+RUN python3 -m pip install --no-cache-dir \
+    "numpy<2.0" pillow lapx supervision \
+    flask 'onnx>=1.12.0' 'onnxslim>=0.1.71' 'onnxruntime-gpu'
 
-# 3. Get OpenCV sources (specific version recommended)
+RUN python3 -m pip install  --no-cache-dir tensorrt
+RUN python3 -m pip install --no-cache-dir flasgger
+RUN python3 -m pip install --no-cache-dir scipy addict yapf
+
+# 3. Remove any wheel-based OpenCV packages so the source build below owns `cv2`.
+RUN python3 -m pip uninstall -y opencv-python opencv-contrib-python opencv-python-headless || true
+RUN rm -rf "$(python3 -c "from sysconfig import get_paths; print(get_paths()['platlib'])")/cv2"
+
+# 4. Get OpenCV sources (specific version recommended)
 WORKDIR /opt
 RUN git clone --depth 1 --branch 4.8.1 https://github.com/opencv/opencv.git && \
     git clone --depth 1 --branch 4.8.1 https://github.com/opencv/opencv_contrib.git
@@ -30,7 +48,7 @@ WORKDIR /opt/opencv
 RUN mkdir build
 WORKDIR /opt/opencv/build
 
-# 4. Configure OpenCV with GStreamer using Ubuntu's CMake (3.22)
+# 5. Configure OpenCV with GStreamer using Ubuntu's CMake (3.22)
 RUN /usr/bin/cmake .. \
     -D CMAKE_BUILD_TYPE=Release \
     -D CMAKE_INSTALL_PREFIX=/usr/local \
@@ -45,19 +63,19 @@ RUN /usr/bin/cmake .. \
     -D OPENCV_EXTRA_MODULES_PATH=/opt/opencv_contrib/modules \
     -D PYTHON3_EXECUTABLE=$(which python3) \
     -D PYTHON3_INCLUDE_DIR=$(python3 -c "from sysconfig import get_paths; print(get_paths()['include'])") \
-    -D PYTHON3_PACKAGES_PATH=$(python3 -c "from sysconfig import get_paths; print(get_paths()['purelib'])")
+    -D PYTHON3_LIBRARY=$(python3 -c "import sysconfig; print(f\"{sysconfig.get_config_var('LIBDIR')}/{sysconfig.get_config_var('LDLIBRARY')}\")") \
+    -D PYTHON3_NUMPY_INCLUDE_DIRS=$(python3 -c "import numpy; print(numpy.get_include())") \
+    -D PYTHON3_PACKAGES_PATH=$(python3 -c "from sysconfig import get_paths; print(get_paths()['platlib'])")
 
-# 5. Build & install
+# 6. Build & install OpenCV last so no later package install overwrites `cv2`.
 RUN make -j"$(nproc)" && make install && ldconfig
 
-# 6. Make sure numpy is there (needed by cv2)
-RUN apt update && apt install -y gstreamer1.0-rtsp && rm -rf /var/lib/apt/lists/*
-RUN python3 -m pip install --no-cache-dir \
-    "numpy<2.0" pillow lapx supervision \
-    flask 'onnx>=1.12.0' 'onnxslim>=0.1.71' 'onnxruntime-gpu'
-
-RUN python3 -m pip install  --no-cache-dir tensorrt
-RUN python3 -m pip install --no-cache-dir flasgger
+RUN git clone "$LINEA_REPO_URL" /opt/linea \
+    && cd /opt/linea \
+    && git checkout "$LINEA_COMMIT" \
+    && mkdir -p /opt/linea/weights \
+    && curl -LfsS "$LINEA_CHECKPOINT_URL" -o /opt/linea/weights/linea_hgnetv2_s.pth \
+    && rm -rf /opt/linea/.git
 
 RUN mkdir -p /opt/web/vendor/glightbox /opt/web/vendor/sweetalert2 && \
     curl -fsSL "https://cdn.jsdelivr.net/npm/glightbox/dist/css/glightbox.min.css" -o /opt/web/vendor/glightbox/glightbox.min.css && \
@@ -65,4 +83,8 @@ RUN mkdir -p /opt/web/vendor/glightbox /opt/web/vendor/sweetalert2 && \
     curl -fsSL "https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css" -o /opt/web/vendor/sweetalert2/sweetalert2.min.css && \
     curl -fsSL "https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.js" -o /opt/web/vendor/sweetalert2/sweetalert2.min.js
 
-WORKDIR /workspace
+WORKDIR /app
+
+COPY src/ /app/
+
+CMD ["python", "/app/app.py"]

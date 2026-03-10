@@ -24,4 +24,4 @@ paths: {}
 EOF
 fi
 
-docker compose -f "$COMPOSE_FILE" down
+docker compose -f "$COMPOSE_FILE" down --remove-orphans

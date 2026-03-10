@@ -7,13 +7,12 @@ services:
     volumes:
       - ${MEDIAMTX_CONFIG_PATH:-/etc/tilletia-app/mediamtx.yml}:/mediamtx.yml:ro
 
-  tilletia-app-web:
-    image: tilletia-app-web:latest
-    container_name: tilletia-app-web
+  tilletia-app:
+    image: tilletia-app:latest
+    container_name: tilletia-app
     build:
       context: ..
-      dockerfile: docker/Dockerfile.web
-    command: ["python", "/app/app.py"]
+      dockerfile: docker/Dockerfile.desktop
     network_mode: host
     restart: unless-stopped
     runtime: nvidia
