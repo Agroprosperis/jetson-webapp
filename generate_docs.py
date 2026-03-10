@@ -34,6 +34,64 @@ def generate_example(schema, definitions):
     
     return {}
 
+
+def example_value_for_param(param):
+    if 'enum' in param and param['enum']:
+        return param['enum'][0]
+
+    param_type = param.get('type')
+    if param_type == 'integer':
+        return '0'
+    if param_type == 'number':
+        return '0.0'
+    if param_type == 'boolean':
+        return 'true'
+    return 'string'
+
+
+def build_sample_url(path, parameters):
+    sample_path = path
+    query_parts = []
+
+    for param in parameters:
+        location = param.get('in')
+        name = param.get('name')
+        if not name:
+            continue
+
+        sample_value = example_value_for_param(param)
+        if location == 'path':
+            sample_path = sample_path.replace(f"{{{name}}}", str(sample_value))
+        elif location == 'query':
+            query_parts.append(f"{name}={sample_value}")
+
+    if query_parts:
+        return f"http://localhost{sample_path}?" + "&".join(query_parts)
+    return f"http://localhost{sample_path}"
+
+
+def append_parameters_markdown(md, parameters):
+    simple_params = [p for p in parameters if p.get('in') != 'body']
+    if not simple_params:
+        return
+
+    md.append("### Parameters")
+    for param in simple_params:
+        name = param.get('name', 'unknown')
+        location = param.get('in', 'unknown')
+        required = 'required' if param.get('required') else 'optional'
+        description = param.get('description', '')
+        param_type = param.get('type', 'object')
+        enum = param.get('enum')
+
+        line = f"- `{name}` ({location}, {param_type}, {required})"
+        if enum:
+            line += f": allowed values `{', '.join(map(str, enum))}`"
+        if description:
+            line += f" - {description}"
+        md.append(line)
+    md.append("")
+
 def main():
     # 1. Load Swagger File
     try:
@@ -65,14 +123,16 @@ def main():
             md.append(f"**{method_upper}** `{path}`\n")
             md.append(f"{details.get('description', '')}\n")
 
+            parameters = details.get('parameters', [])
+            append_parameters_markdown(md, parameters)
+
             # --- cURL Sample ---
             md.append("### Request Sample")
             md.append("```shell")
-            md.append(f'curl -X {method_upper} "http://localhost{path}" \\')
+            md.append(f'curl -X {method_upper} "{build_sample_url(path, parameters)}" \\')
             md.append('  -H "accept: application/json" \\')
 
             # Handle Body Parameter for cURL
-            parameters = details.get('parameters', [])
             body_param = next((p for p in parameters if p.get('in') == 'body'), None)
             
             if body_param and 'schema' in body_param:

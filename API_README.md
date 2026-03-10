@@ -275,9 +275,12 @@ curl -X GET "http://localhost/api/models" \
 
 
 
+### Parameters
+- `date` (query, string, optional) - Optional exact date in YYYY-MM-DD format.
+
 ### Request Sample
 ```shell
-curl -X GET "http://localhost/api/results" \
+curl -X GET "http://localhost/api/results?date=string" \
   -H "accept: application/json" \
 ```
 
@@ -302,9 +305,13 @@ curl -X GET "http://localhost/api/results" \
 
 
 
+### Parameters
+- `analysis_id` (query, string, optional) - The Analysis ID or Timestamp to filter by
+- `date` (query, string, optional) - Optional exact date in YYYY-MM-DD format.
+
 ### Request Sample
 ```shell
-curl -X GET "http://localhost/api/results/search" \
+curl -X GET "http://localhost/api/results/search?analysis_id=string&date=string" \
   -H "accept: application/json" \
 ```
 
@@ -329,9 +336,12 @@ curl -X GET "http://localhost/api/results/search" \
 
 
 
+### Parameters
+- `pid` (path, string, required) - The Analysis ID to delete
+
 ### Request Sample
 ```shell
-curl -X DELETE "http://localhost/api/results/{pid}" \
+curl -X DELETE "http://localhost/api/results/string" \
   -H "accept: application/json" \
 ```
 
@@ -344,9 +354,12 @@ curl -X DELETE "http://localhost/api/results/{pid}" \
 
 
 
+### Parameters
+- `pid` (path, string, required) - The Analysis ID to download
+
 ### Request Sample
 ```shell
-curl -X GET "http://localhost/api/results/{pid}/download" \
+curl -X GET "http://localhost/api/results/string/download" \
   -H "accept: application/json" \
 ```
 
@@ -359,9 +372,12 @@ curl -X GET "http://localhost/api/results/{pid}/download" \
 
 
 
+### Parameters
+- `pid` (path, string, required) - The Analysis ID to inspect
+
 ### Request Sample
 ```shell
-curl -X GET "http://localhost/api/results/{pid}/last-row" \
+curl -X GET "http://localhost/api/results/string/last-row" \
   -H "accept: application/json" \
 ```
 
@@ -466,6 +482,9 @@ curl -X POST "http://localhost/api/stop" \
 
 
 
+### Parameters
+- `file` (formData, file, required) - The video file to upload
+
 ### Request Sample
 ```shell
 curl -X POST "http://localhost/api/upload" \
@@ -487,9 +506,12 @@ curl -X POST "http://localhost/api/upload" \
 
 
 
+### Parameters
+- `filename` (path, string, required) - Relative file path within the results directory
+
 ### Request Sample
 ```shell
-curl -X GET "http://localhost/download/{filename}" \
+curl -X GET "http://localhost/download/string" \
   -H "accept: application/json" \
 ```
 
