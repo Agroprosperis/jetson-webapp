@@ -137,6 +137,7 @@ curl -X GET "http://localhost/api/model-catalog" \
       "sources": [
         "string"
       ],
+      "task": "segment",
       "type": "string"
     }
   ]
@@ -188,6 +189,58 @@ curl -X GET "http://localhost/api/model-compile/{job_id}" \
 
 ### Response
 **200 OK**: Compile job status
+---
+
+## Delete all stored artifacts for a catalog model.
+**POST** `/api/model-delete`
+
+
+
+### Request Sample
+```shell
+curl -X POST "http://localhost/api/model-delete" \
+  -H "accept: application/json" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "string", "type": "ul"}'
+```
+
+### Response
+**200 OK**: Deleted artifact list
+```json
+{
+  "deleted": [
+    "string"
+  ],
+  "name": "string",
+  "type": "string"
+}
+```
+
+---
+
+## Save the Ultralytics task override for a catalog model.
+**POST** `/api/model-task`
+
+
+
+### Request Sample
+```shell
+curl -X POST "http://localhost/api/model-task" \
+  -H "accept: application/json" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "string", "task": "segment", "type": "ul"}'
+```
+
+### Response
+**200 OK**: Saved task override
+```json
+{
+  "name": "string",
+  "task": "segment",
+  "type": "string"
+}
+```
+
 ---
 
 ## List available *.engine models.
@@ -301,6 +354,42 @@ curl -X GET "http://localhost/api/results/{pid}/download" \
 **200 OK**: ZIP archive of the result folder
 ---
 
+## Return the last non-empty row from the result CSV as JSON.
+**GET** `/api/results/{pid}/last-row`
+
+
+
+### Request Sample
+```shell
+curl -X GET "http://localhost/api/results/{pid}/last-row" \
+  -H "accept: application/json" \
+```
+
+### Response
+**200 OK**: Last CSV row
+```json
+{
+  "analysis_id": "string",
+  "row": {
+    "analysis_number": "string",
+    "detections": [
+      {
+        "bbox": [
+          0
+        ],
+        "class_id": 0,
+        "confidence": 0.0
+      }
+    ],
+    "frame": 0,
+    "s_value": 0.0,
+    "total_unique_objects": 0
+  }
+}
+```
+
+---
+
 ## Start the inference pipeline.
 **POST** `/api/start`
 
@@ -311,7 +400,7 @@ curl -X GET "http://localhost/api/results/{pid}/download" \
 curl -X POST "http://localhost/api/start" \
   -H "accept: application/json" \
   -H "Content-Type: application/json" \
-  -d '{"analysis_number": "string", "device": "string", "fps": 0, "grid_count_enabled": true, "grid_score_threshold": 0.0, "height": 0, "model_path": "string", "source_type": "camera", "video": "string", "vis_conf": 0.0, "width": 0}'
+  -d '{"analysis_number": "string", "device": "string", "fps": 0, "grid_count_enabled": true, "grid_score_threshold": 0.0, "height": 0, "model_path": "string", "model_task": "segment", "source_type": "camera", "video": "string", "vis_conf": 0.0, "width": 0}'
 ```
 
 ### Response

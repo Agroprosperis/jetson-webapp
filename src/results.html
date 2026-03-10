@@ -43,6 +43,13 @@ a:hover { text-decoration: underline; }
 .folder-toggle { cursor: pointer; }
 .folder-caret { color: #888; margin-right: 8px; }
 .file-type { color: #888; text-transform: uppercase; font-size: 11px; letter-spacing: 0.04em; }
+.toolbar { display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap; margin-bottom:16px; }
+.toolbar label { display:flex; flex-direction:column; gap:6px; color:#aaa; font-size:12px; }
+.toolbar input, .toolbar button {
+    background:#222; color:#eee; border:1px solid #333; border-radius:6px; padding:8px 10px; font-size:13px;
+}
+.toolbar button { cursor:pointer; }
+.toolbar button:hover { background:#2a2a2a; }
 </style>
 </head>
 <body>
@@ -50,6 +57,15 @@ a:hover { text-decoration: underline; }
 <a href="/" class="back-link">← Back to Dashboard</a>
 
 <h1>Analysis Results</h1>
+
+<div class="toolbar">
+    <label>
+        Date
+        <input id="dateFilter" type="date" />
+    </label>
+    <button id="applyFilters" type="button">Apply Filter</button>
+    <button id="clearFilters" type="button">Clear</button>
+</div>
 
 <div id="loading">Loading...</div>
 
@@ -66,23 +82,40 @@ a:hover { text-decoration: underline; }
 </table>
 
 <script>
+function buildResultsUrl() {
+    const params = new URLSearchParams();
+    const selectedDate = document.getElementById('dateFilter').value;
+    if (selectedDate) params.set('date', selectedDate);
+    const query = params.toString();
+    return query ? `/api/results?${query}` : '/api/results';
+}
+
 async function loadResults() {
     try {
-        const res = await fetch('/api/results');
+        const loading = document.getElementById('loading');
+        const table = document.getElementById('resultsTable');
+        loading.style.display = 'block';
+        loading.textContent = 'Loading...';
+        table.style.display = 'none';
+        const res = await fetch(buildResultsUrl());
         const data = await res.json();
         
         const tbody = document.getElementById('resultsBody');
-        const table = document.getElementById('resultsTable');
-        const loading = document.getElementById('loading');
+        document.querySelectorAll('.empty[data-results-empty="1"]').forEach(el => el.remove());
         
         loading.style.display = 'none';
         tbody.innerHTML = '';
+
+        if (!res.ok) {
+            throw new Error(data.error || 'Failed to load results.');
+        }
 
         if (!data.results || data.results.length === 0) {
             table.style.display = 'none';
             const msg = document.createElement('div');
             msg.className = 'empty';
-            msg.textContent = 'No analysis results found.';
+            msg.setAttribute('data-results-empty', '1');
+            msg.textContent = 'No analysis results found for the selected date.';
             document.body.appendChild(msg);
             return;
         }
@@ -160,7 +193,7 @@ async function loadResults() {
         }
 
     } catch(e) {
-        document.getElementById('loading').textContent = 'Error loading results.';
+        document.getElementById('loading').textContent = `Error loading results: ${e.message}`;
         console.error(e);
     }
 }
@@ -223,6 +256,14 @@ async function downloadResultZip(pid) {
         }
     }
 }
+
+document.getElementById('applyFilters').addEventListener('click', loadResults);
+document.getElementById('clearFilters').addEventListener('click', () => {
+    document.getElementById('dateFilter').value = '';
+    document.getElementById('loading').style.display = 'block';
+    document.getElementById('loading').textContent = 'Loading...';
+    loadResults();
+});
 
 window.onload = loadResults;
 </script>

@@ -1,4 +1,5 @@
 import argparse
+import csv
 import json
 import logging
 import os
@@ -574,6 +575,164 @@ def extract_id_or_date(filename):
     return None
 
 
+def _parse_iso_date(value, field_name):
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise ValueError(f"Invalid {field_name}. Use YYYY-MM-DD.") from exc
+
+
+def _parse_results_date_filter():
+    return _parse_iso_date(request.args.get("date", "").strip(), "date")
+
+
+def _result_matches_date(timestamp_value, selected_date=None):
+    if not timestamp_value:
+        return selected_date is None
+
+    result_date = datetime.fromtimestamp(timestamp_value).date()
+    return selected_date is None or result_date == selected_date
+
+
+def _build_result_metadata(run_id):
+    run_path = os.path.join(HQ_OUTPUT_DIR, run_id)
+    if not os.path.isdir(run_path):
+        return None
+
+    files = []
+    latest_mtime = 0
+    for filename in sorted(os.listdir(run_path)):
+        full_path = os.path.join(run_path, filename)
+        if not os.path.isfile(full_path):
+            continue
+
+        stat = os.stat(full_path)
+        latest_mtime = max(latest_mtime, stat.st_mtime)
+        size_mb = round(stat.st_size / (1024 * 1024), 2)
+        files.append({
+            "name": filename,
+            "path": f"{run_id}/{filename}",
+            "size": f"{size_mb} MB",
+        })
+
+    timestamp = datetime.fromtimestamp(latest_mtime).strftime('%Y-%m-%d %H:%M:%S') if latest_mtime else "-"
+    csv_path = os.path.join(run_path, f"{run_id}.csv")
+    video_path = os.path.join(run_path, f"{run_id}.mkv")
+
+    return {
+        "id": run_id,
+        "run_path": run_path,
+        "timestamp": timestamp,
+        "files": files,
+        "_mtime": latest_mtime,
+        "csv_path": csv_path if os.path.isfile(csv_path) else None,
+        "video_path": video_path if os.path.isfile(video_path) else None,
+    }
+
+
+def _collect_results_metadata(*, analysis_prefix="", selected_date=None):
+    if not os.path.exists(HQ_OUTPUT_DIR):
+        return []
+
+    results = []
+    run_dirs = [
+        name for name in os.listdir(HQ_OUTPUT_DIR)
+        if os.path.isdir(os.path.join(HQ_OUTPUT_DIR, name))
+    ]
+
+    for run_id in run_dirs:
+        if analysis_prefix and not run_id.startswith(analysis_prefix):
+            continue
+
+        metadata = _build_result_metadata(run_id)
+        if metadata is None:
+            continue
+        if not _result_matches_date(metadata["_mtime"], selected_date):
+            continue
+
+        results.append(metadata)
+
+    results.sort(key=lambda item: item["_mtime"], reverse=True)
+    return results
+
+
+def _read_last_csv_row(csv_path):
+    last_row = None
+    with open(csv_path, "r", newline="", encoding="utf-8") as csv_input:
+        reader = csv.DictReader(csv_input)
+        for row in reader:
+            if not row:
+                continue
+            if not any((value or "").strip() for value in row.values()):
+                continue
+            last_row = row
+    return last_row
+
+
+def _parse_csv_detections(value):
+    if not value or not value.strip():
+        return []
+
+    detections = []
+    for chunk in value.split("|"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+
+        parts = {}
+        for item in chunk.split("_"):
+            if "=" not in item:
+                continue
+            key, raw_value = item.split("=", 1)
+            parts[key] = raw_value
+
+        try:
+            bbox = [
+                int(parts["x0"]),
+                int(parts["y0"]),
+                int(parts["x1"]),
+                int(parts["y1"]),
+            ]
+            class_id = int(parts["class"])
+            confidence = float(parts["conf"])
+        except (KeyError, TypeError, ValueError):
+            LOGGER.warning("Skipping malformed CSV detection chunk: %s", chunk)
+            continue
+
+        detections.append({
+            "bbox": bbox,
+            "class_id": class_id,
+            "confidence": confidence,
+        })
+
+    return detections
+
+
+def _coerce_csv_row(row):
+    if not row:
+        return None
+
+    coerced = dict(row)
+    for key in ("frame", "total_unique_objects"):
+        value = coerced.get(key)
+        try:
+            coerced[key] = int(value)
+        except (TypeError, ValueError):
+            pass
+
+    value = coerced.get("s_value")
+    try:
+        coerced["s_value"] = float(value)
+    except (TypeError, ValueError):
+        pass
+
+    coerced["detections"] = _parse_csv_detections(coerced.get("detections"))
+
+    return coerced
+
+
 @app.route("/")
 def index():
     """Serve the main dashboard."""
@@ -869,6 +1028,53 @@ def api_model_compile():
 
 @app.route("/api/model-task", methods=["POST"])
 def api_model_task():
+    """
+    Save the Ultralytics task override for a catalog model.
+    ---
+    tags:
+      - Configuration
+    consumes:
+      - application/json
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - type
+            - name
+            - task
+          properties:
+            type:
+              type: string
+              enum: ['ul']
+              description: Model family. Only Ultralytics models support task overrides.
+            name:
+              type: string
+              description: Catalog model base name.
+            task:
+              type: string
+              enum: ['segment', 'detect', 'auto']
+              description: Ultralytics task to use when loading the model.
+    responses:
+      200:
+        description: Saved task override
+        schema:
+          type: object
+          properties:
+            type:
+              type: string
+            name:
+              type: string
+            task:
+              type: string
+              enum: ['segment', 'detect', 'auto']
+      400:
+        description: Invalid payload or task
+      404:
+        description: Model not found
+    """
     payload = request.get_json(silent=True) or {}
     model_type = payload.get("type")
     model_name = payload.get("name")
@@ -899,6 +1105,51 @@ def api_model_task():
 
 @app.route("/api/model-delete", methods=["POST"])
 def api_model_delete():
+    """
+    Delete all stored artifacts for a catalog model.
+    ---
+    tags:
+      - Configuration
+    consumes:
+      - application/json
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - type
+            - name
+          properties:
+            type:
+              type: string
+              enum: ['ul', 'rf']
+              description: Model family.
+            name:
+              type: string
+              description: Catalog model base name.
+    responses:
+      200:
+        description: Deleted artifact list
+        schema:
+          type: object
+          properties:
+            type:
+              type: string
+            name:
+              type: string
+            deleted:
+              type: array
+              items:
+                type: string
+      400:
+        description: Invalid payload
+      404:
+        description: Model not found
+      409:
+        description: Model is currently running and cannot be deleted
+    """
     payload = request.get_json(silent=True) or {}
     model_type = payload.get("type")
     model_name = payload.get("name")
@@ -1119,6 +1370,12 @@ def api_list_results():
     ---
     tags:
       - Results
+    parameters:
+      - name: date
+        in: query
+        type: string
+        required: false
+        description: Optional exact date in YYYY-MM-DD format.
     responses:
       200:
         description: List of processed videos
@@ -1138,47 +1395,18 @@ def api_list_results():
                     type: string
     """
     try:
-        if not os.path.exists(HQ_OUTPUT_DIR):
-            return jsonify({"results": []})
-
-        results_list = []
-        run_dirs = [
-            name for name in os.listdir(HQ_OUTPUT_DIR)
-            if os.path.isdir(os.path.join(HQ_OUTPUT_DIR, name))
-        ]
-
-        for run_id in run_dirs:
-            run_path = os.path.join(HQ_OUTPUT_DIR, run_id)
-            files = []
-            latest_mtime = 0
-
-            for filename in sorted(os.listdir(run_path)):
-                full_path = os.path.join(run_path, filename)
-                if not os.path.isfile(full_path):
-                    continue
-                stat = os.stat(full_path)
-                latest_mtime = max(latest_mtime, stat.st_mtime)
-                size_mb = round(stat.st_size / (1024 * 1024), 2)
-                files.append({
-                    "name": filename,
-                    "path": f"{run_id}/{filename}",
-                    "size": f"{size_mb} MB",
-                })
-
-            timestamp = datetime.fromtimestamp(latest_mtime).strftime('%Y-%m-%d %H:%M:%S') if latest_mtime else "-"
-            results_list.append({
-                "id": run_id,
-                "timestamp": timestamp,
-                "files": files,
-                "_mtime": latest_mtime,
-            })
-
-        results_list.sort(key=lambda x: x["_mtime"], reverse=True)
+        selected_date = _parse_results_date_filter()
+        results_list = _collect_results_metadata(selected_date=selected_date)
         for item in results_list:
             item.pop("_mtime", None)
+            item.pop("run_path", None)
+            item.pop("csv_path", None)
+            item.pop("video_path", None)
 
         return jsonify({"results": results_list})
 
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     except Exception as e:
         LOGGER.error(f"Failed to list results: {e}")
         return jsonify({"error": str(e)}), 500
@@ -1197,6 +1425,11 @@ def api_search_results():
         type: string
         required: false
         description: The Analysis ID or Timestamp to filter by
+      - name: date
+        in: query
+        type: string
+        required: false
+        description: Optional exact date in YYYY-MM-DD format.
     responses:
       200:
         description: List of matching results with download links
@@ -1217,56 +1450,115 @@ def api_search_results():
     """
     try:
         analysis_id = request.args.get('analysis_id', '').strip()
-        LOGGER.warning(f'Search by analysis_id: {analysis_id}')
-        if not os.path.exists(HQ_OUTPUT_DIR):
-            return jsonify({"results": []})
-
-        run_dirs = [
-            name for name in os.listdir(HQ_OUTPUT_DIR)
-            if os.path.isdir(os.path.join(HQ_OUTPUT_DIR, name))
-        ]
+        selected_date = _parse_results_date_filter()
         results_list = []
         host_url = request.host_url.rstrip('/')
 
-        for run_id in run_dirs:
-            if analysis_id and not run_id.startswith(analysis_id):
+        for item in _collect_results_metadata(
+            analysis_prefix=analysis_id,
+            selected_date=selected_date,
+        ):
+            if not item.get("video_path") and not item.get("csv_path"):
                 continue
 
-            run_path = os.path.join(HQ_OUTPUT_DIR, run_id)
+            run_id = item["id"]
             video_filename = f"{run_id}.mkv"
             csv_filename = f"{run_id}.csv"
-            video_path = os.path.join(run_path, video_filename)
-            csv_path = os.path.join(run_path, csv_filename)
-
-            if not os.path.exists(video_path) and not os.path.exists(csv_path):
-                continue
-
-            latest_mtime = 0
-            for file_path in (video_path, csv_path):
-                if os.path.exists(file_path):
-                    latest_mtime = max(latest_mtime, os.stat(file_path).st_mtime)
-
-            creation_time = datetime.fromtimestamp(latest_mtime).strftime('%Y-%m-%d %H:%M:%S') if latest_mtime else "-"
-            size_mb = round(os.path.getsize(video_path) / (1024 * 1024), 2) if os.path.exists(video_path) else None
-
-            video_url = f"{host_url}/download/{run_id}/{video_filename}" if os.path.exists(video_path) else None
-            csv_url = f"{host_url}/download/{run_id}/{csv_filename}" if os.path.exists(csv_path) else None
+            video_url = f"{host_url}/download/{run_id}/{video_filename}" if item.get("video_path") else None
+            csv_url = f"{host_url}/download/{run_id}/{csv_filename}" if item.get("csv_path") else None
+            size_mb = (
+                round(os.path.getsize(item["video_path"]) / (1024 * 1024), 2)
+                if item.get("video_path")
+                else None
+            )
 
             results_list.append({
                 "analysis_id": run_id,
-                "timestamp": creation_time,
+                "timestamp": item["timestamp"],
                 "video_size": f"{size_mb} MB" if size_mb is not None else None,
                 "video_url": video_url,
                 "csv_url": csv_url,
             })
 
-        results_list.sort(key=lambda x: x['timestamp'], reverse=True)
-
         return jsonify({"results": results_list})
 
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     except Exception as e:
         LOGGER.error(f"Failed to search results: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/results/<pid>/last-row")
+def api_result_last_csv_row(pid):
+    """
+    Return the last non-empty row from the result CSV as JSON.
+    ---
+    tags:
+      - Results
+    parameters:
+      - name: pid
+        in: path
+        type: string
+        required: true
+        description: The Analysis ID to inspect
+    responses:
+      200:
+        description: Last CSV row
+        schema:
+          type: object
+          properties:
+            analysis_id:
+              type: string
+            row:
+              type: object
+              properties:
+                frame:
+                  type: integer
+                analysis_number:
+                  type: string
+                s_value:
+                  type: number
+                total_unique_objects:
+                  type: integer
+                detections:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      bbox:
+                        type: array
+                        items:
+                          type: integer
+                      class_id:
+                        type: integer
+                      confidence:
+                        type: number
+      400:
+        description: Invalid analysis ID
+      404:
+        description: CSV file or row not found
+    """
+    try:
+        if not pid or ".." in pid or "/" in pid:
+            return jsonify({"error": "Invalid ID"}), 400
+
+        csv_path = os.path.join(HQ_OUTPUT_DIR, pid, f"{pid}.csv")
+        if not os.path.isfile(csv_path):
+            return jsonify({"error": "CSV not found"}), 404
+
+        row = _read_last_csv_row(csv_path)
+        if row is None:
+            return jsonify({"error": "CSV is empty"}), 404
+
+        return jsonify({
+            "analysis_id": pid,
+            "row": _coerce_csv_row(row),
+        })
+
+    except Exception as exc:
+        LOGGER.error("Failed to read last CSV row for %s: %s", pid, exc)
+        return jsonify({"error": str(exc)}), 500
 
 
 @app.route("/api/results/<pid>", methods=["DELETE"])
