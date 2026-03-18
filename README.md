@@ -88,12 +88,8 @@ docker run --rm -d --name mediamtx --network host -v "$(pwd)/config/mediamtx.yml
 Run app
 ```
 cd ${REPO_DIR}
-docker run --network host --runtime=nvidia --rm -it --device=/dev/video0 \
-  -v "$(pwd)/src:/app" \
-  -v "$(pwd)/data/model:/app/model" \
-  -v "$(pwd)/data/output_hq:/app/output_hq" \
-  -v "$(pwd)/data/runs:/app/runs" \
-  tilletia-app:latest python /app/app.py
+docker run --network host --runtime=nvidia --rm -it --device=/dev/video0 -v "$(pwd)/src:/app" -v "$(pwd)/data/model:/app/model" \
+  -v "$(pwd)/data/output_hq:/app/output_hq" -v "$(pwd)/data/runs:/app/runs" tilletia-app:latest python /app/app.py
 ```
 
 
