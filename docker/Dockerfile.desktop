@@ -1,4 +1,4 @@
-FROM ultralytics/ultralytics:latest
+FROM ultralytics/ultralytics@sha256:d69fb6db07c6c8d667d6e5eebb4fd07367c3f44db7ae4bb708a0150114fc6d89
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONPATH=/app:/opt/linea \
@@ -29,9 +29,9 @@ RUN apt-get update && apt-get install -y \
 RUN apt update && apt install -y gstreamer1.0-rtsp && rm -rf /var/lib/apt/lists/*
 RUN python3 -m pip install --no-cache-dir \
     "numpy<2.0" pillow lapx supervision \
-    flask 'onnx>=1.12.0' 'onnxslim>=0.1.71' 'onnxruntime-gpu'
+    flask 'onnx>=1.12.0' 'onnxslim==0.1.88' 'onnxruntime-gpu==1.24.4'
 
-RUN python3 -m pip install  --no-cache-dir tensorrt
+RUN python3 -m pip install --no-cache-dir 'tensorrt==10.15.1.29'
 RUN python3 -m pip install --no-cache-dir flasgger
 RUN python3 -m pip install --no-cache-dir scipy addict yapf
 
