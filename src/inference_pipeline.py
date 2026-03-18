@@ -22,12 +22,14 @@ from ultralytics.trackers.utils.gmc import GMC
 from profiler import Profiler
 from stream_readers import StreamReader, FileReader
 from visualize import visualize_frame_with_supervision, reset_object_counter
-from grid_runtime import GridProcessor
+from grid_runtime import GridProcessor, GridOverlay
 
 
 LOGGER = logging.getLogger("inference_pipeline")
 PROFILER = Profiler()
 GRID_SCORE_RESET_THRESHOLD = 0.40
+GRID_QUEUE_SIZE = 1
+GRID_RESULT_HISTORY_SIZE = 128
 
 
 class CustomBOTrack(BOTrack):
@@ -486,9 +488,59 @@ def build_rtsp_and_hq_gst(host: str, port: int, path: str, width: int, height: i
     return pipeline
 
 
+class GridResultBuffer:
+    def __init__(self, max_items: int = GRID_RESULT_HISTORY_SIZE) -> None:
+        self._max_items = max(int(max_items), 1)
+        self._lock = threading.Lock()
+        self._items: list[tuple[int, GridOverlay]] = []
+
+    def clear(self) -> None:
+        with self._lock:
+            self._items.clear()
+
+    def update(self, frame_id: int, overlay: GridOverlay | None) -> None:
+        if overlay is None:
+            return
+
+        with self._lock:
+            if self._items and frame_id <= self._items[-1][0]:
+                self._items = [
+                    (stored_frame_id, stored_overlay)
+                    for stored_frame_id, stored_overlay in self._items
+                    if stored_frame_id < frame_id
+                ]
+            self._items.append((int(frame_id), overlay))
+            if len(self._items) > self._max_items:
+                self._items = self._items[-self._max_items :]
+
+    def get_for_frame(self, frame_id: int) -> GridOverlay | None:
+        with self._lock:
+            for stored_frame_id, overlay in reversed(self._items):
+                if stored_frame_id <= frame_id:
+                    return overlay
+        return None
+
+
+def _enqueue_latest(queue_obj: queue.Queue, item) -> bool:
+    try:
+        queue_obj.put_nowait(item)
+        return False
+    except queue.Full:
+        try:
+            queue_obj.get_nowait()
+        except queue.Empty:
+            return False
+        try:
+            queue_obj.put_nowait(item)
+            return True
+        except queue.Full:
+            return False
+
+
 def capture_loop(reader: StreamReader, capture_queue: queue.Queue, stop_event: threading.Event) -> None:
     is_file = isinstance(reader, FileReader)
     target_interval = 1.0 / reader.fps if (reader.fps and reader.fps > 0) else 0.033
+    frame_id = 0
     with reader:
         while not stop_event.is_set():
             loop_start = time.perf_counter()
@@ -497,14 +549,15 @@ def capture_loop(reader: StreamReader, capture_queue: queue.Queue, stop_event: t
 
             if not ret or frame is None:
                 try:
-                    capture_queue.put((None, 0.0, 0.0), timeout=0.1)
+                    capture_queue.put((None, None, 0.0, 0.0), timeout=0.1)
                 except:
                     pass
                 break
 
+            frame_id += 1
             while not stop_event.is_set():
                 try:
-                    capture_queue.put((frame, read_done, read_done - loop_start), timeout=0.025)
+                    capture_queue.put((frame_id, frame, read_done, read_done - loop_start), timeout=0.025)
                     break 
                 except queue.Full:
                     continue
@@ -516,18 +569,27 @@ def capture_loop(reader: StreamReader, capture_queue: queue.Queue, stop_event: t
                     time.sleep(sleep_time)
 
 
-def inference_loop(frame_queue: queue.Queue, result_queue: queue.Queue, stop_event: threading.Event, args) -> None:
+def inference_loop(
+    frame_queue: queue.Queue,
+    result_queue: queue.Queue,
+    grid_queue: queue.Queue,
+    stop_event: threading.Event,
+    args,
+) -> None:
     model_manager = ModelManager()
     while not stop_event.is_set():
-        frame, capture_start_end, capture_time = frame_queue.get()
+        frame_id, frame, capture_start_end, capture_time = frame_queue.get()
         
         if frame is None:
-            result_queue.put((None, None))
+            result_queue.put((None, None, None))
+            _enqueue_latest(grid_queue, (None, None))
             break
         
         start_inference = time.perf_counter()
         result, inference_time, tracker_time = model_manager.predict(frame, args)
-        result_queue.put((frame, result))
+        if _grid_count_enabled(args):
+            _enqueue_latest(grid_queue, (frame_id, frame))
+        result_queue.put((frame_id, frame, result))
         end_inference = time.perf_counter()
 
         PROFILER.record("capture", capture_time).record("inf", inference_time).record("track", tracker_time)\
@@ -679,7 +741,85 @@ def _filter_tracks_by_ids(result, allowed_track_ids: set[int]):
     return [row for row in result if int(row[4]) in allowed_track_ids]
 
 
-def output_loop(result_queue: queue.Queue, stop_event: threading.Event, args) -> None:
+def grid_loop(grid_queue: queue.Queue, grid_results: GridResultBuffer, stop_event: threading.Event, args) -> None:
+    grid_processor = GridProcessor()
+    grid_processing_active = False
+    grid_reset_armed = True
+
+    while not stop_event.is_set():
+        frame_id, frame = grid_queue.get()
+        if frame is None:
+            grid_results.clear()
+            _publish_grid_score(args, None)
+            break
+
+        latest_frame_id, latest_frame = frame_id, frame
+        while True:
+            try:
+                candidate_frame_id, candidate_frame = grid_queue.get_nowait()
+            except queue.Empty:
+                break
+            if candidate_frame is None:
+                grid_results.clear()
+                _publish_grid_score(args, None)
+                return
+            latest_frame_id, latest_frame = candidate_frame_id, candidate_frame
+
+        grid_count_enabled = _grid_count_enabled(args)
+        grid_score_threshold = _grid_score_threshold(args)
+        if not grid_count_enabled:
+            if grid_processing_active:
+                grid_results.clear()
+                _publish_grid_score(args, None)
+            grid_processing_active = False
+            grid_reset_armed = True
+            continue
+
+        if not grid_processing_active:
+            grid_processor = GridProcessor()
+            grid_results.clear()
+            grid_reset_armed = True
+
+        grid_processing_active = True
+        grid_overlay = grid_processor.process(latest_frame)
+        if grid_overlay is None:
+            grid_results.clear()
+            _publish_grid_score(args, None)
+            grid_processing_active = False
+            continue
+        grid_score = getattr(grid_overlay, "score", None) if grid_overlay is not None else None
+        grid_score_raw = getattr(grid_overlay, "score_raw", None) if grid_overlay is not None else None
+
+        if grid_score is not None:
+            _publish_grid_score(args, grid_score)
+        if grid_score_raw is not None:
+            if grid_score_raw > GRID_SCORE_RESET_THRESHOLD:
+                grid_reset_armed = True
+            elif grid_reset_armed:
+                grid_processor.reset_state()
+                grid_results.clear()
+                grid_reset_armed = False
+        if (
+            grid_score is not None
+            and grid_score_threshold > 0.0
+            and grid_score <= grid_score_threshold
+        ):
+            _set_grid_count_enabled(args, False, auto=True)
+            grid_results.clear()
+            _publish_grid_score(args, None)
+            grid_processing_active = False
+            grid_reset_armed = True
+            continue
+
+        grid_results.update(latest_frame_id, grid_overlay)
+
+
+def output_loop(
+    result_queue: queue.Queue,
+    grid_results: GridResultBuffer,
+    stop_event: threading.Event,
+    args,
+) -> None:
     output_writer, csv_file, csv_writer = None, None, None
     frame_count = 0
     pipeline_id = getattr(args, "pipeline_id", "unknown")
@@ -688,46 +828,17 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, args) ->
     saved_track_ids = set()
     qualified_track_ids: set[int] = set()
     fps = getattr(args, "fps", 0)
-    grid_processor = GridProcessor()
-    grid_processing_active = False
-    grid_reset_armed = True
+    grid_renderer = GridProcessor()
     try:
         while not stop_event.is_set():
-            frame, result = result_queue.get()
+            frame_id, frame, result = result_queue.get()
             if frame is None: 
                 break
 
             grid_count_enabled = _grid_count_enabled(args)
-            grid_score_threshold = _grid_score_threshold(args)
-            grid_overlay = None
-            if grid_count_enabled:
-                if not grid_processing_active:
-                    grid_processor = GridProcessor()
-                grid_overlay = grid_processor.process(frame)
-            grid_processing_active = grid_count_enabled
+            grid_overlay = grid_results.get_for_frame(frame_id) if grid_count_enabled else None
 
-            grid_score = getattr(grid_overlay, "score", None) if grid_overlay is not None else None
-            grid_score_raw = getattr(grid_overlay, "score_raw", None) if grid_overlay is not None else None
-            if grid_score is not None:
-                _publish_grid_score(args, grid_score)
-            if grid_score_raw is not None:
-                if grid_score_raw > GRID_SCORE_RESET_THRESHOLD:
-                    grid_reset_armed = True
-                elif grid_count_enabled and grid_reset_armed:
-                    grid_processor.reset_state()
-                    grid_reset_armed = False
-            if (
-                grid_count_enabled
-                and grid_score is not None
-                and grid_score_threshold > 0.0
-                and grid_score <= grid_score_threshold
-            ):
-                _set_grid_count_enabled(args, False, auto=True)
-                grid_count_enabled = False
-                grid_overlay = None
-                grid_processing_active = False
-
-            if grid_count_enabled:
+            if grid_count_enabled and grid_overlay is not None:
                 qualified_track_ids.update(_track_ids_inside_viewport(result, grid_overlay))
                 count_track_ids: set[int] | None = qualified_track_ids
             else:
@@ -740,8 +851,8 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, args) ->
                 args,
                 count_track_ids=count_track_ids,
             )
-            if grid_count_enabled:
-                vis = grid_processor.render(vis, grid_overlay)
+            if grid_count_enabled and grid_overlay is not None:
+                vis = grid_renderer.render(vis, grid_overlay)
             PROFILER.record('vis', time.time() - start_vis)
 
             frame = np.ascontiguousarray(frame, dtype=np.uint8)
@@ -761,7 +872,7 @@ def output_loop(result_queue: queue.Queue, stop_event: threading.Event, args) ->
                 csv_writer.writerow(["frame", "analysis_number", "s_value", "total_unique_objects", "detections"])
             
             safe_result = result if result is not None else []
-            if grid_count_enabled:
+            if grid_count_enabled and grid_overlay is not None:
                 reactive_result = _filter_tracks_by_ids(safe_result, qualified_track_ids)
             else:
                 reactive_result = safe_result
@@ -793,11 +904,26 @@ class StreamPipeline:
         self.args = args
         self.frame_queue = queue.Queue(maxsize=80)
         self.result_queue = queue.Queue(maxsize=120)
+        self.grid_queue = queue.Queue(maxsize=GRID_QUEUE_SIZE)
+        self.grid_results = GridResultBuffer()
         self.stop_event = threading.Event()
         self.capture_t = threading.Thread(target=capture_loop, args=(self.reader, self.frame_queue, self.stop_event), daemon=True)
-        self.inference_t = threading.Thread(target=inference_loop, args=(self.frame_queue, self.result_queue, self.stop_event, self.args), daemon=True)
-        self.output_t = threading.Thread(target=output_loop, args=(self.result_queue, self.stop_event, self.args), daemon=True)
-        self._threads = [self.capture_t, self.inference_t, self.output_t]
+        self.inference_t = threading.Thread(
+            target=inference_loop,
+            args=(self.frame_queue, self.result_queue, self.grid_queue, self.stop_event, self.args),
+            daemon=True,
+        )
+        self.grid_t = threading.Thread(
+            target=grid_loop,
+            args=(self.grid_queue, self.grid_results, self.stop_event, self.args),
+            daemon=True,
+        )
+        self.output_t = threading.Thread(
+            target=output_loop,
+            args=(self.result_queue, self.grid_results, self.stop_event, self.args),
+            daemon=True,
+        )
+        self._threads = [self.capture_t, self.inference_t, self.grid_t, self.output_t]
 
     def start(self) -> None:
         for t in self._threads: t.start()
@@ -823,17 +949,33 @@ class StreamPipeline:
             pass
 
         try:
+            LOGGER.info("Clearing grid queue")
+            while not self.grid_queue.empty():
+                self.grid_queue.get_nowait()
+            self.grid_results.clear()
+            LOGGER.info("Grid queue cleared")
+        except Exception:
+            pass
+
+        try:
             LOGGER.info("Inject stop frame to the input queue")
-            self.frame_queue.put((None, 0.0, 0.0), timeout=0.1)
+            self.frame_queue.put((None, None, 0.0, 0.0), timeout=0.1)
             LOGGER.info("Injected stop frame to the input queue")
         except: 
             pass
         
         try: 
             LOGGER.info("Inject stop frame to the result queue")
-            self.result_queue.put((None, None), timeout=0.1)
+            self.result_queue.put((None, None, None), timeout=0.1)
             LOGGER.info("Injected stop frame to the result queue")
         except: 
+            pass
+
+        try:
+            LOGGER.info("Inject stop frame to the grid queue")
+            _enqueue_latest(self.grid_queue, (None, None))
+            LOGGER.info("Injected stop frame to the grid queue")
+        except:
             pass
 
         LOGGER.info("Waiting threads for termination")

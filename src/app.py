@@ -550,20 +550,36 @@ def build_model_catalog():
 
 
 def is_pipeline_running():
-    return any(pipeline_thread_states())
+    return any(alive for _, alive in pipeline_thread_states())
 
 
 def pipeline_thread_states():
-    """Return True if there is an active StreamPipeline with any live thread."""
+    """Return ordered pipeline thread labels and liveness."""
     global pipeline
+    thread_specs = [
+        ("capture", "capture_t"),
+        ("inference", "inference_t"),
+        ("grid", "grid_t"),
+        ("output", "output_t"),
+    ]
     if pipeline is None:
-        return [False, False, False]
+        return [(name, False) for name, _ in thread_specs]
 
-    threads = getattr(pipeline, "_threads", None)
-    if not threads:
-        return [False, False, False]
+    states: list[tuple[str, bool]] = []
+    for name, attr in thread_specs:
+        thread = getattr(pipeline, attr, None)
+        if thread is not None:
+            states.append((name, thread.is_alive()))
+    if states:
+        return states
 
-    return [t.is_alive() for t in threads] 
+    threads = getattr(pipeline, "_threads", None) or []
+    fallback_names = [name for name, _ in thread_specs]
+    states = []
+    for idx, thread in enumerate(threads):
+        label = fallback_names[idx] if idx < len(fallback_names) else f"thread_{idx}"
+        states.append((label, thread.is_alive()))
+    return states
 
 
 def extract_id_or_date(filename):
@@ -1335,11 +1351,9 @@ def api_status():
                   type: boolean
     """
     global pipeline_id
-    names = ["capture", "inference", "output"]
-
-    states = pipeline_thread_states()
-    live_threads = [names[idx] for idx, alive in enumerate(states) if alive]
-    state = "running" if any(states) else "idle"
+    thread_states = pipeline_thread_states()
+    live_threads = [name for name, alive in thread_states if alive]
+    state = "running" if any(alive for _, alive in thread_states) else "idle"
     
     video_desc = current_config.get("video_description", current_config.get("video", ""))
     pid_value = pipeline_id if pipeline and is_pipeline_running() else "-"
