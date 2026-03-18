@@ -632,7 +632,7 @@ def dump_csv_line(csv_writer, frame_count, pipeline_id, total_unique_objects, re
         det_parts.append(f"x0={int(x0)}_y0={int(y0)}_x1={int(x1)}_y1={int(y1)}_class={cls_id}_conf={conf_val:.3f}")
     detections_serialized = "|".join(det_parts)
 
-    s_value = round((total_unique_objects * 1111.0) / 100.0, 1)
+    s_value = round((total_unique_objects * 1111.0) / 400.0, 1)
     csv_writer.writerow([frame_count, pipeline_id, s_value, total_unique_objects, detections_serialized])
 
 
