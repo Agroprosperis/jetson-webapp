@@ -10,6 +10,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+from grid import GridRenderer
 
 LOGGER = logging.getLogger("grid_runtime")
 
@@ -26,6 +27,11 @@ class GridOverlay:
     viewport_corners: list[tuple[int, int]] | None
     score: float | None
     score_raw: float | None
+    raw_lines: list[Any] | None = None
+    accumulated_lines: list[Any] | None = None
+    grid_state: dict[str, dict[str, list[dict[str, Any]]]] | None = None
+    flow_shift: dict[str, float] | None = None
+    histogram_data: dict[str, Any] | None = None
 
 
 class GridProcessor:
@@ -34,10 +40,25 @@ class GridProcessor:
         color: tuple[int, int, int] = DEFAULT_GRID_COLOR,
         detect_every_n_frames: int = 1,
         score_ema_alpha: float = 0.25,
+        cluster_only_mode: bool = False,
+        orientation_prior_ema_alpha: float = 0.20,
+        orientation_prior_keep_tol_deg: float = 1.25,
+        orientation_prior_update_tol_deg: float = 0.625,
+        orientation_prior_ref_min_ratio: float = 0.70,
+        orientation_prior_ref_max_count: int = 10,
+        orientation_prior_seed_tol_deg: float = 0.75,
     ) -> None:
         self._color = color
         self._detect_every_n_frames = max(int(detect_every_n_frames), 1)
         self._score_ema_alpha = min(max(float(score_ema_alpha), 0.0), 1.0)
+        self._cluster_only_mode = bool(cluster_only_mode)
+        self._orientation_prior_ema_alpha = min(max(float(orientation_prior_ema_alpha), 0.0), 1.0)
+        self._orientation_prior_keep_tol_rad = math.radians(max(float(orientation_prior_keep_tol_deg), 0.0))
+        self._orientation_prior_update_tol_rad = math.radians(max(float(orientation_prior_update_tol_deg), 0.0))
+        self._orientation_prior_ref_min_ratio = max(float(orientation_prior_ref_min_ratio), 0.0)
+        self._orientation_prior_ref_max_count = max(int(orientation_prior_ref_max_count), 1)
+        self._orientation_prior_seed_tol_rad = math.radians(max(float(orientation_prior_seed_tol_deg), 0.0))
+        self._debug_renderer = GridRenderer()
         self._detection_warmup_frames = 3
         self._processed_frames = 0
         self._last_gap_info: dict[str, list[float]] = {
@@ -46,6 +67,10 @@ class GridProcessor:
         }
         self._last_score: float | None = None
         self._last_score_raw: float | None = None
+        self._orientation_priors: dict[str, float | None] = {
+            "vertical": None,
+            "horizontal": None,
+        }
         self._initialized = False
         self._init_failed = False
         self._processing_failed = False
@@ -61,7 +86,7 @@ class GridProcessor:
         self._accumulator = None
         self._grid_builder = None
 
-    def process(self, frame_bgr: np.ndarray) -> GridOverlay | None:
+    def process(self, frame_bgr: np.ndarray, *, include_debug: bool = False) -> GridOverlay | None:
         if self._processing_failed:
             return None
         if not self._ensure_initialized():
@@ -70,68 +95,139 @@ class GridProcessor:
         try:
             analysis_rgb = self._preprocess(frame_bgr)
             analysis_shape = analysis_rgb.shape[:2]
-            analysis_gray = cv2.cvtColor(analysis_rgb, cv2.COLOR_RGB2GRAY)
-            flow_shift = self._tracker.estimate_flow_shift(analysis_gray)
+            if self._cluster_only_mode:
+                flow_shift = None
+            else:
+                analysis_gray = cv2.cvtColor(analysis_rgb, cv2.COLOR_RGB2GRAY)
+                flow_shift = self._tracker.estimate_flow_shift(analysis_gray)
             self._processed_frames += 1
             run_full_detection = self._should_run_full_detection()
             score_raw: float | None = None
+            raw_lines: list[Any] = []
+            cluster_input_lines: list[Any] = []
+            accumulated_lines: list[Any] = []
+            histogram_data: dict[str, Any] | None = None
 
             if run_full_detection:
                 raw_lines = self._detector(analysis_rgb)
-                accumulated_lines = self._accumulator(raw_lines, flow_shift)
-                clustered_lines = self._clusterizer(accumulated_lines, analysis_shape)
-                regularized_lines = self._regularizer(clustered_lines)
-                gap_info = self._gap_analyzer(regularized_lines)
-                current_grid = self._grid_builder.build_current(regularized_lines, gap_info)
-                score_raw = self._compute_grid_score(current_grid)
-                self._last_score_raw = score_raw
-                self._last_score = self._update_score_ema(score_raw)
-                self._last_gap_info = {
-                    "vertical": list(gap_info["vertical"]),
-                    "horizontal": list(gap_info["horizontal"]),
-                }
+                cluster_input_lines, orientation_prior_debug = self._apply_orientation_priors(raw_lines)
+                if self._cluster_only_mode:
+                    accumulated_lines = []
+                    clustered_lines = self._clusterizer(cluster_input_lines, analysis_shape)
+                    gap_info = self._gap_analyzer(clustered_lines)
+                    self._last_gap_info = {
+                        "vertical": list(gap_info["vertical"]),
+                        "horizontal": list(gap_info["horizontal"]),
+                    }
+                    current_grid = self._clustered_only_grid_state(clustered_lines)
+                    score_raw = None
+                    self._last_score_raw = None
+                    self._last_score = None
+                    LOGGER.info(
+                        "Grid cluster debug frame=%d v_lines=%d h_lines=%d v_gaps=%s h_gaps=%s learned_v=%s learned_h=%s",
+                        self._processed_frames,
+                        len(current_grid["accepted"]["vertical"]),
+                        len(current_grid["accepted"]["horizontal"]),
+                        self._neighbor_gaps_from_public_lines(current_grid["accepted"]["vertical"]),
+                        self._neighbor_gaps_from_public_lines(current_grid["accepted"]["horizontal"]),
+                        self._last_gap_info["vertical"],
+                        self._last_gap_info["horizontal"],
+                    )
+                    LOGGER.info(
+                        "Grid orientation priors frame=%d v_prior=%s v_frame=%s v_update=%d v_keep=%d/%d h_prior=%s h_frame=%s h_update=%d h_keep=%d/%d",
+                        self._processed_frames,
+                        orientation_prior_debug["vertical"]["prior_deg"],
+                        orientation_prior_debug["vertical"]["frame_deg"],
+                        orientation_prior_debug["vertical"]["update_count"],
+                        orientation_prior_debug["vertical"]["kept_count"],
+                        orientation_prior_debug["vertical"]["total_count"],
+                        orientation_prior_debug["horizontal"]["prior_deg"],
+                        orientation_prior_debug["horizontal"]["frame_deg"],
+                        orientation_prior_debug["horizontal"]["update_count"],
+                        orientation_prior_debug["horizontal"]["kept_count"],
+                        orientation_prior_debug["horizontal"]["total_count"],
+                    )
+                else:
+                    accumulated_lines = self._accumulator(cluster_input_lines, flow_shift)
+                    clustered_lines = self._clusterizer(accumulated_lines, analysis_shape)
+                    regularized_lines = self._regularizer(clustered_lines)
+                    gap_info = self._gap_analyzer(regularized_lines)
+                    current_grid = self._grid_builder.build_current(regularized_lines, gap_info)
+                    score_raw = self._compute_grid_score(current_grid)
+                    self._last_score_raw = score_raw
+                    self._last_score = self._update_score_ema(score_raw)
+                    self._last_gap_info = {
+                        "vertical": list(gap_info["vertical"]),
+                        "horizontal": list(gap_info["horizontal"]),
+                    }
             else:
                 gap_info = {
                     "vertical": list(self._last_gap_info["vertical"]),
                     "horizontal": list(self._last_gap_info["horizontal"]),
                 }
-                self._accumulator([], flow_shift)
+                if not self._cluster_only_mode:
+                    self._accumulator([], flow_shift)
                 current_grid = self._empty_grid_state()
 
-            tracker_input = current_grid["accepted"]["vertical"] + current_grid["accepted"]["horizontal"]
-            tracker_state = self._tracker(tracker_input, flow_shift=flow_shift)
-
-            if run_full_detection:
-                grid_state = self._grid_builder.integrate_predictions(current_grid, gap_info, tracker_state)
-                overlay_lines = self._overlay_lines_from_grid_state(grid_state)
+            if self._cluster_only_mode:
+                grid_state = current_grid
             else:
-                overlay_lines = self._tracking_only_overlay_lines(current_grid, gap_info, tracker_state)
+                tracker_input = current_grid["accepted"]["vertical"] + current_grid["accepted"]["horizontal"]
+                tracker_state = self._tracker(tracker_input, flow_shift=flow_shift)
+
+                if run_full_detection:
+                    grid_state = self._grid_builder.integrate_predictions(current_grid, gap_info, tracker_state)
+                else:
+                    grid_state = self._tracking_only_grid_state(current_grid, gap_info, tracker_state)
+            overlay_lines = self._overlay_lines_from_grid_state(grid_state)
             overlay_lines = self._filter_lines_within_frame(overlay_lines, analysis_shape)
+            if include_debug:
+                histogram_source = accumulated_lines if accumulated_lines else cluster_input_lines
+                histogram_data = {"source": list(histogram_source)}
 
             viewport_corners = self._build_viewport_corners(
                 overlay_lines,
                 analysis_shape,
                 frame_bgr.shape[:2],
             )
+            if self._cluster_only_mode:
+                viewport_corners = None
             return GridOverlay(
                 analysis_shape=analysis_shape,
                 lines=overlay_lines,
                 viewport_corners=viewport_corners,
                 score=self._last_score,
                 score_raw=score_raw,
+                raw_lines=list(raw_lines) if include_debug else None,
+                accumulated_lines=list(accumulated_lines) if include_debug else None,
+                grid_state=grid_state if include_debug else None,
+                flow_shift=dict(flow_shift) if include_debug and flow_shift is not None else None,
+                histogram_data=histogram_data,
             )
         except Exception:
             self._processing_failed = True
             LOGGER.exception("Grid processing failed. Disabling grid detection for this run.")
             return None
 
-    def render(self, frame_bgr: np.ndarray, overlay: GridOverlay | None) -> np.ndarray:
+    def render(self, frame_bgr: np.ndarray, overlay: GridOverlay | None, *, debug: bool = False) -> np.ndarray:
         if overlay is None:
             return frame_bgr
 
-        for orientation in ("vertical", "horizontal"):
-            for line_state in overlay.lines.get(orientation, []):
-                self._draw_grid_line(frame_bgr, overlay.analysis_shape, orientation, line_state)
+        if debug and overlay.grid_state is not None:
+            frame_bgr = self._debug_renderer(
+                frame_bgr,
+                raw_lines=overlay.raw_lines or [],
+                accumulated_lines=overlay.accumulated_lines,
+                grid_state=overlay.grid_state,
+                analysis_shape=overlay.analysis_shape,
+                flow_shift=overlay.flow_shift,
+                histogram_data=overlay.histogram_data,
+                show_flow_overlay=overlay.flow_shift is not None,
+            )
+        else:
+            for orientation in ("vertical", "horizontal"):
+                for line_state in overlay.lines.get(orientation, []):
+                    self._draw_grid_line(frame_bgr, overlay.analysis_shape, orientation, line_state)
 
         corners = overlay.viewport_corners
         if corners and len(corners) == 4:
@@ -200,9 +296,10 @@ class GridProcessor:
             self.reset_state(preserve_score=False)
             self._initialized = True
             LOGGER.info(
-                "Grid processor initialized with config=%s checkpoint=%s",
+                "Grid processor initialized with config=%s checkpoint=%s cluster_only_mode=%s",
                 config_path,
                 checkpoint_path,
+                self._cluster_only_mode,
             )
             return True
         except Exception:
@@ -261,6 +358,173 @@ class GridProcessor:
     def _line_support_sum(self, lines: list[dict[str, Any]]) -> float:
         return sum(max(float(line.get("conf", 0.0)), 0.0) for line in lines)
 
+    def _apply_orientation_priors(
+        self,
+        lines: list[Any],
+    ) -> tuple[list[Any], dict[str, dict[str, Any]]]:
+        kept: list[Any] = []
+        debug: dict[str, dict[str, Any]] = {}
+
+        for orientation in ("vertical", "horizontal"):
+            orientation_lines = [line for line in lines if getattr(line, "orientation", None) == orientation]
+            prior_theta = self._orientation_priors[orientation]
+            update_lines = self._orientation_prior_update_lines(orientation_lines, prior_theta)
+            frame_theta = self._estimate_orientation_theta(update_lines)
+
+            if frame_theta is not None:
+                if prior_theta is None:
+                    prior_theta = frame_theta
+                else:
+                    prior_theta = self._angle_blend(
+                        float(prior_theta),
+                        float(frame_theta),
+                        self._orientation_prior_ema_alpha,
+                    )
+                self._orientation_priors[orientation] = prior_theta
+
+            if prior_theta is None or self._orientation_prior_keep_tol_rad <= 0.0:
+                kept_lines = list(orientation_lines)
+            else:
+                kept_lines = [
+                    line
+                    for line in orientation_lines
+                    if abs(self._axis_angle_delta(float(getattr(line, "theta", 0.0)), float(prior_theta)))
+                    <= self._orientation_prior_keep_tol_rad
+                ]
+
+            kept.extend(kept_lines)
+            debug[orientation] = {
+                "prior_deg": self._theta_deg(prior_theta),
+                "frame_deg": self._theta_deg(frame_theta),
+                "update_count": len(update_lines),
+                "kept_count": len(kept_lines),
+                "total_count": len(orientation_lines),
+            }
+
+        return kept, debug
+
+    def _estimate_orientation_theta(self, lines: list[Any]) -> float | None:
+        if not lines:
+            return None
+
+        strongest_score = max(max(float(getattr(line, "score", 0.0)), 0.0) for line in lines)
+        if strongest_score <= 0.0:
+            reference_lines = list(lines[:1])
+        else:
+            min_score = self._orientation_prior_ref_min_ratio * strongest_score
+            reference_lines = [
+                line
+                for line in lines
+                if max(float(getattr(line, "score", 0.0)), 0.0) >= min_score
+            ]
+            if not reference_lines:
+                reference_lines = [max(lines, key=lambda item: float(getattr(item, "score", 0.0)))]
+
+        reference_lines = sorted(
+            reference_lines,
+            key=lambda item: float(getattr(item, "score", 0.0)),
+            reverse=True,
+        )[: self._orientation_prior_ref_max_count]
+
+        best_cluster: list[Any] | None = None
+        best_weight = -1.0
+        best_error = float("inf")
+
+        for seed in reference_lines:
+            seed_theta = float(getattr(seed, "theta", 0.0))
+            cluster = [
+                line
+                for line in reference_lines
+                if abs(self._axis_angle_delta(float(getattr(line, "theta", 0.0)), seed_theta))
+                <= self._orientation_prior_seed_tol_rad
+            ]
+            if not cluster:
+                continue
+            cluster_theta = self._weighted_theta(cluster)
+            cluster_weight = sum(max(float(getattr(line, "score", 0.0)), 1e-6) for line in cluster)
+            cluster_error = sum(
+                max(float(getattr(line, "score", 0.0)), 1e-6)
+                * abs(self._axis_angle_delta(float(getattr(line, "theta", 0.0)), cluster_theta))
+                for line in cluster
+            )
+            if cluster_weight > best_weight + 1e-6:
+                best_cluster = cluster
+                best_weight = cluster_weight
+                best_error = cluster_error
+                continue
+            if abs(cluster_weight - best_weight) <= 1e-6 and cluster_error < best_error - 1e-6:
+                best_cluster = cluster
+                best_error = cluster_error
+
+        if best_cluster is None:
+            best_cluster = reference_lines
+
+        return self._weighted_theta(best_cluster)
+
+    def _orientation_prior_update_lines(
+        self,
+        lines: list[Any],
+        prior_theta: float | None,
+    ) -> list[Any]:
+        if prior_theta is None or self._orientation_prior_update_tol_rad <= 0.0:
+            return list(lines)
+        return [
+            line
+            for line in lines
+            if abs(self._axis_angle_delta(float(getattr(line, "theta", 0.0)), float(prior_theta)))
+            <= self._orientation_prior_update_tol_rad
+        ]
+
+    def _weighted_theta(self, lines: list[Any]) -> float:
+        c2 = 0.0
+        s2 = 0.0
+        for line in lines:
+            weight = max(float(getattr(line, "score", 0.0)), 1e-6)
+            theta = float(getattr(line, "theta", 0.0))
+            c2 += weight * math.cos(2.0 * theta)
+            s2 += weight * math.sin(2.0 * theta)
+        return 0.5 * math.atan2(s2, c2)
+
+    def _axis_angle_delta(
+        self,
+        theta_from: float,
+        theta_to: float,
+    ) -> float:
+        return 0.5 * math.atan2(
+            math.sin(2.0 * (theta_to - theta_from)),
+            math.cos(2.0 * (theta_to - theta_from)),
+        )
+
+    def _angle_blend(
+        self,
+        theta_old: float,
+        theta_new: float,
+        alpha: float,
+    ) -> float:
+        c_old = math.cos(2.0 * theta_old)
+        s_old = math.sin(2.0 * theta_old)
+        c_new = math.cos(2.0 * theta_new)
+        s_new = math.sin(2.0 * theta_new)
+        c_mix = (1.0 - alpha) * c_old + alpha * c_new
+        s_mix = (1.0 - alpha) * s_old + alpha * s_new
+        return 0.5 * math.atan2(s_mix, c_mix)
+
+    def _theta_deg(self, theta: float | None) -> str:
+        if theta is None:
+            return "-"
+        return f"{(abs(math.degrees(float(theta))) % 180.0):.2f}"
+
+    def _neighbor_gaps_from_public_lines(
+        self,
+        lines: list[dict[str, Any]],
+    ) -> list[float]:
+        ordered = sorted(float(line["rho"]) for line in lines)
+        return [
+            round(ordered[idx + 1] - ordered[idx], 2)
+            for idx in range(len(ordered) - 1)
+            if (ordered[idx + 1] - ordered[idx]) > 1.5
+        ]
+
     def _overlay_lines_from_grid_state(
         self,
         grid_state: dict[str, dict[str, list[dict[str, Any]]]],
@@ -270,12 +534,57 @@ class GridProcessor:
             "horizontal": list(grid_state["accepted"]["horizontal"]),
         }
 
+    def _current_only_grid_state(
+        self,
+        current_grid: dict[str, dict[str, list[dict[str, Any]]]],
+    ) -> dict[str, dict[str, list[dict[str, Any]]]]:
+        return {
+            "accepted": {
+                "vertical": [dict(line) for line in current_grid["accepted"]["vertical"]],
+                "horizontal": [dict(line) for line in current_grid["accepted"]["horizontal"]],
+            },
+            "rejected": {
+                "vertical": [dict(line) for line in current_grid["rejected"]["vertical"]],
+                "horizontal": [dict(line) for line in current_grid["rejected"]["horizontal"]],
+            },
+            "predicted": {"vertical": [], "horizontal": []},
+        }
+
+    def _clustered_only_grid_state(
+        self,
+        clustered_lines: list[dict[str, Any]],
+    ) -> dict[str, dict[str, list[dict[str, Any]]]]:
+        accepted = {
+            "vertical": sorted(
+                [dict(line) for line in clustered_lines if line["orientation"] == "vertical"],
+                key=lambda item: item["rho"],
+            ),
+            "horizontal": sorted(
+                [dict(line) for line in clustered_lines if line["orientation"] == "horizontal"],
+                key=lambda item: item["rho"],
+            ),
+        }
+        return {
+            "accepted": accepted,
+            "rejected": {"vertical": [], "horizontal": []},
+            "predicted": {"vertical": [], "horizontal": []},
+        }
+
     def _tracking_only_overlay_lines(
         self,
         current_grid: dict[str, dict[str, list[dict[str, Any]]]],
         gap_info: dict[str, list[float]],
         tracker_state: dict[str, Any],
     ) -> dict[str, list[dict[str, Any]]]:
+        grid_state = self._tracking_only_grid_state(current_grid, gap_info, tracker_state)
+        return self._overlay_lines_from_grid_state(grid_state)
+
+    def _tracking_only_grid_state(
+        self,
+        current_grid: dict[str, dict[str, list[dict[str, Any]]]],
+        gap_info: dict[str, list[float]],
+        tracker_state: dict[str, Any],
+    ) -> dict[str, dict[str, list[dict[str, Any]]]]:
         reference_lines = {
             "vertical": sorted(
                 [dict(line) for line in tracker_state["reference"]["vertical"]],
@@ -287,10 +596,25 @@ class GridProcessor:
             ),
         }
         if reference_lines["vertical"] or reference_lines["horizontal"]:
-            return reference_lines
+            return {
+                "accepted": reference_lines,
+                "rejected": {
+                    "vertical": [dict(line) for line in current_grid["rejected"]["vertical"]],
+                    "horizontal": [dict(line) for line in current_grid["rejected"]["horizontal"]],
+                },
+                "predicted": {
+                    "vertical": sorted(
+                        [dict(line) for line in tracker_state["predicted"]["vertical"]],
+                        key=lambda item: item["rho"],
+                    ),
+                    "horizontal": sorted(
+                        [dict(line) for line in tracker_state["predicted"]["horizontal"]],
+                        key=lambda item: item["rho"],
+                    ),
+                },
+            }
 
-        grid_state = self._grid_builder.integrate_predictions(current_grid, gap_info, tracker_state)
-        return self._overlay_lines_from_grid_state(grid_state)
+        return self._grid_builder.integrate_predictions(current_grid, gap_info, tracker_state)
 
     def _filter_lines_within_frame(
         self,

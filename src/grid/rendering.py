@@ -15,7 +15,7 @@ class GridRenderer:
         color_raw: tuple[int, int, int] = (0, 0, 255),
         color_rejected: tuple[int, int, int] = (0, 255, 0),
         color_predicted: tuple[int, int, int] = (255, 0, 255),
-        color_accepted: tuple[int, int, int] = (0, 255, 255),
+        color_accepted: tuple[int, int, int] = (255, 0, 255),
         color_flow: tuple[int, int, int] = (0, 165, 255),
         raw_dot_step_px: int = 5,
         rejected_dot_step_px: int = 5,
@@ -28,7 +28,7 @@ class GridRenderer:
         color_hist_bar: tuple[int, int, int] = (210, 210, 210),
         color_hist_marker: tuple[int, int, int] = (255, 255, 255),
     ) -> None:
-        self._dot_size_px = 3
+        self._dot_size_px = 6
         self._color_raw = color_raw
         self._color_rejected = color_rejected
         self._color_predicted = color_predicted
@@ -63,8 +63,6 @@ class GridRenderer:
         scale_y = float(render_h) / float(analysis_h)
         flow_data = flow_shift or {"dx": 0.0, "dy": 0.0}
         left_reserved = 0
-        if histogram_data is not None:
-            left_reserved = self._left_hist_panel_width(render_w)
         self._draw_raw_lines(frame_bgr, raw_lines, scale_x, scale_y)
         if accumulated_lines:
             self._draw_raw_lines(frame_bgr, accumulated_lines, scale_x, scale_y)
@@ -120,7 +118,7 @@ class GridRenderer:
                 (int(round(item.x2 * scale_x)), int(round(item.y2 * scale_y))),
                 color=self._color_raw,
                 step_px=self._raw_dot_step_px,
-                dot_size_px=1,
+                dot_size_px=2,
             )
 
     def _draw_state_group(
@@ -259,37 +257,54 @@ class GridRenderer:
         render_scale: tuple[float, float],
     ) -> None:
         source_lines = histogram_data.get("source", [])
-        self._draw_left_histogram_panel(
+        self._draw_center_axes(frame_bgr, analysis_shape, render_scale)
+        self._draw_vertical_axis_histogram_panel(
             frame_bgr,
             source_lines,
+            analysis_shape,
             render_scale,
         )
-        self._draw_footer_histogram_panel(
+        self._draw_horizontal_axis_histogram_panel(
             frame_bgr,
             source_lines,
+            analysis_shape,
             render_scale,
         )
         self._draw_histogram_rho_guides(frame_bgr, accepted_groups, analysis_shape, render_scale)
 
-    def _draw_left_histogram_panel(
+    def _draw_center_axes(
+        self,
+        frame_bgr: np.ndarray,
+        analysis_shape: tuple[int, int],
+        render_scale: tuple[float, float],
+    ) -> None:
+        frame_h, frame_w = frame_bgr.shape[:2]
+        center_x, center_y = self._center_axis_coords(analysis_shape, render_scale, frame_bgr.shape[:2])
+        overlay = frame_bgr.copy()
+        cv2.line(overlay, (center_x, 0), (center_x, frame_h - 1), (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.line(overlay, (0, center_y), (frame_w - 1, center_y), (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.addWeighted(overlay, 0.30, frame_bgr, 0.70, 0.0, frame_bgr)
+
+    def _draw_vertical_axis_histogram_panel(
         self,
         frame_bgr: np.ndarray,
         source_lines: list[Any],
+        analysis_shape: tuple[int, int],
         render_scale: tuple[float, float],
     ) -> None:
         frame_h, frame_w = frame_bgr.shape[:2]
         panel_w = self._left_hist_panel_width(frame_w)
-        x0 = 0
+        center_x, _ = self._center_axis_coords(analysis_shape, render_scale, frame_bgr.shape[:2])
+        x0, x1, anchor_x = self._vertical_hist_panel_bounds(center_x, frame_w, panel_w)
         y0 = 0
         y1 = frame_h - 1
-        if panel_w <= 0 or y1 < y0:
+        if panel_w <= 0 or y1 < y0 or x1 < x0:
             return
-        panel_h = frame_h
         overlay = frame_bgr.copy()
-        cv2.rectangle(overlay, (x0, y0), (x0 + panel_w - 1, y1), (0, 0, 0), -1)
+        cv2.rectangle(overlay, (x0, y0), (x1, y1), (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.45, frame_bgr, 0.55, 0.0, frame_bgr)
 
-        bins = np.zeros(panel_h, dtype=np.float32)
+        bins = np.zeros(frame_h, dtype=np.float32)
         _, scale_y = render_scale
         for item in source_lines:
             if getattr(item, "orientation", None) != "horizontal":
@@ -298,48 +313,55 @@ class GridRenderer:
                 bins,
                 start_coord=float(getattr(item, "y1", item.axis_pos)) * scale_y,
                 end_coord=float(getattr(item, "y2", item.axis_pos)) * scale_y,
-                axis_span=panel_h,
+                axis_span=frame_h,
                 weight=max(float(getattr(item, "score", 0.0)), 1e-6),
             )
 
         peak = float(np.max(bins)) if bins.size > 0 else 0.0
-        max_bar_len = max(1, panel_w)
+        max_bar_len = max(1, x1 - x0 + 1)
         if peak > 0.0:
             for row, value in enumerate(bins):
                 if value <= 0.0:
                     continue
                 bar_len = max(1, int(round((value / peak) * max_bar_len)))
                 y = y0 + row
+                if anchor_x > center_x:
+                    bar_x0 = x0
+                    bar_x1 = min(x1, x0 + bar_len - 1)
+                else:
+                    bar_x1 = x1
+                    bar_x0 = max(x0, x1 - bar_len + 1)
                 cv2.line(
                     frame_bgr,
-                    (x0, y),
-                    (x0 + bar_len - 1, y),
+                    (bar_x0, y),
+                    (bar_x1, y),
                     self._color_hist_bar,
                     1,
                     cv2.LINE_8,
                 )
+        cv2.line(frame_bgr, (anchor_x, y0), (anchor_x, y1), self._color_hist_marker, 1, cv2.LINE_AA)
 
-    def _draw_footer_histogram_panel(
+    def _draw_horizontal_axis_histogram_panel(
         self,
         frame_bgr: np.ndarray,
         source_lines: list[Any],
+        analysis_shape: tuple[int, int],
         render_scale: tuple[float, float],
     ) -> None:
         frame_h, frame_w = frame_bgr.shape[:2]
         panel_h = self._footer_hist_panel_height(frame_h)
+        _, center_y = self._center_axis_coords(analysis_shape, render_scale, frame_bgr.shape[:2])
         x0 = 0
         x1 = frame_w - 1
-        y1 = frame_h - 1
-        y0 = max(0, frame_h - panel_h)
+        y0, y1, anchor_y = self._horizontal_hist_panel_bounds(center_y, frame_h, panel_h)
         if x1 < x0 or y1 < y0:
             return
 
-        panel_w = frame_w
         overlay = frame_bgr.copy()
         cv2.rectangle(overlay, (x0, y0), (x1, y1), (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.45, frame_bgr, 0.55, 0.0, frame_bgr)
 
-        bins = np.zeros(panel_w, dtype=np.float32)
+        bins = np.zeros(frame_w, dtype=np.float32)
         scale_x, _ = render_scale
         for item in source_lines:
             if getattr(item, "orientation", None) != "vertical":
@@ -348,27 +370,33 @@ class GridRenderer:
                 bins,
                 start_coord=float(getattr(item, "x1", item.axis_pos)) * scale_x,
                 end_coord=float(getattr(item, "x2", item.axis_pos)) * scale_x,
-                axis_span=panel_w,
+                axis_span=frame_w,
                 weight=max(float(getattr(item, "score", 0.0)), 1e-6),
             )
 
         peak = float(np.max(bins)) if bins.size > 0 else 0.0
-        content_bottom = y1
-        max_bar_h = max(1, panel_h)
+        max_bar_h = max(1, y1 - y0 + 1)
         if peak > 0.0:
             for col, value in enumerate(bins):
                 if value <= 0.0:
                     continue
                 bar_h = max(1, int(round((value / peak) * max_bar_h)))
                 x = x0 + col
+                if anchor_y > center_y:
+                    bar_y0 = max(y0, y1 - bar_h + 1)
+                    bar_y1 = y1
+                else:
+                    bar_y0 = y0
+                    bar_y1 = min(y1, y0 + bar_h - 1)
                 cv2.line(
                     frame_bgr,
-                    (x, content_bottom),
-                    (x, content_bottom - bar_h + 1),
+                    (x, bar_y0),
+                    (x, bar_y1),
                     self._color_hist_bar,
                     1,
                     cv2.LINE_8,
                 )
+        cv2.line(frame_bgr, (x0, anchor_y), (x1, anchor_y), self._color_hist_marker, 1, cv2.LINE_AA)
 
     def _draw_histogram_rho_guides(
         self,
@@ -378,25 +406,35 @@ class GridRenderer:
         render_scale: tuple[float, float],
     ) -> None:
         frame_h, frame_w = frame_bgr.shape[:2]
-        left_panel_w = self._left_hist_panel_width(frame_w)
-        footer_panel_h = self._footer_hist_panel_height(frame_h)
-        footer_y0 = max(0, frame_h - footer_panel_h)
         scale_x, scale_y = render_scale
         accepted = accepted_groups or {"vertical": [], "horizontal": []}
+        center_x, center_y = self._center_axis_coords(analysis_shape, render_scale, frame_bgr.shape[:2])
+        panel_w = self._left_hist_panel_width(frame_w)
+        panel_h = self._footer_hist_panel_height(frame_h)
+        vx0, vx1, v_anchor_x = self._vertical_hist_panel_bounds(center_x, frame_w, panel_w)
+        hy0, hy1, h_anchor_y = self._horizontal_hist_panel_bounds(center_y, frame_h, panel_h)
 
         for line in accepted.get("horizontal", []):
             y = self._clamp_int(round(float(line["rho"]) * scale_y), 0, frame_h - 1)
             self._draw_dotted_line(
                 frame_bgr,
-                (left_panel_w, y),
-                (frame_w - 1, y),
+                (min(v_anchor_x, center_x), y),
+                (max(v_anchor_x, center_x), y),
                 color=self._color_hist_marker,
                 step_px=5,
                 dot_size_px=1,
             )
             cv2.circle(
                 frame_bgr,
-                (max(0, left_panel_w - 1), y),
+                (center_x, y),
+                2,
+                self._color_accepted,
+                -1,
+                cv2.LINE_AA,
+            )
+            cv2.circle(
+                frame_bgr,
+                (v_anchor_x, y),
                 2,
                 self._color_accepted,
                 -1,
@@ -407,15 +445,23 @@ class GridRenderer:
             x = self._clamp_int(round(float(line["rho"]) * scale_x), 0, frame_w - 1)
             self._draw_dotted_line(
                 frame_bgr,
-                (x, 0),
-                (x, max(0, footer_y0 - 1)),
+                (x, min(h_anchor_y, center_y)),
+                (x, max(h_anchor_y, center_y)),
                 color=self._color_hist_marker,
                 step_px=5,
                 dot_size_px=1,
             )
             cv2.circle(
                 frame_bgr,
-                (x, footer_y0),
+                (x, center_y),
+                2,
+                self._color_accepted,
+                -1,
+                cv2.LINE_AA,
+            )
+            cv2.circle(
+                frame_bgr,
+                (x, h_anchor_y),
                 2,
                 self._color_accepted,
                 -1,
@@ -427,6 +473,49 @@ class GridRenderer:
 
     def _footer_hist_panel_height(self, frame_h: int) -> int:
         return max(1, min(frame_h, min(self._hist_panel_width, max(24, frame_h // 5))))
+
+    def _center_axis_coords(
+        self,
+        analysis_shape: tuple[int, int],
+        render_scale: tuple[float, float],
+        frame_shape: tuple[int, int],
+    ) -> tuple[int, int]:
+        frame_h, frame_w = frame_shape[:2]
+        analysis_h, analysis_w = analysis_shape
+        scale_x, scale_y = render_scale
+        center_x = self._clamp_int(round((analysis_w * 0.5) * scale_x), 0, frame_w - 1)
+        center_y = self._clamp_int(round((analysis_h * 0.5) * scale_y), 0, frame_h - 1)
+        return center_x, center_y
+
+    def _vertical_hist_panel_bounds(
+        self,
+        center_x: int,
+        frame_w: int,
+        panel_w: int,
+    ) -> tuple[int, int, int]:
+        preferred_x1 = center_x - self._hist_panel_margin - 1
+        preferred_x0 = preferred_x1 - panel_w + 1
+        if preferred_x0 >= 0:
+            return preferred_x0, preferred_x1, preferred_x1
+
+        x0 = min(max(center_x + self._hist_panel_margin + 1, 0), max(frame_w - panel_w, 0))
+        x1 = min(frame_w - 1, x0 + panel_w - 1)
+        return x0, x1, x0
+
+    def _horizontal_hist_panel_bounds(
+        self,
+        center_y: int,
+        frame_h: int,
+        panel_h: int,
+    ) -> tuple[int, int, int]:
+        preferred_y0 = center_y + self._hist_panel_margin + 1
+        preferred_y1 = preferred_y0 + panel_h - 1
+        if preferred_y1 < frame_h:
+            return preferred_y0, preferred_y1, preferred_y0
+
+        y1 = max(center_y - self._hist_panel_margin - 1, 0)
+        y0 = max(0, y1 - panel_h + 1)
+        return y0, y1, y1
 
     def _hist_bin_index(self, rho: float, axis_span: int, bin_count: int) -> int:
         if bin_count <= 1 or axis_span <= 1:

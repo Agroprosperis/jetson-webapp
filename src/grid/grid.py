@@ -9,6 +9,7 @@ class GridBuilder:
         self,
         narrow_gap_tolerance_px: float = 10.0,
         wide_gap_tolerance_px: float = 20.0,
+        gap_multiple_max: int = 4,
         grid_select_min_fraction: float = 0.5,
         track_memory_suppress_min_px: float = 8.0,
         track_memory_suppress_ratio: float = 0.35,
@@ -24,6 +25,7 @@ class GridBuilder:
     ) -> None:
         self._narrow_gap_tolerance_px = narrow_gap_tolerance_px
         self._wide_gap_tolerance_px = wide_gap_tolerance_px
+        self._gap_multiple_max = max(int(gap_multiple_max), 1)
         self._grid_select_min_fraction = grid_select_min_fraction
         self._track_memory_suppress_min_px = track_memory_suppress_min_px
         self._track_memory_suppress_ratio = track_memory_suppress_ratio
@@ -155,10 +157,10 @@ class GridBuilder:
         for idx in range(count):
             for prev_idx in range(idx):
                 gap = lines[idx]["rho"] - lines[prev_idx]["rho"]
-                target = min(modes, key=lambda value: abs(value - gap))
-                err = abs(gap - target)
-                if err > self._mode_tolerance(target, modes):
+                match = self._closest_gap_match(gap, modes)
+                if match is None:
                     continue
+                err = match["err"]
                 candidate_score = best_score[prev_idx] + self._line_support(lines[idx])
                 candidate_len = best_len[prev_idx] + 1
                 candidate_err = best_err[prev_idx] + err
@@ -346,6 +348,9 @@ class GridBuilder:
             if public_line["conf"] < self._predicted_insert_min_conf:
                 kept_predicted.append(public_line)
                 continue
+            if modes and not self._candidate_fits_scene(public_line, scene, modes):
+                kept_predicted.append(public_line)
+                continue
             scene.append(public_line)
             scene.sort(key=lambda item: item["rho"])
         return scene, kept_predicted
@@ -406,10 +411,71 @@ class GridBuilder:
         return self._gap_matches(gap, modes)
 
     def _gap_matches(self, gap: float, modes: list[float]) -> bool:
-        if gap <= 0 or not modes:
-            return False
-        target = min(modes, key=lambda mode: abs(gap - mode))
-        return abs(gap - target) <= self._mode_tolerance(target, modes)
+        return self._closest_gap_match(gap, modes) is not None
+
+    def _closest_gap_match(
+        self,
+        gap: float,
+        modes: list[float],
+    ) -> dict[str, float | int] | None:
+        if gap <= 0.0 or not modes:
+            return None
+
+        best_match: dict[str, float | int] | None = None
+        for mode in sorted(float(value) for value in modes if value > 0.0):
+            base_tolerance = self._mode_tolerance(mode, modes)
+            for multiple in range(1, self._gap_multiple_max + 1):
+                target = float(multiple) * mode
+                tolerance = max(base_tolerance * float(multiple), 0.12 * target)
+                err = abs(gap - target)
+                if err > tolerance:
+                    continue
+                candidate = {
+                    "mode": mode,
+                    "multiple": multiple,
+                    "target": target,
+                    "err": err,
+                    "tolerance": tolerance,
+                }
+                if best_match is None:
+                    best_match = candidate
+                    continue
+                if candidate["err"] < float(best_match["err"]) - 1e-6:
+                    best_match = candidate
+                    continue
+                if (
+                    abs(candidate["err"] - float(best_match["err"])) <= 1e-6
+                    and int(candidate["multiple"]) < int(best_match["multiple"])
+                ):
+                    best_match = candidate
+        return best_match
+
+    def _candidate_fits_scene(
+        self,
+        line: dict[str, Any],
+        scene: list[dict[str, Any]],
+        modes: list[float],
+    ) -> bool:
+        if not scene or not modes:
+            return True
+
+        ordered = sorted(scene, key=lambda item: item["rho"])
+        rho = float(line["rho"])
+        insert_at = 0
+        while insert_at < len(ordered) and float(ordered[insert_at]["rho"]) < rho:
+            insert_at += 1
+
+        if insert_at > 0:
+            left_gap = rho - float(ordered[insert_at - 1]["rho"])
+            if left_gap > 0.0 and not self._gap_matches(left_gap, modes):
+                return False
+
+        if insert_at < len(ordered):
+            right_gap = float(ordered[insert_at]["rho"]) - rho
+            if right_gap > 0.0 and not self._gap_matches(right_gap, modes):
+                return False
+
+        return True
 
     def _mode_tolerance(self, target_mode: float, modes: list[float]) -> float:
         if len(modes) <= 1:

@@ -656,6 +656,16 @@ def _grid_score_threshold(args) -> float:
     return max(float(getattr(args, "grid_score_threshold", 0.0)), 0.0)
 
 
+def _grid_debug_enabled(args) -> bool:
+    getter = getattr(args, "grid_debug_enabled_getter", None)
+    if callable(getter):
+        try:
+            return bool(getter())
+        except Exception:
+            LOGGER.exception("Failed to read grid debug toggle")
+    return bool(getattr(args, "grid_debug_enabled", False))
+
+
 def _set_grid_count_enabled(args, enabled: bool, *, auto: bool = False) -> bool:
     setter = getattr(args, "grid_count_enabled_setter", None)
     if callable(setter):
@@ -742,7 +752,7 @@ def _filter_tracks_by_ids(result, allowed_track_ids: set[int]):
 
 
 def grid_loop(grid_queue: queue.Queue, grid_results: GridResultBuffer, stop_event: threading.Event, args) -> None:
-    grid_processor = GridProcessor()
+    grid_processor = GridProcessor(cluster_only_mode=True)
     grid_processing_active = False
     grid_reset_armed = True
 
@@ -767,6 +777,7 @@ def grid_loop(grid_queue: queue.Queue, grid_results: GridResultBuffer, stop_even
 
         grid_count_enabled = _grid_count_enabled(args)
         grid_score_threshold = _grid_score_threshold(args)
+        grid_debug_enabled = _grid_debug_enabled(args)
         if not grid_count_enabled:
             if grid_processing_active:
                 grid_results.clear()
@@ -776,12 +787,12 @@ def grid_loop(grid_queue: queue.Queue, grid_results: GridResultBuffer, stop_even
             continue
 
         if not grid_processing_active:
-            grid_processor = GridProcessor()
+            grid_processor = GridProcessor(cluster_only_mode=True)
             grid_results.clear()
             grid_reset_armed = True
 
         grid_processing_active = True
-        grid_overlay = grid_processor.process(latest_frame)
+        grid_overlay = grid_processor.process(latest_frame, include_debug=grid_debug_enabled)
         if grid_overlay is None:
             grid_results.clear()
             _publish_grid_score(args, None)
@@ -836,9 +847,14 @@ def output_loop(
                 break
 
             grid_count_enabled = _grid_count_enabled(args)
+            grid_debug_enabled = _grid_debug_enabled(args)
             grid_overlay = grid_results.get_for_frame(frame_id) if grid_count_enabled else None
 
-            if grid_count_enabled and grid_overlay is not None:
+            if (
+                grid_count_enabled
+                and grid_overlay is not None
+                and _viewport_polygon(grid_overlay) is not None
+            ):
                 qualified_track_ids.update(_track_ids_inside_viewport(result, grid_overlay))
                 count_track_ids: set[int] | None = qualified_track_ids
             else:
@@ -852,7 +868,7 @@ def output_loop(
                 count_track_ids=count_track_ids,
             )
             if grid_count_enabled and grid_overlay is not None:
-                vis = grid_renderer.render(vis, grid_overlay)
+                vis = grid_renderer.render(vis, grid_overlay, debug=grid_debug_enabled)
             PROFILER.record('vis', time.time() - start_vis)
 
             frame = np.ascontiguousarray(frame, dtype=np.uint8)
@@ -872,7 +888,11 @@ def output_loop(
                 csv_writer.writerow(["frame", "analysis_number", "s_value", "total_unique_objects", "detections"])
             
             safe_result = result if result is not None else []
-            if grid_count_enabled and grid_overlay is not None:
+            if (
+                grid_count_enabled
+                and grid_overlay is not None
+                and _viewport_polygon(grid_overlay) is not None
+            ):
                 reactive_result = _filter_tracks_by_ids(safe_result, qualified_track_ids)
             else:
                 reactive_result = safe_result
@@ -907,7 +927,11 @@ class StreamPipeline:
         self.grid_queue = queue.Queue(maxsize=GRID_QUEUE_SIZE)
         self.grid_results = GridResultBuffer()
         self.stop_event = threading.Event()
-        self.capture_t = threading.Thread(target=capture_loop, args=(self.reader, self.frame_queue, self.stop_event), daemon=True)
+        self.capture_t = threading.Thread(
+            target=capture_loop,
+            args=(self.reader, self.frame_queue, self.stop_event),
+            daemon=True,
+        )
         self.inference_t = threading.Thread(
             target=inference_loop,
             args=(self.frame_queue, self.result_queue, self.grid_queue, self.stop_event, self.args),

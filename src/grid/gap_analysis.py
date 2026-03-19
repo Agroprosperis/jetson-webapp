@@ -6,6 +6,7 @@ class GapAnalyzer:
         ema: float = 0.25,
         gap_count: int = 2,
         gap_tolerance_px: float = 5.0,
+        max_gap_multiple: int = 4,
     ) -> None:
         """
         Initialize the gap analyzer.
@@ -16,10 +17,13 @@ class GapAnalyzer:
             gap_count: Number of gap intervals to track per orientation.
             gap_tolerance_px: Maximum deviation, in pixels, used when grouping
                 observed gaps into the same interval family.
+            max_gap_multiple: Maximum integer multiplier allowed when an
+                observed neighbor gap spans one or more missed lines.
         """
         self._ema = ema
         self._gap_count = gap_count
         self._gap_tolerance_px = gap_tolerance_px
+        self._max_gap_multiple = max(int(max_gap_multiple), 1)
         self._gaps: dict[str, list[float]] = {
             "vertical": [],
             "horizontal": [],
@@ -82,18 +86,47 @@ class GapAnalyzer:
         estimated_gaps: list[float] = []
         ordered_gaps = sorted(float(gap) for gap in observed_gaps)
         for reference_gap in sorted(float(gap) for gap in reference_gaps):
-            search_radius = max(self._gap_tolerance_px, 0.2 * reference_gap)
             candidates = [
-                gap
+                normalized_gap
                 for gap in ordered_gaps
-                if abs(gap - reference_gap) <= search_radius
+                for normalized_gap in [self._normalize_gap_to_reference(gap, reference_gap)]
+                if normalized_gap is not None
             ]
             if not candidates:
                 estimated_gaps.append(reference_gap)
                 continue
+            candidate_cluster = self._find_best_gap_cluster(candidates)
+            if candidate_cluster is not None:
+                estimated_gaps.append(float(candidate_cluster["center"]))
+                continue
             nearest_gap = min(candidates, key=lambda gap: abs(gap - reference_gap))
             estimated_gaps.append(float(nearest_gap))
         return estimated_gaps[: self._gap_count]
+
+    def _normalize_gap_to_reference(
+        self,
+        observed_gap: float,
+        reference_gap: float,
+    ) -> float | None:
+        if observed_gap <= 0.0 or reference_gap <= 0.0:
+            return None
+
+        base_radius = max(self._gap_tolerance_px, 0.12 * reference_gap)
+        best_gap: float | None = None
+        best_err: float | None = None
+
+        for multiple in range(1, self._max_gap_multiple + 1):
+            target_gap = float(multiple) * reference_gap
+            tolerance = max(base_radius * float(multiple), 0.12 * target_gap)
+            err = abs(observed_gap - target_gap)
+            if err > tolerance:
+                continue
+            normalized_gap = observed_gap / float(multiple)
+            if best_err is None or err < best_err - 1e-6:
+                best_err = err
+                best_gap = normalized_gap
+
+        return best_gap
 
     def _collect_neighbor_gaps(self, lines: list[dict[str, any]]) -> list[float]:
         ordered = sorted(lines, key=lambda line: line["rho"])

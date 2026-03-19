@@ -56,6 +56,7 @@ compile_jobs_lock = threading.Lock()
 model_task_overrides_lock = threading.Lock()
 runtime_options = {
     "grid_count_enabled": True,
+    "grid_debug_enabled": False,
     "grid_score": None,
     "grid_score_threshold": 0.30,
     "grid_auto_disabled": False,
@@ -111,6 +112,11 @@ def get_grid_score():
         return runtime_options.get("grid_score")
 
 
+def get_grid_debug_enabled():
+    with runtime_options_lock:
+        return bool(runtime_options.get("grid_debug_enabled", False))
+
+
 def get_grid_score_threshold():
     with runtime_options_lock:
         return float(runtime_options.get("grid_score_threshold", 0.30))
@@ -131,6 +137,13 @@ def set_grid_score(score):
         return runtime_options["grid_score"]
 
 
+def set_grid_debug_enabled(enabled):
+    coerced = _coerce_bool(enabled)
+    with runtime_options_lock:
+        runtime_options["grid_debug_enabled"] = coerced
+        return runtime_options["grid_debug_enabled"]
+
+
 def set_grid_score_threshold(value):
     coerced = _coerce_threshold(value)
     with runtime_options_lock:
@@ -142,6 +155,7 @@ def get_runtime_options():
     with runtime_options_lock:
         return {
             "grid_count_enabled": bool(runtime_options.get("grid_count_enabled", True)),
+            "grid_debug_enabled": bool(runtime_options.get("grid_debug_enabled", False)),
             "grid_score": runtime_options.get("grid_score"),
             "grid_score_threshold": float(runtime_options.get("grid_score_threshold", 0.30)),
             "grid_auto_disabled": bool(runtime_options.get("grid_auto_disabled", False)),
@@ -152,6 +166,7 @@ def get_grid_api_state():
     options = get_runtime_options()
     return {
         "enabled": options["grid_count_enabled"],
+        "debug_enabled": options["grid_debug_enabled"],
         "score": options["grid_score"],
         "score_threshold": options["grid_score_threshold"],
         "auto_disabled": options["grid_auto_disabled"],
@@ -166,6 +181,10 @@ def apply_grid_api_update(payload):
 
     if "enabled" in payload:
         set_grid_count_enabled(payload.get("enabled"))
+        updated = True
+
+    if "debug_enabled" in payload:
+        set_grid_debug_enabled(payload.get("debug_enabled"))
         updated = True
 
     if "score_threshold" in payload:
@@ -802,6 +821,9 @@ def api_get_grid():
             enabled:
               type: boolean
               description: True when grid detection and viewport-based counting are enabled.
+            debug_enabled:
+              type: boolean
+              description: True when the rich grid debug overlay is rendered on the output stream.
             score:
               type: number
               description: Current EMA grid quality score in the 0..1 range, or null before the first processed frame.
@@ -833,6 +855,9 @@ def api_put_grid():
             enabled:
               type: boolean
               description: Enable grid detection, grid overlay, and viewport-based counting.
+            debug_enabled:
+              type: boolean
+              description: Enable the rich grid debug overlay with raw, accumulated, rejected, predicted, and accepted lines.
             score_threshold:
               type: number
               minimum: 0
@@ -845,6 +870,8 @@ def api_put_grid():
           type: object
           properties:
             enabled:
+              type: boolean
+            debug_enabled:
               type: boolean
             score:
               type: number
@@ -1780,6 +1807,9 @@ def api_start():
         set_grid_count_enabled(
             data.get("grid_count_enabled", get_grid_count_enabled())
         )
+        set_grid_debug_enabled(
+            data.get("grid_debug_enabled", get_grid_debug_enabled())
+        )
         set_grid_score_threshold(
             data.get("grid_score_threshold", get_grid_score_threshold())
         )
@@ -1875,6 +1905,8 @@ def api_start():
         args.grid_count_enabled = get_grid_count_enabled()
         args.grid_count_enabled_getter = get_grid_count_enabled
         args.grid_count_enabled_setter = set_grid_count_enabled
+        args.grid_debug_enabled = get_grid_debug_enabled()
+        args.grid_debug_enabled_getter = get_grid_debug_enabled
         args.grid_score_setter = set_grid_score
         args.grid_score_threshold = get_grid_score_threshold()
         args.grid_score_threshold_getter = get_grid_score_threshold
