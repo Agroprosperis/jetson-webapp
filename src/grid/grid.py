@@ -97,11 +97,19 @@ class GridBuilder:
         }
         for orientation in ("vertical", "horizontal"):
             modes = list(gap_info[orientation])
-            accepted = [
-                self._to_public_line(item, orientation)
-                for item in current_grid["accepted"][orientation]
+            reference = [
+                dict(line)
+                for line in tracker_state["reference"][orientation]
             ]
-            accepted.sort(key=lambda item: item["rho"])
+            reference.sort(key=lambda item: item["rho"])
+            if reference:
+                scene_base = reference
+            else:
+                scene_base = [
+                    self._to_public_line(item, orientation)
+                    for item in current_grid["accepted"][orientation]
+                ]
+                scene_base.sort(key=lambda item: item["rho"])
             predicted = [
                 self._to_public_line(item, orientation)
                 for item in tracker_state["predicted"][orientation]
@@ -109,7 +117,7 @@ class GridBuilder:
             predicted.sort(key=lambda item: item["rho"])
             merged, kept_predicted = self._integrate_predicted(
                 predicted,
-                accepted,
+                scene_base,
                 modes,
             )
             result["accepted"][orientation] = merged
@@ -126,6 +134,7 @@ class GridBuilder:
             self._slots[orientation] = []
             return [], []
         selected = self._bootstrap_select(lines, modes)
+        selected = self._expand_bootstrap_selection(lines, selected, modes)
         selected, _ = self._collapse_close_lines(selected, modes)
         selected_ids = {id(item) for item in selected}
         rejected = [item for item in lines if id(item) not in selected_ids]
@@ -203,6 +212,41 @@ class GridBuilder:
         if len(selected) < min_required and len(lines) <= 6:
             return list(lines)
         return selected
+
+    def _expand_bootstrap_selection(
+        self,
+        lines: list[dict[str, Any]],
+        selected: list[dict[str, Any]],
+        modes: list[float],
+    ) -> list[dict[str, Any]]:
+        if not lines:
+            return []
+        if not selected or not modes:
+            return list(selected)
+
+        scene = sorted(list(selected), key=lambda item: item["rho"])
+        selected_ids = {id(item) for item in scene}
+        remaining = [item for item in lines if id(item) not in selected_ids]
+
+        def _remaining_order(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return sorted(items, key=lambda item: (-self._line_support(item), float(item["rho"])))
+
+        remaining = _remaining_order(remaining)
+        while remaining:
+            next_remaining: list[dict[str, Any]] = []
+            added = False
+            for item in remaining:
+                if self._candidate_fits_scene(item, scene, modes):
+                    scene.append(item)
+                    scene.sort(key=lambda line: line["rho"])
+                    added = True
+                else:
+                    next_remaining.append(item)
+            if not added:
+                break
+            remaining = _remaining_order(next_remaining)
+
+        return scene
 
     def _match_orientation(
         self,

@@ -12,13 +12,13 @@ from .line import Line
 class GridRenderer:
     def __init__(
         self,
-        color_raw: tuple[int, int, int] = (0, 0, 255),
-        color_rejected: tuple[int, int, int] = (0, 255, 0),
+        color_clustered: tuple[int, int, int] = (255, 0, 0),
+        color_selected: tuple[int, int, int] = (0, 255, 0),
         color_predicted: tuple[int, int, int] = (255, 0, 255),
         color_accepted: tuple[int, int, int] = (255, 0, 255),
         color_flow: tuple[int, int, int] = (0, 165, 255),
-        raw_dot_step_px: int = 5,
-        rejected_dot_step_px: int = 5,
+        clustered_dot_step_px: int = 5,
+        selected_dot_step_px: int = 5,
         predicted_dot_step_px: int = 8,
         accepted_dot_step_px: int = 8,
         flow_draw_arrow_scale: float = 6.0,
@@ -29,15 +29,15 @@ class GridRenderer:
         color_hist_marker: tuple[int, int, int] = (255, 255, 255),
     ) -> None:
         self._dot_size_px = 6
-        self._color_raw = color_raw
-        self._color_rejected = color_rejected
+        self._color_clustered = color_clustered
+        self._color_selected = color_selected
         self._color_predicted = color_predicted
         self._color_accepted = color_accepted
         self._color_flow = color_flow
         self._color_hist_bar = color_hist_bar
         self._color_hist_marker = color_hist_marker
-        self._raw_dot_step_px = raw_dot_step_px
-        self._rejected_dot_step_px = rejected_dot_step_px
+        self._clustered_dot_step_px = clustered_dot_step_px
+        self._selected_dot_step_px = selected_dot_step_px
         self._predicted_dot_step_px = predicted_dot_step_px
         self._accepted_dot_step_px = accepted_dot_step_px
         self._flow_draw_arrow_scale = flow_draw_arrow_scale
@@ -48,7 +48,8 @@ class GridRenderer:
     def __call__(
         self,
         frame_bgr: np.ndarray,
-        raw_lines: list[Line],
+        clustered_groups: dict[str, list[dict[str, Any]]],
+        selected_groups: dict[str, list[dict[str, Any]]],
         grid_state: dict[str, dict[str, list[dict[str, Any]]]],
         analysis_shape: tuple[int, int],
         flow_shift: dict[str, float] | None = None,
@@ -63,14 +64,19 @@ class GridRenderer:
         scale_y = float(render_h) / float(analysis_h)
         flow_data = flow_shift or {"dx": 0.0, "dy": 0.0}
         left_reserved = 0
-        self._draw_raw_lines(frame_bgr, raw_lines, scale_x, scale_y)
-        if accumulated_lines:
-            self._draw_raw_lines(frame_bgr, accumulated_lines, scale_x, scale_y)
         self._draw_state_group(
             frame_bgr,
-            grid_state["rejected"],
-            self._color_rejected,
-            self._rejected_dot_step_px,
+            clustered_groups,
+            self._color_clustered,
+            self._clustered_dot_step_px,
+            analysis_shape,
+            (scale_x, scale_y),
+        )
+        self._draw_state_group(
+            frame_bgr,
+            selected_groups,
+            self._color_selected,
+            self._selected_dot_step_px,
             analysis_shape,
             (scale_x, scale_y),
         )
@@ -94,7 +100,7 @@ class GridRenderer:
             self._draw_debug_histograms(
                 frame_bgr,
                 histogram_data,
-                grid_state["accepted"],
+                selected_groups,
                 analysis_shape,
                 (scale_x, scale_y),
             )
@@ -103,23 +109,6 @@ class GridRenderer:
         if show_legend:
             self._draw_legend(frame_bgr, left_reserved=left_reserved)
         return frame_bgr
-
-    def _draw_raw_lines(
-        self,
-        frame_bgr: np.ndarray,
-        raw_lines: list[Line],
-        scale_x: float,
-        scale_y: float,
-    ) -> None:
-        for item in raw_lines:
-            self._draw_dotted_line(
-                frame_bgr,
-                (int(round(item.x1 * scale_x)), int(round(item.y1 * scale_y))),
-                (int(round(item.x2 * scale_x)), int(round(item.y2 * scale_y))),
-                color=self._color_raw,
-                step_px=self._raw_dot_step_px,
-                dot_size_px=2,
-            )
 
     def _draw_state_group(
         self,
@@ -210,10 +199,9 @@ class GridRenderer:
 
     def _draw_legend(self, frame_bgr: np.ndarray, left_reserved: int = 0) -> None:
         legend_items = [
-            ("raw", self._color_raw, self._raw_dot_step_px),
-            ("gap-rejected", self._color_rejected, self._rejected_dot_step_px),
-            ("tracker-pred", self._color_predicted, self._predicted_dot_step_px),
-            ("accepted", self._color_accepted, self._accepted_dot_step_px),
+            ("clustered", self._color_clustered, self._clustered_dot_step_px),
+            ("gap-selected", self._color_selected, self._selected_dot_step_px),
+            ("tracked", self._color_accepted, self._accepted_dot_step_px),
         ]
         pad = 8
         row_h = 18

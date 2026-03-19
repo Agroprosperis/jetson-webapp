@@ -2,7 +2,7 @@ import math
 
 
 class LineRegularizer:
-    """Stabilize clustered line candidates by enforcing shared angle and spacing priors."""
+    """Stabilize clustered line candidates using optional spacing-only regularization."""
 
     def __init__(
         self,
@@ -19,20 +19,16 @@ class LineRegularizer:
         Initialize the line regularizer.
 
         Args:
-            parallel_ref_min_ratio: Minimum confidence ratio, relative to the
-                strongest line in the orientation, required for a line to be
-                eligible as an angle reference.
-            parallel_ref_max_count: Maximum number of strongest reference lines
-                used to estimate the dominant orientation.
-            parallel_force_ratio: Confidence ratio below which a line receives
-                the full parallelization correction. Stronger lines still get a
-                reduced correction so the grid remains coherent.
-            parallel_keep_tol_deg: Maximum angular deviation, in degrees,
-                allowed from the dominant orientation for a cluster to remain
-                part of the grid family.
-            parallel_force_max_corr_deg: Maximum angular correction, in
-                degrees, applied when nudging a weak line toward the dominant
-                orientation.
+            parallel_ref_min_ratio: Retained for backward compatibility. Angle
+                cleanup is disabled and this value is unused.
+            parallel_ref_max_count: Retained for backward compatibility. Angle
+                cleanup is disabled and this value is unused.
+            parallel_force_ratio: Retained for backward compatibility. Angle
+                cleanup is disabled and this value is unused.
+            parallel_keep_tol_deg: Retained for backward compatibility. Angle
+                cleanup is disabled and this value is unused.
+            parallel_force_max_corr_deg: Retained for backward compatibility.
+                Angle cleanup is disabled and this value is unused.
             spatial_reg_gain: Gain applied to the spacing correction before it
                 is added to the line position.
             spatial_reg_max_corr: Maximum absolute position correction applied
@@ -62,23 +58,14 @@ class LineRegularizer:
     ) -> list[dict[str, any]]:
         if not cluster_infos:
             return []
-        
+
         regularized = [{
             "orientation": info["orientation"],
             "rho": float(info["rho"]),
             "theta": float(info["theta"]),
             "conf": float(info["conf"]),
         } for info in cluster_infos]
-
-        dominant_theta = self._dominant_theta_from_clusters(self._parallel_reference_lines(regularized))
-        filtered = self._filter_parallel_outliers(regularized, dominant_theta)
-        if not filtered:
-            filtered = regularized
-
-        max_conf = max(info["conf"] for info in filtered)
-        dominant_theta = self._dominant_theta_from_clusters(self._parallel_reference_lines(filtered))
-        self._force_parallel_lines(filtered, dominant_theta, max_conf)
-        return self._regularize_spacing(filtered)
+        return self._regularize_spacing(regularized)
 
     def _parallel_reference_lines(
         self,
