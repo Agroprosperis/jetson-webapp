@@ -90,6 +90,7 @@ def load_and_export(pt_file, output_path):
     print(f"Processing: {pt_file}")
     
     model_name = os.path.basename(pt_file).lower()
+    onnx_export_path = None
     
     try:
         # A. Instantiate the correct model class
@@ -139,6 +140,12 @@ def load_and_export(pt_file, output_path):
         
         if success:
             print(f"SUCCESS: Exported {pt_file} -> {output_path}")
+            if onnx_export_path and os.path.exists(onnx_export_path):
+                try:
+                    os.remove(onnx_export_path)
+                    print(f"Removed ONNX intermediate: {onnx_export_path}")
+                except OSError as exc:
+                    print(f"Warning: failed to remove ONNX intermediate {onnx_export_path}: {exc}")
         else:
             print(f"FAILED to build engine for {pt_file}")
 

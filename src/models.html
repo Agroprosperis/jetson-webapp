@@ -7,7 +7,9 @@
 <style>
 body { margin:0; background:#111; color:#eee; font-family:system-ui, Segoe UI, Roboto, Arial; padding: 20px; }
 h1 { margin-bottom: 16px; font-weight: 300; }
-.page-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 16px; }
+.page-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+.page-tools { display:flex; align-items:center; justify-content:flex-end; gap:10px; flex-wrap:wrap; }
+.upload-tools { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; background: #222; border-radius: 8px; overflow: hidden; }
 th, td { text-align: left; padding: 12px 16px; border-bottom: 1px solid #333; vertical-align: top; }
@@ -92,7 +94,19 @@ tr:hover { background: #2a2a2a; }
 
 <div class="page-head">
   <h1 style="margin:0;">Model Catalog</h1>
-  <button id="openCompileLogs" type="button" class="btn-ghost" style="display:none;">Open Compile Logs</button>
+  <div class="page-tools">
+    <div id="tensorrtInfo" class="meta" style="margin:0;">Current TensorRT: loading...</div>
+    <div class="upload-tools">
+      <select id="uploadModelType" title="Target model family">
+        <option value="ul">UL</option>
+        <option value="rf">RF</option>
+      </select>
+      <button id="uploadModelBtn" type="button" class="btn-ghost">Upload Weights (.pt)</button>
+      <input id="uploadModelInput" type="file" accept=".pt" style="display:none;" />
+      <span id="uploadModelStatus" class="meta"></span>
+    </div>
+    <button id="openCompileLogs" type="button" class="btn-ghost" style="display:none;">Open Compile Logs</button>
+  </div>
 </div>
 
 <div id="loading">Loading...</div>
@@ -133,6 +147,12 @@ let currentJobId = null;
 let currentJobTitle = '';
 let jobsByModel = {};
 let latestJobId = null;
+
+const uploadModelTypeEl = document.getElementById('uploadModelType');
+const uploadModelBtn = document.getElementById('uploadModelBtn');
+const uploadModelInput = document.getElementById('uploadModelInput');
+const uploadModelStatusEl = document.getElementById('uploadModelStatus');
+const tensorrtInfoEl = document.getElementById('tensorrtInfo');
 
 function filenameFromPath(path) {
     if (!path) return '';
@@ -212,6 +232,8 @@ async function loadModels() {
     try {
         const res = await fetch('/api/model-catalog');
         const data = await res.json();
+        const currentTensorRT = (data.tensorrt && data.tensorrt.current) ? data.tensorrt.current : 'unknown';
+        tensorrtInfoEl.textContent = `Current TensorRT: ${currentTensorRT}`;
 
         loading.style.display = 'none';
         tbody.innerHTML = '';
@@ -251,6 +273,9 @@ async function loadModels() {
             if (model.compiled && model.engine) {
                 engineHtml = `<div class="mono">${model.engine.name}</div>` +
                              `<div class="meta">${model.engine.path || ''}</div>`;
+                if (model.engine.tensorrt_version) {
+                    engineHtml += `<div class="meta">Compiled with TensorRT ${model.engine.tensorrt_version}</div>`;
+                }
             }
 
             const hasPtSource = (model.sources || []).includes('pt');
@@ -317,6 +342,7 @@ async function loadModels() {
         });
     } catch (err) {
         loading.style.display = 'none';
+        tensorrtInfoEl.textContent = 'Current TensorRT: unavailable';
         const msg = document.createElement('div');
         msg.className = 'empty';
         msg.setAttribute('data-model-empty', '1');
@@ -342,6 +368,52 @@ document.getElementById('openCompileLogs').addEventListener('click', () => {
     }
     if (latestJobId) {
         openCompileLogs(latestJobId, 'Compile Logs');
+    }
+});
+
+uploadModelBtn.addEventListener('click', () => {
+    uploadModelInput.click();
+});
+
+uploadModelInput.addEventListener('change', async () => {
+    const file = uploadModelInput.files && uploadModelInput.files[0];
+    if (!file) return;
+
+    if (!file.name.toLowerCase().endsWith('.pt')) {
+        uploadModelInput.value = '';
+        alert('Only .pt model weights are supported.');
+        return;
+    }
+
+    uploadModelBtn.disabled = true;
+    uploadModelStatusEl.textContent = `Uploading ${file.name}...`;
+
+    try {
+        const formData = new FormData();
+        formData.append('type', uploadModelTypeEl.value);
+        formData.append('file', file);
+
+        const res = await fetch('/api/model-upload', {
+            method: 'POST',
+            body: formData,
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            throw new Error(data.error || 'Failed to upload model.');
+        }
+
+        uploadModelStatusEl.textContent = `Uploaded ${file.name}`;
+        if (data.tensorrt && data.tensorrt.current) {
+            tensorrtInfoEl.textContent = `Current TensorRT: ${data.tensorrt.current}`;
+        }
+        await loadCompileJobs();
+        await loadModels();
+    } catch (err) {
+        uploadModelStatusEl.textContent = '';
+        alert(err.message || 'Failed to upload model.');
+    } finally {
+        uploadModelBtn.disabled = false;
+        uploadModelInput.value = '';
     }
 });
 

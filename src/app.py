@@ -33,6 +33,8 @@ MODEL_DIR = "/app/model"
 MODEL_TASKS_FILEPATH = os.path.join(MODEL_DIR, "model_tasks.json")
 VENDOR_DIR = "/opt/web/vendor"
 VALID_UL_MODEL_TASKS = ("segment", "detect", "auto")
+MODEL_UPLOAD_EXTENSIONS = (".pt",)
+MODEL_COMPILE_METADATA_SUFFIX = ".compile.json"
 
 app = Flask(__name__)
 
@@ -348,6 +350,144 @@ def resolve_model_task_for_path(model_path):
     return "segment"
 
 
+def get_current_tensorrt_version():
+    try:
+        import tensorrt as trt
+        return str(trt.__version__)
+    except Exception:
+        return None
+
+
+def _compile_metadata_path(engine_path):
+    if not engine_path:
+        return None
+    return f"{engine_path}{MODEL_COMPILE_METADATA_SUFFIX}"
+
+
+def _read_compile_metadata(engine_path):
+    metadata_path = _compile_metadata_path(engine_path)
+    if not metadata_path or not os.path.isfile(metadata_path):
+        return {}
+    try:
+        with open(metadata_path, "r", encoding="utf-8") as fp:
+            data = json.load(fp)
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        LOGGER.warning("Failed to read compile metadata %s: %s", metadata_path, exc)
+        return {}
+
+
+def _write_compile_metadata(engine_path, *, model_type=None, source_path=None, command=None):
+    metadata_path = _compile_metadata_path(engine_path)
+    if not metadata_path:
+        return
+    payload = {
+        "tensorrt_version": get_current_tensorrt_version(),
+        "compiled_at": datetime.utcnow().isoformat() + "Z",
+    }
+    if model_type:
+        payload["model_type"] = model_type
+    if source_path:
+        payload["source_path"] = source_path
+    if command:
+        payload["command"] = list(command)
+    try:
+        with open(metadata_path, "w", encoding="utf-8") as fp:
+            json.dump(payload, fp, indent=2, sort_keys=True)
+    except Exception as exc:
+        LOGGER.warning("Failed to write compile metadata %s: %s", metadata_path, exc)
+
+
+def _resolve_compiled_engine_path(model_type, source_path):
+    if not source_path:
+        return None
+
+    source_dir = os.path.dirname(source_path)
+    source_base = os.path.splitext(os.path.basename(source_path))[0]
+    candidates = []
+    if model_type == "rf":
+        candidates.extend([
+            os.path.join(source_dir, f"{source_base}-fp16.engine"),
+            os.path.join(source_dir, f"{source_base}.engine"),
+        ])
+    else:
+        candidates.extend([
+            os.path.join(source_dir, f"{source_base}.engine"),
+            os.path.join(source_dir, f"{source_base}-fp16.engine"),
+        ])
+
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def _record_compile_metadata(job_id):
+    with compile_jobs_lock:
+        job = compile_jobs.get(job_id)
+        if job is None:
+            return
+        model = job.get("model", {})
+        source_path = model.get("source")
+        model_type = model.get("type")
+        command = job.get("command")
+
+    engine_path = _resolve_compiled_engine_path(model_type, source_path)
+    if not engine_path:
+        return
+
+    _write_compile_metadata(
+        engine_path,
+        model_type=model_type,
+        source_path=source_path,
+        command=command,
+    )
+    _append_compile_log(job_id, f"Saved compile metadata: {_compile_metadata_path(engine_path)}")
+
+
+def _cleanup_ul_compile_intermediates(job_id):
+    with compile_jobs_lock:
+        job = compile_jobs.get(job_id)
+        if job is None:
+            return
+        model = job.get("model", {})
+        source_path = model.get("source")
+        model_type = model.get("type")
+        started_ts = job.get("started_ts", time.time())
+
+    if model_type != "ul" or not source_path:
+        return
+
+    source_dir = os.path.dirname(source_path)
+    source_base = os.path.splitext(os.path.basename(source_path))[0]
+    candidates = set()
+    for pattern in (
+        os.path.join(source_dir, f"{source_base}*.onnx"),
+        os.path.join("/app/runs", "**", f"{source_base}*.onnx"),
+    ):
+        for path in glob.glob(pattern, recursive=True):
+            if os.path.isfile(path):
+                candidates.add(path)
+
+    for path in sorted(candidates):
+        try:
+            if os.path.getmtime(path) + 2 < started_ts:
+                continue
+        except OSError:
+            continue
+        try:
+            os.remove(path)
+            _append_compile_log(job_id, f"Removed intermediate artifact: {path}")
+        except Exception as exc:
+            _append_compile_log(job_id, f"Failed to remove intermediate artifact {path}: {exc}")
+
+
+def _sanitize_uploaded_model_filename(filename):
+    safe_name = os.path.basename((filename or "").strip())
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", safe_name)
+    return safe_name.strip("._")
+
+
 def collect_model_artifact_paths(entry):
     if not entry:
         return []
@@ -360,11 +500,20 @@ def collect_model_artifact_paths(entry):
     engine_path = engine.get("path")
     if engine_path:
         artifacts.add(engine_path)
+        metadata_path = _compile_metadata_path(engine_path)
+        if metadata_path:
+            artifacts.add(metadata_path)
 
     for suffix in (".pt", ".onnx", ".engine"):
         artifacts.add(os.path.join(base_dir, f"{base_name}{suffix}"))
     if not base_name.endswith("-fp16"):
         artifacts.add(os.path.join(base_dir, f"{base_name}-fp16.engine"))
+
+    for candidate in list(artifacts):
+        if candidate.endswith(".engine"):
+            metadata_path = _compile_metadata_path(candidate)
+            if metadata_path:
+                artifacts.add(metadata_path)
 
     return sorted(path for path in artifacts if os.path.isfile(path))
 
@@ -494,8 +643,11 @@ def _run_compile_job(job_id, command, cwd=None):
     process.wait()
     with compile_jobs_lock:
         model_type = (compile_jobs.get(job_id) or {}).get("model", {}).get("type")
-    if process.returncode == 0 and model_type == "ul":
-        _normalize_ul_engine_output(job_id)
+    if process.returncode == 0:
+        if model_type == "ul":
+            _normalize_ul_engine_output(job_id)
+            _cleanup_ul_compile_intermediates(job_id)
+        _record_compile_metadata(job_id)
 
     with compile_jobs_lock:
         job = compile_jobs.get(job_id)
@@ -558,6 +710,12 @@ def build_model_catalog():
             fp16_path = os.path.join(base_dir, fp16_name)
             if os.path.exists(fp16_path):
                 engine = {"name": fp16_name, "path": fp16_path}
+
+        if engine is not None:
+            engine_metadata = _read_compile_metadata(engine["path"])
+            if engine_metadata:
+                engine["tensorrt_version"] = engine_metadata.get("tensorrt_version")
+                engine["compiled_at"] = engine_metadata.get("compiled_at")
 
         entry["engine"] = engine
         entry["compiled"] = engine is not None
@@ -986,10 +1144,70 @@ def api_model_catalog():
                     type: boolean
     """
     try:
-        return jsonify({"models": build_model_catalog()})
+        return jsonify({"models": build_model_catalog(), "tensorrt": {"current": get_current_tensorrt_version()}})
     except Exception as e:
         LOGGER.error(f"Failed to list model catalog: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/model-upload", methods=["POST"])
+def api_model_upload():
+    """
+    Upload a model weights file into the catalog.
+    ---
+    tags:
+      - Configuration
+    consumes:
+      - multipart/form-data
+    responses:
+      200:
+        description: Model uploaded successfully
+      400:
+        description: Invalid upload request
+    """
+    model_type = (request.form.get("type") or "").strip().lower()
+    if model_type not in ("ul", "rf"):
+        return jsonify({"error": "Invalid model type."}), 400
+
+    uploaded_file = request.files.get("file")
+    if uploaded_file is None or not uploaded_file.filename:
+        return jsonify({"error": "Missing model file."}), 400
+
+    filename = _sanitize_uploaded_model_filename(uploaded_file.filename)
+    if not filename:
+        return jsonify({"error": "Invalid filename."}), 400
+
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in MODEL_UPLOAD_EXTENSIONS:
+        return jsonify({"error": "Only .pt model weights are supported."}), 400
+
+    target_dir = os.path.join(MODEL_DIR, model_type)
+    os.makedirs(target_dir, exist_ok=True)
+    target_path = os.path.join(target_dir, filename)
+    if os.path.exists(target_path):
+        return jsonify({"error": "A model with this filename already exists."}), 409
+
+    try:
+        uploaded_file.save(target_path)
+    except Exception as exc:
+        LOGGER.error("Failed to save uploaded model %s: %s", target_path, exc)
+        try:
+            if os.path.exists(target_path):
+                os.remove(target_path)
+        except OSError:
+            pass
+        return jsonify({"error": "Failed to store uploaded model."}), 500
+
+    return jsonify(
+        {
+            "uploaded": {
+                "type": model_type,
+                "name": os.path.splitext(filename)[0],
+                "path": target_path,
+            },
+            "tensorrt": {"current": get_current_tensorrt_version()},
+        }
+    )
 
 
 @app.route("/api/model-compile", methods=["POST"])
