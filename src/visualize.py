@@ -4,6 +4,8 @@ import logging
 import cv2
 from datetime import datetime
 
+from s_value_model import calculate_s_value
+
 BOX_ANNOTATOR = sv.BoxAnnotator()
 LABEL_ANNOTATOR = sv.LabelAnnotator(
     text_scale = 1.2,
@@ -150,7 +152,7 @@ def visualize_frame_with_supervision(
         vis = LABEL_ANNOTATOR.annotate(vis, detections, labels=labels)
 
     cumulative_count = _update_cumulative_objects(all_detections, allowed_track_ids=count_track_ids)
-    s_metric = round((cumulative_count * 1111. / 100.), 1)
+    s_metric = calculate_s_value(cumulative_count)
     
     p_id = getattr(args, "pipeline_id", "unknown")
     vis = draw_combined_banner(vis, cumulative_count, s_metric, f"{p_id}")
