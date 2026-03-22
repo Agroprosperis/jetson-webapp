@@ -16,6 +16,7 @@ import subprocess
 import time
 from datetime import datetime
 from collections import deque
+from urllib.parse import quote
 
 import cv2
 import requests
@@ -35,6 +36,7 @@ VENDOR_DIR = "/opt/web/vendor"
 VALID_UL_MODEL_TASKS = ("segment", "detect", "auto")
 MODEL_UPLOAD_EXTENSIONS = (".pt",)
 MODEL_COMPILE_METADATA_SUFFIX = ".compile.json"
+RESULT_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")
 
 app = Flask(__name__)
 
@@ -823,6 +825,14 @@ def _build_result_metadata(run_id):
         "csv_path": csv_path if os.path.isfile(csv_path) else None,
         "video_path": video_path if os.path.isfile(video_path) else None,
     }
+
+
+def _build_download_url(host_url, relative_path):
+    return f"{host_url}/download/{quote(relative_path, safe='/')}"
+
+
+def _is_result_image(filename):
+    return os.path.splitext(filename)[1].lower() in RESULT_IMAGE_EXTENSIONS
 
 
 def _collect_results_metadata(*, analysis_prefix="", selected_date=None):
@@ -1706,6 +1716,17 @@ def api_search_results():
                     type: string
                   csv_url:
                     type: string
+                  images:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        size:
+                          type: string
+                        url:
+                          type: string
     """
     try:
         analysis_id = request.args.get('analysis_id', '').strip()
@@ -1723,13 +1744,30 @@ def api_search_results():
             run_id = item["id"]
             video_filename = f"{run_id}.mkv"
             csv_filename = f"{run_id}.csv"
-            video_url = f"{host_url}/download/{run_id}/{video_filename}" if item.get("video_path") else None
-            csv_url = f"{host_url}/download/{run_id}/{csv_filename}" if item.get("csv_path") else None
+            video_url = (
+                _build_download_url(host_url, f"{run_id}/{video_filename}")
+                if item.get("video_path")
+                else None
+            )
+            csv_url = (
+                _build_download_url(host_url, f"{run_id}/{csv_filename}")
+                if item.get("csv_path")
+                else None
+            )
             size_mb = (
                 round(os.path.getsize(item["video_path"]) / (1024 * 1024), 2)
                 if item.get("video_path")
                 else None
             )
+            images = [
+                {
+                    "name": file_info["name"],
+                    "size": file_info.get("size"),
+                    "url": _build_download_url(host_url, file_info["path"]),
+                }
+                for file_info in item.get("files", [])
+                if _is_result_image(file_info.get("name", ""))
+            ]
 
             results_list.append({
                 "analysis_id": run_id,
@@ -1737,6 +1775,7 @@ def api_search_results():
                 "video_size": f"{size_mb} MB" if size_mb is not None else None,
                 "video_url": video_url,
                 "csv_url": csv_url,
+                "images": images,
             })
 
         return jsonify({"results": results_list})

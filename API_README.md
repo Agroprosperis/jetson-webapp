@@ -323,6 +323,13 @@ curl -X GET "http://localhost/api/results/search?analysis_id=string&date=string"
     {
       "analysis_id": "string",
       "csv_url": "string",
+      "images": [
+        {
+          "name": "string",
+          "size": "string",
+          "url": "string"
+        }
+      ],
       "video_url": "string"
     }
   ]
