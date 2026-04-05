@@ -139,6 +139,7 @@ select { border: 1px solid #444; }
     <div style="flex:1"></div>
     <button id='run' class="btn-primary" style="min-width: 80px;">Run</button>
     <button id='stop' type='button' style="min-width: 60px;">Stop</button>
+    <button id='snapshotBtn' type='button' class="btn-secondary" style="min-width: 120px;" disabled>Take Snapshot</button>
 
     <a href="/results" target="_blank" style="text-decoration:none; margin-left: 10px;">
       <button type="button" class="btn-secondary">See Results</button>
@@ -185,6 +186,7 @@ let cameraList = [];
 const statusEl = document.getElementById('status');
 const btnRun = document.getElementById('run');
 const btnStop = document.getElementById('stop');
+const snapshotBtn = document.getElementById('snapshotBtn');
 const vWf = document.getElementById('wf');
 
 const sourceTypeEl = document.getElementById('sourceType');
@@ -412,6 +414,7 @@ function applyState(j) {
   btnRun.disabled = isRunning;
   btnRun.textContent = state === 'running' ? 'Running' : (state === 'starting' ? 'Starting...' : 'Run');
   btnStop.disabled = state === 'idle' || state === 'stopping';
+  snapshotBtn.disabled = state !== 'running';
 
   uploadBtn.disabled = isRunning || !CAN_CONFIGURE_DASHBOARD;
   sourceTypeEl.disabled = isRunning || !CAN_CONFIGURE_DASHBOARD;
@@ -590,6 +593,23 @@ btnStop.onclick = async () => {
     await refresh();
   } catch (e) {
     console.error(e);
+  }
+};
+
+snapshotBtn.onclick = async () => {
+  snapshotBtn.disabled = true;
+  try {
+    const response = await fetch('/api/snapshot', { method: 'POST' });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.error || 'Snapshot failed');
+    }
+  } catch (e) {
+    console.error(e);
+  } finally {
+    if (state === 'running') {
+      snapshotBtn.disabled = false;
+    }
   }
 };
 

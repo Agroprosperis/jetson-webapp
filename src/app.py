@@ -2815,6 +2815,55 @@ def api_download_result(pid):
         return flask.jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/snapshot", methods=["POST"])
+@auth.require_permission("dashboard:view")
+def api_snapshot():
+    """
+    Capture a manual snapshot from the active pipeline.
+    ---
+    tags:
+      - Control
+    responses:
+      200:
+        description: Snapshot saved successfully.
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            pipeline_id:
+              type: string
+            filename:
+              type: string
+            path:
+              type: string
+      400:
+        description: No pipeline is currently running.
+      504:
+        description: Timed out waiting for the next frame.
+    """
+    global pipeline, pipeline_id
+
+    if pipeline is None or not is_pipeline_running():
+        return flask.jsonify({"error": "Pipeline is not running."}), 400
+
+    try:
+        snapshot = pipeline.request_snapshot(timeout=5.0)
+        return flask.jsonify(
+            {
+                "success": True,
+                "pipeline_id": pipeline_id,
+                "filename": snapshot["filename"],
+                "path": snapshot["path"],
+            }
+        )
+    except TimeoutError as exc:
+        return flask.jsonify({"error": str(exc)}), 504
+    except Exception as exc:
+        LOGGER.exception("Failed to capture manual snapshot: %s", exc)
+        return flask.jsonify({"error": str(exc)}), 500
+
+
 @app.route("/api/start", methods=["POST"])
 @auth.require_permission("pipeline:start")
 def api_start():

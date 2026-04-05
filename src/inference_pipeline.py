@@ -620,6 +620,26 @@ def dump_screenshot(result, vis, hq_output_dir, pipeline_id, saved_track_ids, fr
         saved_track_ids.add(track_id)
 
 
+def dump_manual_snapshot(vis, run_dir, pipeline_id, frame_count, fps, request_id) -> str:
+    if fps and fps > 0:
+        frame_ts_ms = int(round((frame_count - 1) * 1000.0 / fps))
+    else:
+        frame_ts_ms = 0
+
+    filename = (
+        f"{pipeline_id}-snapshot-rq-{request_id:06d}-fn-{frame_count:06d}-"
+        f"ms-{frame_ts_ms:06d}.jpg"
+    )
+    saved = cv2.imwrite(
+        os.path.join(run_dir, filename),
+        vis,
+        [cv2.IMWRITE_JPEG_QUALITY, 100],
+    )
+    if not saved:
+        raise RuntimeError("Failed to write manual snapshot.")
+    return filename
+
+
 def dump_csv_line(csv_writer, frame_count, pipeline_id, total_unique_objects, result) -> None:
     if csv_writer is None:
         return
@@ -875,11 +895,13 @@ def output_loop(
             frame = np.ascontiguousarray(frame, dtype=np.uint8)
             vis = np.ascontiguousarray(vis, dtype=np.uint8)
             frame_count += 1
-            
-            if output_writer is None:
-                h, w = frame.shape[:2]
+
+            if run_dir is None:
                 run_dir = os.path.join(hq_output_dir, pipeline_id)
                 os.makedirs(run_dir, exist_ok=True)
+
+            if output_writer is None:
+                h, w = frame.shape[:2]
                 hq_path = os.path.join(run_dir, f"{pipeline_id}.mkv")
                 out_pipeline = build_rtsp_and_hq_gst(args.stream_host, args.stream_port, args.output_path, w, h, args.fps, hq_path)
                 output_writer = cv2.VideoWriter(out_pipeline, cv2.CAP_GSTREAMER, 0, args.fps, (w, h), True)
@@ -906,6 +928,27 @@ def output_loop(
                 frame_count,
                 fps,
             )
+            snapshot_controller = getattr(args, "snapshot_controller", None)
+            if snapshot_controller is not None:
+                for request_id in snapshot_controller.consume_snapshot_requests():
+                    try:
+                        filename = dump_manual_snapshot(
+                            vis,
+                            run_dir,
+                            pipeline_id,
+                            frame_count,
+                            fps,
+                            request_id,
+                        )
+                        snapshot_controller.complete_snapshot_request(
+                            request_id,
+                            {
+                                "filename": filename,
+                                "path": f"{pipeline_id}/{filename}",
+                            },
+                        )
+                    except Exception as exc:
+                        snapshot_controller.fail_snapshot_request(request_id, str(exc))
             dump_csv_line(csv_writer, frame_count, pipeline_id, total_unique_objects, reactive_result)
             
             if output_writer is not None:
@@ -928,6 +971,11 @@ class StreamPipeline:
         self.grid_queue = queue.Queue(maxsize=GRID_QUEUE_SIZE)
         self.grid_results = GridResultBuffer()
         self.stop_event = threading.Event()
+        self._snapshot_condition = threading.Condition()
+        self._snapshot_pending_ids: list[int] = []
+        self._snapshot_results: dict[int, dict[str, str]] = {}
+        self._next_snapshot_request_id = 0
+        self.args.snapshot_controller = self
         self.capture_t = threading.Thread(
             target=capture_loop,
             args=(self.reader, self.frame_queue, self.stop_event),
@@ -950,12 +998,54 @@ class StreamPipeline:
         )
         self._threads = [self.capture_t, self.inference_t, self.grid_t, self.output_t]
 
+    def consume_snapshot_requests(self) -> list[int]:
+        with self._snapshot_condition:
+            pending = list(self._snapshot_pending_ids)
+            self._snapshot_pending_ids.clear()
+            return pending
+
+    def complete_snapshot_request(self, request_id: int, result: dict[str, str]) -> None:
+        with self._snapshot_condition:
+            self._snapshot_results[request_id] = result
+            self._snapshot_condition.notify_all()
+
+    def fail_snapshot_request(self, request_id: int, error_message: str) -> None:
+        self.complete_snapshot_request(request_id, {"error": error_message})
+
+    def request_snapshot(self, timeout: float = 5.0) -> dict[str, str]:
+        with self._snapshot_condition:
+            self._next_snapshot_request_id += 1
+            request_id = self._next_snapshot_request_id
+            self._snapshot_pending_ids.append(request_id)
+            deadline = time.monotonic() + timeout
+
+            while request_id not in self._snapshot_results:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    if request_id in self._snapshot_pending_ids:
+                        self._snapshot_pending_ids.remove(request_id)
+                    raise TimeoutError("Timed out waiting for the next frame.")
+                self._snapshot_condition.wait(timeout=remaining)
+
+            result = self._snapshot_results.pop(request_id)
+
+        if "error" in result:
+            raise RuntimeError(result["error"])
+        return result
+
     def start(self) -> None:
         for t in self._threads: t.start()
 
     def stop(self) -> None:
         LOGGER.info("Stopping pipeline...")
         self.stop_event.set()
+        with self._snapshot_condition:
+            pending = list(self._snapshot_pending_ids)
+            self._snapshot_pending_ids.clear()
+            for request_id in pending:
+                self._snapshot_results[request_id] = {"error": "Pipeline stopped before snapshot was captured."}
+            if pending:
+                self._snapshot_condition.notify_all()
 
         try:
             LOGGER.info("Clearing input queue")

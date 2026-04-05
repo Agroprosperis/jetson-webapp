@@ -205,6 +205,9 @@ class AdminCreatedAdminPermissionTests(unittest.TestCase):
     def test_created_admin_sees_users_link(self):
         self.assertIn('href="/users"', self.body)
 
+    def test_created_admin_sees_snapshot_button(self):
+        self.assertIn("id='snapshotBtn'", self.body)
+
     def test_created_admin_sees_settings_link(self):
         self.assertIn('href="/settings"', self.body)
 
@@ -281,6 +284,25 @@ class PermissionIntegrationTests(unittest.TestCase):
             request("DELETE", "/api/results/smoke-test-result", token=user_token())
         self.assertEqual(ctx.exception.code, 403)
 
+    def test_snapshot_requires_auth(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            request("POST", "/api/snapshot")
+        self.assertEqual(ctx.exception.code, 401)
+
+    def test_user_can_reach_snapshot_api(self):
+        req = urllib.request.Request(
+            f"{BASE_URL}/api/snapshot",
+            headers={"Authorization": f"Bearer {user_token()}"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as response:
+                status = response.status
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+
+        self.assertIn(status, (200, 400, 504))
+
     def test_user_can_access_rest(self):
         status, _, _ = request("GET", "/api/status", token=user_token())
         self.assertEqual(status, 200)
@@ -313,6 +335,9 @@ class UserMainPanelPermissionTests(unittest.TestCase):
 
     def test_user_sees_stop_button(self):
         self.assertIn("id='stop'", self.body)
+
+    def test_user_sees_snapshot_button(self):
+        self.assertIn("id='snapshotBtn'", self.body)
 
     def test_user_sees_results_link(self):
         self.assertIn('href="/results"', self.body)
