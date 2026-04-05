@@ -11,6 +11,7 @@ BASE_URL = "http://127.0.0.1:8000"
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "admin"
 TEST_USER_PASSWORD = "TestUser_Str0ng!Pass_2026"
+TEST_USER_NEW_PASSWORD = "TestUser_Str0ng!Pass_2026_Changed"
 OUTPUT_HQ_DIR = Path(__file__).resolve().parents[1] / "data" / "output_hq"
 
 
@@ -29,6 +30,19 @@ def request(method: str, path: str, token: str | None = None, payload=None):
 
 def login(username: str, password: str):
     status, _, body = request("POST", "/auth/login", payload={"username": username, "password": password})
+    return status, json.loads(body)
+
+
+def change_password(username: str, current_password: str, new_password: str):
+    status, _, body = request(
+        "POST",
+        "/auth/change-password",
+        payload={
+            "username": username,
+            "current_password": current_password,
+            "new_password": new_password,
+        },
+    )
     return status, json.loads(body)
 
 
@@ -52,12 +66,19 @@ def create_user(role: str = "user", prefix: str = "test_user"):
     return username
 
 
+def activate_user(username: str, initial_password: str = TEST_USER_PASSWORD, new_password: str = TEST_USER_NEW_PASSWORD):
+    status, _ = change_password(username, initial_password, new_password)
+    if status != 200:
+        raise AssertionError("created user must be able to change the initial password")
+    status, data = login(username, new_password)
+    if status != 200:
+        raise AssertionError("created user must be able to log in with the changed password")
+    return data
+
+
 def user_token(role: str = "user"):
     username = create_user(role=role)
-    status, data = login(username, TEST_USER_PASSWORD)
-    if status != 200:
-        raise AssertionError("created user must be able to log in")
-    return data["access_token"]
+    return activate_user(username)["access_token"]
 
 
 class AuthIntegrationTests(unittest.TestCase):
@@ -86,11 +107,35 @@ class AuthIntegrationTests(unittest.TestCase):
         self.assertTrue(create_user().startswith("test_user_"))
 
 
+class ForcedPasswordChangeTests(unittest.TestCase):
+    def test_admin_created_user_must_change_password_on_first_login(self):
+        username = create_user()
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            request("POST", "/auth/login", payload={"username": username, "password": TEST_USER_PASSWORD})
+        self.assertEqual(ctx.exception.code, 403)
+        self.assertTrue(json.loads(ctx.exception.read().decode("utf-8"))["password_change_required"])
+
+    def test_admin_created_user_can_change_initial_password(self):
+        username = create_user()
+        status, data = change_password(username, TEST_USER_PASSWORD, TEST_USER_NEW_PASSWORD)
+        self.assertEqual(status, 200)
+        self.assertTrue(data["success"])
+
+    def test_user_can_log_in_after_initial_password_change(self):
+        username = create_user()
+        status, _ = change_password(username, TEST_USER_PASSWORD, TEST_USER_NEW_PASSWORD)
+        self.assertEqual(status, 200)
+        login_status, login_data = login(username, TEST_USER_NEW_PASSWORD)
+        self.assertEqual(login_status, 200)
+        self.assertIn("access_token", login_data)
+
+
 class AdminCreatedAdminPermissionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.username = create_user(role="admin", prefix="test_admin")
-        cls.login_status, cls.login_data = login(cls.username, TEST_USER_PASSWORD)
+        cls.login_data = activate_user(cls.username)
+        cls.login_status = 200
 
     def setUp(self):
         self.status, self.headers, self.body = request("GET", "/", token=self.login_data["access_token"])
@@ -157,6 +202,15 @@ class AdminCreatedAdminPermissionTests(unittest.TestCase):
     def test_created_admin_sees_models_link(self):
         self.assertIn('href="/models"', self.body)
 
+    def test_created_admin_sees_users_link(self):
+        self.assertIn('href="/users"', self.body)
+
+    def test_created_admin_sees_settings_link(self):
+        self.assertIn('href="/settings"', self.body)
+
+    def test_created_admin_sees_logout_button(self):
+        self.assertIn('id="logoutBtn"', self.body)
+
     def test_created_admin_can_edit_analysis_number(self):
         self.assertNotRegex(self.body, r"id=['\"]analysisNum['\"][^>]*(disabled|hidden)")
 
@@ -206,28 +260,6 @@ class AdminCreatedAdminPermissionTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("jobs", json.loads(body))
 
-    def test_created_admin_can_override_grid_count_via_http(self):
-        status, _, _ = request("PUT", "/api/grid", token=self.login_data["access_token"], payload={"enabled": False})
-        self.assertEqual(status, 200)
-
-    def test_created_admin_can_override_grid_debug_via_http(self):
-        status, _, _ = request("PUT", "/api/grid", token=self.login_data["access_token"], payload={"debug_enabled": True})
-        self.assertEqual(status, 200)
-
-    def test_created_admin_can_override_grid_score_threshold_via_http(self):
-        status, _, _ = request("PUT", "/api/grid", token=self.login_data["access_token"], payload={"score_threshold": 0.65})
-        self.assertEqual(status, 200)
-
-    def test_created_admin_can_override_dashboard_settings_via_http(self):
-        status, _, _ = request(
-            "PUT",
-            "/api/dashboard-settings",
-            token=self.login_data["access_token"],
-            payload={"vis_conf": 0.55, "model_path": "/app/model/ul/custom.engine"},
-        )
-        self.assertEqual(status, 200)
-
-
 class PermissionIntegrationTests(unittest.TestCase):
     def test_401_without_token(self):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
@@ -237,6 +269,11 @@ class PermissionIntegrationTests(unittest.TestCase):
     def test_403_with_wrong_role(self):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             request("GET", "/models", token=user_token())
+        self.assertEqual(ctx.exception.code, 403)
+
+    def test_user_cannot_access_users_page(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            request("GET", "/users", token=user_token())
         self.assertEqual(ctx.exception.code, 403)
 
     def test_user_cannot_delete_results(self):
@@ -280,8 +317,17 @@ class UserMainPanelPermissionTests(unittest.TestCase):
     def test_user_sees_results_link(self):
         self.assertIn('href="/results"', self.body)
 
+    def test_user_sees_settings_link(self):
+        self.assertIn('href="/settings"', self.body)
+
+    def test_user_sees_logout_button(self):
+        self.assertIn('id="logoutBtn"', self.body)
+
     def test_user_does_not_see_models_link(self):
         self.assertNotIn('href="/models"', self.body)
+
+    def test_user_does_not_see_users_link(self):
+        self.assertNotIn('href="/users"', self.body)
 
     def test_user_cannot_edit_analysis_number(self):
         self.assertRegex(self.body, r"id=['\"]analysisNum['\"][^>]*placeholder=['\"]Auto['\"][^>]*(disabled[^>]*hidden|hidden[^>]*disabled)")
@@ -380,7 +426,7 @@ class UserDirectModificationTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 403)
 
 
-class DashboardSettingsValueTests(unittest.TestCase):
+class ZDashboardSettingsValueTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.admin_token = admin_tokens()["access_token"]
@@ -479,12 +525,147 @@ class UserResultsPageTests(unittest.TestCase):
     def test_results_page_has_results_table(self):
         self.assertIn('id="resultsTable"', self.body)
 
+    def test_results_page_does_not_have_owner_column(self):
+        self.assertNotIn("<th>Owner</th>", self.body)
+
+
+class AdminResultsPageTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.token = admin_tokens()["access_token"]
+
+    def test_admin_results_page_has_owner_column(self):
+        status, _, body = request("GET", "/results", token=self.token)
+        self.assertEqual(status, 200)
+        self.assertIn("<th>Owner</th>", body)
+
+
+class AdminUsersPageTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.token = admin_tokens()["access_token"]
+
+    def setUp(self):
+        self.status, self.headers, self.body = request("GET", "/users", token=self.token)
+
+    def test_admin_can_open_users_page(self):
+        self.assertEqual(self.status, 200)
+
+    def test_users_page_returns_html(self):
+        self.assertIn("text/html", self.headers.get("Content-Type", ""))
+
+    def test_users_page_has_users_table(self):
+        self.assertIn('id="usersTable"', self.body)
+
+    def test_users_page_has_username_input(self):
+        self.assertIn('id="newUsername"', self.body)
+
+    def test_users_page_has_initial_password_input(self):
+        self.assertIn('id="newPassword"', self.body)
+
+    def test_users_page_has_role_selector(self):
+        self.assertIn('id="newRole"', self.body)
+
+    def test_users_page_has_create_user_button(self):
+        self.assertIn('id="createUserBtn"', self.body)
+
+    def test_users_page_explains_password_change_on_first_login(self):
+        self.assertIn("change password on first login", self.body.lower())
+
+
+class UserSettingsPageTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.username = create_user()
+        cls.token = activate_user(cls.username)["access_token"]
+
+    def setUp(self):
+        self.status, self.headers, self.body = request("GET", "/settings", token=self.token)
+
+    def test_user_can_open_settings_page(self):
+        self.assertEqual(self.status, 200)
+
+    def test_settings_page_returns_html(self):
+        self.assertIn("text/html", self.headers.get("Content-Type", ""))
+
+    def test_settings_page_shows_read_only_username(self):
+        self.assertRegex(
+            self.body,
+            rf"id=\"settingsUsername\"[^>]*value=\"{self.username}\"[^>]*readonly",
+        )
+
+    def test_settings_page_shows_read_only_role(self):
+        self.assertRegex(
+            self.body,
+            r"id=\"settingsRole\"[^>]*value=\"user\"[^>]*readonly",
+        )
+
+    def test_settings_page_has_password_fields(self):
+        self.assertIn('id="settingsCurrentPassword"', self.body)
+        self.assertIn('id="settingsNewPassword"', self.body)
+        self.assertIn('id="changePasswordBtn"', self.body)
+
+
+class AdminSettingsPageTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.token = admin_tokens()["access_token"]
+
+    def test_admin_can_open_settings_page(self):
+        status, _, body = request("GET", "/settings", token=self.token)
+        self.assertEqual(status, 200)
+        self.assertRegex(body, r"id=\"settingsRole\"[^>]*value=\"admin\"[^>]*readonly")
+
+
+class AuthenticatedPasswordChangeTests(unittest.TestCase):
+    def test_user_can_change_password_after_activation(self):
+        username = create_user(prefix="settings_user")
+        activate_user(username)
+        updated_password = f"{TEST_USER_NEW_PASSWORD}_{uuid.uuid4().hex[:8]}"
+
+        status, data = change_password(username, TEST_USER_NEW_PASSWORD, updated_password)
+        self.assertEqual(status, 200)
+        self.assertTrue(data["success"])
+
+        login_status, login_data = login(username, updated_password)
+        self.assertEqual(login_status, 200)
+        self.assertIn("access_token", login_data)
+
+
+class ZAdminCreatedAdminOverrideTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.username = create_user(role="admin", prefix="test_admin")
+        cls.login_data = activate_user(cls.username)
+
+    def test_created_admin_can_override_grid_count_via_http(self):
+        status, _, _ = request("PUT", "/api/grid", token=self.login_data["access_token"], payload={"enabled": False})
+        self.assertEqual(status, 200)
+
+    def test_created_admin_can_override_grid_debug_via_http(self):
+        status, _, _ = request("PUT", "/api/grid", token=self.login_data["access_token"], payload={"debug_enabled": True})
+        self.assertEqual(status, 200)
+
+    def test_created_admin_can_override_grid_score_threshold_via_http(self):
+        status, _, _ = request("PUT", "/api/grid", token=self.login_data["access_token"], payload={"score_threshold": 0.65})
+        self.assertEqual(status, 200)
+
+    def test_created_admin_can_override_dashboard_settings_via_http(self):
+        status, _, _ = request(
+            "PUT",
+            "/api/dashboard-settings",
+            token=self.login_data["access_token"],
+            payload={"vis_conf": 0.55, "model_path": "/app/model/ul/custom.engine"},
+        )
+        self.assertEqual(status, 200)
+
 
 class UserResultsVisibilityTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.username = create_user()
-        cls.token = login(cls.username, TEST_USER_PASSWORD)[1]["access_token"]
+        cls.token = activate_user(cls.username)["access_token"]
+        cls.admin_token = admin_tokens()["access_token"]
         cls.user_run = f"user-run-{uuid.uuid4().hex[:8]}"
         cls.admin_run = f"admin-run-{uuid.uuid4().hex[:8]}"
 
@@ -555,6 +736,31 @@ class UserResultsVisibilityTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             request("GET", f"/api/results/{self.admin_run}/download", token=self.token)
         self.assertEqual(ctx.exception.code, 403)
+
+    def test_admin_results_api_exposes_owner_username(self):
+        status, _, body = request("GET", "/api/results", token=self.admin_token)
+        self.assertEqual(status, 200)
+        results = {item["id"]: item for item in json.loads(body)["results"]}
+        self.assertEqual(results[self.user_run]["owner_username"], self.username)
+        self.assertEqual(results[self.admin_run]["owner_username"], ADMIN_USERNAME)
+
+
+class AdminModelsOwnerColumnTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.token = admin_tokens()["access_token"]
+
+    def test_models_page_has_owner_column(self):
+        status, _, body = request("GET", "/models", token=self.token)
+        self.assertEqual(status, 200)
+        self.assertIn("<th>Owner</th>", body)
+
+    def test_model_catalog_exposes_owner_username(self):
+        status, _, body = request("GET", "/api/model-catalog", token=self.token)
+        self.assertEqual(status, 200)
+        models = json.loads(body)["models"]
+        self.assertTrue(models)
+        self.assertIn("owner_username", models[0])
 
 
 if __name__ == "__main__":

@@ -73,6 +73,7 @@ a:hover { text-decoration: underline; }
     <thead>
         <tr>
             <th>Folder / File</th>
+            {% if can_view_result_owners %}<th>Owner</th>{% endif %}
             <th>Type</th>
             <th>Size</th>
             <th>Actions</th>
@@ -82,6 +83,9 @@ a:hover { text-decoration: underline; }
 </table>
 
 <script>
+const CAN_DELETE_RESULTS = {{ 'true' if can_delete_results else 'false' }};
+const SHOW_OWNER_COLUMN = {{ 'true' if can_view_result_owners else 'false' }};
+
 function buildResultsUrl() {
     const params = new URLSearchParams();
     const selectedDate = document.getElementById('dateFilter').value;
@@ -126,16 +130,23 @@ async function loadResults() {
             const folderRow = document.createElement('tr');
             folderRow.className = 'folder-row';
             folderRow.dataset.folder = item.id;
+            const deleteButton = CAN_DELETE_RESULTS
+                ? `<button class="btn-del" onclick="deleteResult('${item.id}')">Remove</button>`
+                : '';
+            const ownerCell = SHOW_OWNER_COLUMN ? `<td>${item.owner_username || '-'}</td>` : '';
             folderRow.innerHTML = `
-                <td colspan="4">
+                <td>
                     <div class="folder-line folder-toggle">
                         <span style="font-family:monospace;"><span class="folder-caret">▸</span>${item.id}</span>
                         <span class="folder-meta">${item.timestamp}</span>
-                        <span>
-                            <button class="btn-download" onclick="downloadResultZip('${item.id}')">Download ZIP</button>
-                            <button class="btn-del" onclick="deleteResult('${item.id}')">Remove</button>
-                        </span>
                     </div>
+                </td>
+                ${ownerCell}
+                <td class="file-type">folder</td>
+                <td>-</td>
+                <td>
+                    <button class="btn-download" onclick="downloadResultZip('${item.id}')">Download ZIP</button>
+                    ${deleteButton}
                 </td>
             `;
             tbody.appendChild(folderRow);
@@ -153,7 +164,7 @@ async function loadResults() {
                     const fileUrl = `/download/${encodeURI(file.path)}`;
                     return `<a class="gallery-link" href="${fileUrl}" data-gallery="run-${item.id}"><img src="${fileUrl}" loading="lazy" alt="${file.name}" /></a>`;
                 }).join('');
-            galleryRow.innerHTML = `<td colspan="4"><div class="gallery">${galleryItems}</div></td>`;
+            galleryRow.innerHTML = `<td colspan="${SHOW_OWNER_COLUMN ? 5 : 4}"><div class="gallery">${galleryItems}</div></td>`;
             tbody.appendChild(galleryRow);
 
             (item.files || []).forEach(file => {
@@ -167,8 +178,10 @@ async function loadResults() {
                 else if (ext === 'jpg' || ext === 'jpeg') typeLabel = 'image';
 
                 const fileUrl = `/download/${encodeURI(file.path)}`;
+                const fileOwnerCell = SHOW_OWNER_COLUMN ? '<td></td>' : '';
                 tr.innerHTML = `
                     <td>${file.name}</td>
+                    ${fileOwnerCell}
                     <td class="file-type">${typeLabel}</td>
                     <td>${file.size || '-'}</td>
                     <td><a href="${fileUrl}" download>Download</a></td>

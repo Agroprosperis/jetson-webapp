@@ -100,3 +100,12 @@ cd ${REPO_DIR}
 curl http://localhost:8000/apispec_1.json > auto_swagger.json
 python3 generate_docs.py
 ```
+
+# Very small integration tests
+Start the app first, then run:
+```
+cd ${REPO_DIR}
+python3 -m unittest discover -s tests
+```
+
+The tests assume local auth exists, bearer access tokens are used, and the default admin user is `admin/admin`.

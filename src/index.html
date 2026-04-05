@@ -1,10 +1,10 @@
+<!DOCTYPE html>
 <html>
 <head>
 <meta charset='utf-8'/>
 <title>RF App (Desktop)</title>
 <meta name='viewport' content='width=device-width,initial-scale=1'/>
 <style>
-/* Layout Structure Updates */
 body {
   margin: 0;
   background: #111;
@@ -12,7 +12,7 @@ body {
   font-family: system-ui, Segoe UI, Roboto, Arial;
   display: flex;
   flex-direction: column;
-  height: 100vh; /* Full viewport height */
+  height: 100vh;
   overflow: hidden;
 }
 
@@ -20,13 +20,12 @@ header {
   padding: 10px 14px;
   background: #1b1b1b;
   display: flex;
-  flex-direction: column; /* Stack rows vertically */
+  flex-direction: column;
   gap: 8px;
   border-bottom: 1px solid #333;
-  flex-shrink: 0; /* Prevent header from squishing */
+  flex-shrink: 0;
 }
 
-/* New Class for rows */
 .control-row {
   display: flex;
   gap: 12px;
@@ -34,7 +33,6 @@ header {
   width: 100%;
 }
 
-/* Standard Elements */
 input:not([type="checkbox"]), select, button {
   padding: 6px 10px;
   border-radius: 6px;
@@ -45,7 +43,6 @@ input:not([type="checkbox"]), select, button {
 }
 
 input[type="checkbox"] { accent-color: #eab308; }
-
 button { cursor: pointer; transition: transform .06s ease, opacity .2s; }
 button:active { transform: scale(0.98); }
 button[disabled] { opacity: .5; cursor: not-allowed; }
@@ -53,112 +50,120 @@ button[disabled] { opacity: .5; cursor: not-allowed; }
 .status {
   font-size: 12px;
   opacity: .9;
-  margin-left: auto; /* Pushes status to the far right */
+  margin-left: auto;
   padding: 4px 8px;
   border-radius: 8px;
   background: #222;
   white-space: nowrap;
 }
 
-/* Grid now fills remaining space */
 .grid {
   display: grid;
   grid-template-columns: 1fr;
   gap: 6px;
-  flex: 1; /* Fill remaining height */
+  flex: 1;
   position: relative;
-  min-height: 0; /* Crucial for nested flex scrolling/sizing */
+  min-height: 0;
 }
 
 .pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; }
-.pane h3 { margin: 6px 12px 4px 12px; font-weight: 600; font-size: 14px; opacity: .9; }
 .pane video { flex: 1; min-height: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
-
 .controls { display: flex; gap: 10px; align-items: center; }
 .hidden { display: none !important; }
-
-/* Button Colors */
 .btn-primary { background: #2563eb; border: 1px solid #1d4ed8; }
 .btn-primary:hover { background: #1d4ed8; }
 .btn-secondary { background: #333; border: 1px solid #555; }
 .btn-secondary:hover { background: #444; }
-
-/* Specific Input Widths for cleaner look */
 input[type="number"], input[type="text"] { border: 1px solid #444; background-color: #1a1a1a; }
 select { border: 1px solid #444; }
-
+.user-note { font-size: 12px; color: #999; }
 </style>
 </head>
 <body>
 
 <header>
-  
   <div class="control-row">
     <div class="controls">
       <label for="analysisNum" style="font-size:13px; font-weight:bold; color:#aaa;">Analysis #:</label>
-      <input id="analysisNum" type="text" placeholder="Auto" style="width: 120px;" title="Manual Analysis Number"/>
+      <input id="analysisNum" type="text" placeholder="Auto" value="{{ dashboard_settings.analysis_number }}" style="width: 120px;" title="Manual Analysis Number"{% if not can_configure_dashboard %} disabled hidden{% endif %}/>
     </div>
-    
+
     <div class='status'><span id='status'>status: idle</span></div>
   </div>
 
   <div class="control-row">
-    <select id="sourceType" style="font-weight:bold;">
-      <option value="camera">Camera Source</option>
-      <option value="file">File Upload</option>
+    <select id="sourceType" style="font-weight:bold;"{% if not can_configure_dashboard %} disabled hidden{% endif %}>
+      <option value="camera"{% if dashboard_settings.source_type == "camera" %} selected{% endif %}>Camera Source</option>
+      <option value="file"{% if dashboard_settings.source_type == "file" %} selected{% endif %}>File Upload</option>
     </select>
 
-    <div id="camControls" class="controls">
-      <select id="camDevice" style="max-width: 200px;"><option>Loading...</option></select>
-      <select id="camMode" style="max-width: 220px;"><option>-</option></select>
-      <button id="refreshCams" title="Refresh Cameras">↻</button>
+    <div id="camControls" class="controls{% if dashboard_settings.source_type != 'camera' %} hidden{% endif %}">
+      <select id="camDevice" style="max-width: 200px;"{% if not can_configure_dashboard %} disabled hidden{% endif %}><option>Loading...</option></select>
+      <select id="camMode" style="max-width: 220px;"{% if not can_configure_dashboard %} disabled hidden{% endif %}><option>-</option></select>
+      <button id="refreshCams" title="Refresh Cameras"{% if not can_configure_dashboard %} disabled hidden{% endif %}>↻</button>
     </div>
 
-    <div id="fileControls" class="controls hidden">
-      <button id='uploadBtn' type='button' class="btn-secondary">Choose Video</button>
-      <input id='upload' type='file' accept='video/*' style='display:none'/>
+    <div id="fileControls" class="controls{% if dashboard_settings.source_type != 'file' %} hidden{% endif %}">
+      <button id='uploadBtn' type='button' class="btn-secondary"{% if not can_configure_dashboard %} disabled hidden{% endif %}>Choose Video</button>
+      <input id='upload' type='file' accept='video/*' style='display:none'{% if not can_configure_dashboard %} disabled hidden{% endif %}/>
       <span id="fileName" style="font-size:12px; color:#aaa; max-width: 200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></span>
-      <input type="hidden" id="uploadedPath" />
+      <input type="hidden" id="uploadedPath" value="{{ dashboard_settings.uploaded_path }}" />
     </div>
   </div>
 
   <div class="control-row">
-    
-    <select id="modelSelect" title="Select AI Model" style="max-width: 250px;">
-        <option value="">Loading Models...</option>
+    <select id="modelSelect" title="Select AI Model" style="max-width: 250px;" data-selected-model="{{ dashboard_settings.model_path }}"{% if not can_configure_dashboard %} disabled hidden{% endif %}>
+      <option value="">Loading Models...</option>
     </select>
 
     <div class="controls">
-        <label for="confThreshold" style="font-size:12px; opacity:0.8;">Conf:</label>
-        <input id="confThreshold" type="number" min="0.1" max="1.0" step="0.05" value="0.75" style="width: 100px;" title="Detection Confidence Threshold"/>
+      <label for="confThreshold" style="font-size:12px; opacity:0.8;">Conf:</label>
+      <input id="confThreshold" type="number" min="0.1" max="1.0" step="0.05" value="{{ '%.2f'|format(dashboard_settings.vis_conf) }}" style="width: 100px;" title="Detection Confidence Threshold"{% if not can_configure_dashboard %} disabled hidden{% endif %}/>
     </div>
 
     <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:#ddd;">
-      <input id="gridCountEnabled" type="checkbox" checked />
+      <input id="gridCountEnabled" type="checkbox"{% if dashboard_settings.grid_count_enabled %} checked{% endif %}{% if not can_configure_dashboard %} disabled hidden{% endif %} />
       Grid Counting
     </label>
 
     <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:#ddd;">
-      <input id="gridDebugEnabled" type="checkbox" />
+      <input id="gridDebugEnabled" type="checkbox"{% if dashboard_settings.grid_debug_enabled %} checked{% endif %}{% if not can_configure_dashboard %} disabled hidden{% endif %} />
       Grid Debug
     </label>
 
     <div class="controls">
-        <label for="gridScoreThreshold" style="font-size:12px; opacity:0.8;">Grid Min:</label>
-        <input id="gridScoreThreshold" type="number" min="0.00" max="1.00" step="0.05" value="0.30" style="width: 90px;" title="Auto-disable grid counting when grid score is at or below this threshold"/>
+      <label for="gridScoreThreshold" style="font-size:12px; opacity:0.8;">Grid Min:</label>
+      <input id="gridScoreThreshold" type="number" min="0.00" max="1.00" step="0.05" value="{{ '%.2f'|format(dashboard_settings.grid_score_threshold) }}" style="width: 90px;" title="Auto-disable grid counting when grid score is at or below this threshold"{% if not can_configure_dashboard %} disabled hidden{% endif %}/>
     </div>
 
-    <div style="flex:1"></div> <button id='run' class="btn-primary" style="min-width: 80px;">Run</button>
+    <div style="flex:1"></div>
+    <button id='run' class="btn-primary" style="min-width: 80px;">Run</button>
     <button id='stop' type='button' style="min-width: 60px;">Stop</button>
 
     <a href="/results" target="_blank" style="text-decoration:none; margin-left: 10px;">
       <button type="button" class="btn-secondary">See Results</button>
     </a>
+    <a href="/settings" target="_blank" style="text-decoration:none; margin-left: 6px;">
+      <button type="button" class="btn-secondary">Settings</button>
+    </a>
+    {% if can_view_models %}
     <a href="/models" target="_blank" style="text-decoration:none; margin-left: 6px;">
       <button type="button" class="btn-secondary">Model Catalog</button>
     </a>
+    {% endif %}
+    {% if can_manage_users %}
+    <a href="/users" target="_blank" style="text-decoration:none; margin-left: 6px;">
+      <button type="button" class="btn-secondary">Users</button>
+    </a>
+    {% endif %}
+    <button id="logoutBtn" type="button" class="btn-secondary" style="margin-left: 6px;">Logout</button>
   </div>
 
+  {% if not can_configure_dashboard %}
+  <div class="control-row">
+    <div class="user-note">You can run, stop, and review your own results. Dashboard configuration is controlled by an administrator.</div>
+  </div>
+  {% endif %}
 </header>
 
 <div class='grid'>
@@ -168,14 +173,19 @@ select { border: 1px solid #444; }
 </div>
 
 <script>
-let pc_wf=null; let state='idle';
-let isUploading=false; let uploadProgress=0;
+const CAN_CONFIGURE_DASHBOARD = {{ 'true' if can_configure_dashboard else 'false' }};
+const INITIAL_DASHBOARD_SETTINGS = {{ dashboard_settings_json | safe }};
+
+let pc_wf = null;
+let state = 'idle';
+let isUploading = false;
+let uploadProgress = 0;
 let cameraList = [];
 
-const statusEl=document.getElementById('status');
-const btnRun=document.getElementById('run'); 
-const btnStop=document.getElementById('stop');
-const vWf=document.getElementById('wf');
+const statusEl = document.getElementById('status');
+const btnRun = document.getElementById('run');
+const btnStop = document.getElementById('stop');
+const vWf = document.getElementById('wf');
 
 const sourceTypeEl = document.getElementById('sourceType');
 const camControls = document.getElementById('camControls');
@@ -185,187 +195,249 @@ const camModeEl = document.getElementById('camMode');
 const refreshCamsBtn = document.getElementById('refreshCams');
 const confThresholdEl = document.getElementById('confThreshold');
 const analysisNumEl = document.getElementById('analysisNum');
-const modelSelectEl = document.getElementById('modelSelect'); 
+const modelSelectEl = document.getElementById('modelSelect');
 const gridCountEnabledEl = document.getElementById('gridCountEnabled');
 const gridDebugEnabledEl = document.getElementById('gridDebugEnabled');
 const gridScoreThresholdEl = document.getElementById('gridScoreThreshold');
-
-const uploadBtn=document.getElementById('uploadBtn'); 
-const uploadInput=document.getElementById('upload');
+const uploadBtn = document.getElementById('uploadBtn');
+const uploadInput = document.getElementById('upload');
 const fileNameEl = document.getElementById('fileName');
+const logoutBtn = document.getElementById('logoutBtn');
 const uploadedPathEl = document.getElementById('uploadedPath');
 
+function selectedCameraMode() {
+  try {
+    return JSON.parse(camModeEl.value || '{}');
+  } catch (err) {
+    return {};
+  }
+}
 
-// UI Toggling
-sourceTypeEl.onchange = () => {
-    if(sourceTypeEl.value === 'camera') {
-        camControls.classList.remove('hidden');
-        fileControls.classList.add('hidden');
-    } else {
-        camControls.classList.add('hidden');
-        fileControls.classList.remove('hidden');
-    }
+async function saveDashboardSettings(payload) {
+  if (!CAN_CONFIGURE_DASHBOARD) return;
+  await fetch('/api/dashboard-settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+function syncSourceVisibility() {
+  if (sourceTypeEl.value === 'camera') {
+    camControls.classList.remove('hidden');
+    fileControls.classList.add('hidden');
+  } else {
+    camControls.classList.add('hidden');
+    fileControls.classList.remove('hidden');
+  }
+}
+
+sourceTypeEl.onchange = async () => {
+  syncSourceVisibility();
+  await saveDashboardSettings({ source_type: sourceTypeEl.value });
 };
 
-// Camera Logic
+analysisNumEl.onchange = () => saveDashboardSettings({ analysis_number: analysisNumEl.value });
+confThresholdEl.onchange = () => saveDashboardSettings({ vis_conf: parseFloat(confThresholdEl.value || '0.75') });
+modelSelectEl.onchange = () => saveDashboardSettings({ model_path: modelSelectEl.value });
+
+logoutBtn.onclick = async () => {
+  try {
+    await fetch('/auth/logout', { method: 'POST' });
+  } catch (err) {
+    console.error(err);
+  }
+  window.location.href = '/login';
+};
+
 async function loadCameras() {
-    camDeviceEl.innerHTML = '<option>Loading...</option>';
-    try {
-        const res = await fetch('/api/cameras');
-        const data = await res.json();
-        cameraList = data.cameras || [];
-        
-        camDeviceEl.innerHTML = '';
-        if(cameraList.length === 0) {
-            camDeviceEl.innerHTML = '<option value="">No cameras found</option>';
-            camModeEl.innerHTML = '';
-            return;
-        }
+  camDeviceEl.innerHTML = '<option>Loading...</option>';
+  try {
+    const res = await fetch('/api/cameras');
+    const data = await res.json();
+    cameraList = data.cameras || [];
 
-        cameraList.forEach((cam, idx) => {
-            const opt = document.createElement('option');
-            opt.value = idx; 
-            opt.textContent = `${cam.name} (${cam.device})`;
-            camDeviceEl.appendChild(opt);
-        });
-
-        updateModes();
-    } catch(e) {
-        console.error(e);
-        camDeviceEl.innerHTML = '<option>Error</option>';
+    camDeviceEl.innerHTML = '';
+    if (cameraList.length === 0) {
+      camDeviceEl.innerHTML = '<option value="">No cameras found</option>';
+      camModeEl.innerHTML = '';
+      return;
     }
+
+    cameraList.forEach((cam, idx) => {
+      const opt = document.createElement('option');
+      opt.value = idx;
+      opt.textContent = `${cam.name} (${cam.device})`;
+      if (cam.device === INITIAL_DASHBOARD_SETTINGS.camera_device) {
+        opt.selected = true;
+      }
+      camDeviceEl.appendChild(opt);
+    });
+
+    updateModes();
+  } catch (e) {
+    console.error(e);
+    camDeviceEl.innerHTML = '<option>Error</option>';
+  }
 }
 
 function updateModes() {
-    const idx = camDeviceEl.value;
-    camModeEl.innerHTML = '';
-    
-    if(idx === '' || !cameraList[idx]) return;
-    
-    const modes = cameraList[idx].modes || [];
-    modes.forEach(m => {
-        const opt = document.createElement('option');
-        opt.value = JSON.stringify(m);
-        opt.textContent = `${m.width}x${m.height} @ ${m.fps}fps (${m.format})`;
-        if(m.width >= 3840) opt.selected = true;
-        camModeEl.appendChild(opt);
-    });
+  const idx = camDeviceEl.value;
+  camModeEl.innerHTML = '';
+
+  if (idx === '' || !cameraList[idx]) return;
+
+  const modes = cameraList[idx].modes || [];
+  const wantedMode = INITIAL_DASHBOARD_SETTINGS.camera_mode || {};
+  modes.forEach(m => {
+    const opt = document.createElement('option');
+    opt.value = JSON.stringify(m);
+    opt.textContent = `${m.width}x${m.height} @ ${m.fps}fps (${m.format})`;
+    if (
+      m.width === wantedMode.width &&
+      m.height === wantedMode.height &&
+      m.fps === wantedMode.fps &&
+      m.format === wantedMode.format
+    ) {
+      opt.selected = true;
+    }
+    camModeEl.appendChild(opt);
+  });
+
+  if (camModeEl.options.length === 0) {
+    camModeEl.innerHTML = '<option>-</option>';
+  }
 }
 
-camDeviceEl.onchange = updateModes;
+camDeviceEl.onchange = async () => {
+  updateModes();
+  const cam = cameraList[camDeviceEl.value];
+  if (!cam) return;
+  await saveDashboardSettings({
+    camera_device: cam.device,
+    camera_mode: selectedCameraMode(),
+  });
+};
+
+camModeEl.onchange = () => saveDashboardSettings({ camera_mode: selectedCameraMode() });
 refreshCamsBtn.onclick = loadCameras;
 
 async function updateGridSettings() {
-    const parsedThreshold = parseFloat(gridScoreThresholdEl.value || '0');
-    const scoreThreshold = Number.isFinite(parsedThreshold) ? parsedThreshold : 0;
-    await fetch('/api/grid', {
-        method: 'PUT',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-            enabled: gridCountEnabledEl.checked,
-            debug_enabled: gridDebugEnabledEl.checked,
-            score_threshold: scoreThreshold
-        })
-    });
+  const parsedThreshold = parseFloat(gridScoreThresholdEl.value || '0');
+  const scoreThreshold = Number.isFinite(parsedThreshold) ? parsedThreshold : 0;
+  await fetch('/api/grid', {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      enabled: gridCountEnabledEl.checked,
+      debug_enabled: gridDebugEnabledEl.checked,
+      score_threshold: scoreThreshold
+    })
+  });
 }
 
 gridCountEnabledEl.onchange = async () => {
-    try {
-        await updateGridSettings();
-    } catch(e) {
-        console.error(e);
-    }
+  if (!CAN_CONFIGURE_DASHBOARD) return;
+  try {
+    await updateGridSettings();
+  } catch (e) {
+    console.error(e);
+  }
 };
 
 gridDebugEnabledEl.onchange = async () => {
-    try {
-        await updateGridSettings();
-    } catch(e) {
-        console.error(e);
-    }
+  if (!CAN_CONFIGURE_DASHBOARD) return;
+  try {
+    await updateGridSettings();
+  } catch (e) {
+    console.error(e);
+  }
 };
 
 gridScoreThresholdEl.onchange = async () => {
-    try {
-        await updateGridSettings();
-    } catch(e) {
-        console.error(e);
-    }
+  if (!CAN_CONFIGURE_DASHBOARD) return;
+  try {
+    await updateGridSettings();
+  } catch (e) {
+    console.error(e);
+  }
 };
 
-// Load Models
 async function loadModels() {
-    modelSelectEl.innerHTML = '<option value="">Loading...</option>';
-    try {
-        const res = await fetch('/api/models');
-        const data = await res.json();
-        const models = data.models || [];
-        
-        modelSelectEl.innerHTML = '';
-        
-        if (models.length === 0) {
-            const opt = document.createElement('option');
-            opt.value = "";
-            opt.textContent = "No models found (*.engine)";
-            modelSelectEl.appendChild(opt);
-            return;
-        }
+  modelSelectEl.innerHTML = '<option value="">Loading...</option>';
+  try {
+    const res = await fetch('/api/models');
+    const data = await res.json();
+    const models = data.models || [];
 
-        models.forEach(m => {
-            const opt = document.createElement('option');
-            opt.value = m.path;
-            opt.textContent = m.display;
-            modelSelectEl.appendChild(opt);
-        });
-        
-        // Select first one by default if available
-        if (models.length > 0) modelSelectEl.selectedIndex = 0;
-
-    } catch(e) {
-        console.error(e);
-        modelSelectEl.innerHTML = '<option value="">Error loading models</option>';
+    modelSelectEl.innerHTML = '';
+    if (models.length === 0) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'No models found (*.engine)';
+      modelSelectEl.appendChild(opt);
+      return;
     }
+
+    models.forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m.path;
+      opt.textContent = m.display;
+      if (m.path === INITIAL_DASHBOARD_SETTINGS.model_path) {
+        opt.selected = true;
+      }
+      modelSelectEl.appendChild(opt);
+    });
+
+    if (!modelSelectEl.value && models.length > 0) {
+      modelSelectEl.selectedIndex = 0;
+    }
+  } catch (e) {
+    console.error(e);
+    modelSelectEl.innerHTML = '<option value="">Error loading models</option>';
+  }
 }
 
-// Main App Logic
-function applyState(j){
-  if(isUploading){
-    btnRun.disabled=true; btnStop.disabled=true; uploadBtn.disabled=true;
-    statusEl.textContent=`status: uploading ${uploadProgress}%`;
+function applyState(j) {
+  if (isUploading) {
+    btnRun.disabled = true;
+    btnStop.disabled = true;
+    uploadBtn.disabled = true;
+    statusEl.textContent = `status: uploading ${uploadProgress}%`;
     return;
   }
-  state=(j&&j.state)||'idle';
-  
+
+  state = (j && j.state) || 'idle';
   const isRunning = state === 'starting' || state === 'running';
   btnRun.disabled = isRunning;
-  btnRun.textContent = (state === 'running') ? 'Running' : ((state === 'starting') ? 'Starting...' : 'Run');
+  btnRun.textContent = state === 'running' ? 'Running' : (state === 'starting' ? 'Starting...' : 'Run');
   btnStop.disabled = state === 'idle' || state === 'stopping';
-  
-  uploadBtn.disabled = isRunning;
-  sourceTypeEl.disabled = isRunning;
-  camDeviceEl.disabled = isRunning;
-  camModeEl.disabled = isRunning;
-  confThresholdEl.disabled = isRunning;
-  analysisNumEl.disabled = isRunning;
-  modelSelectEl.disabled = isRunning;
 
-  // --- Check MediaMTX Status ---
-  let mtxStatus = "";
+  uploadBtn.disabled = isRunning || !CAN_CONFIGURE_DASHBOARD;
+  sourceTypeEl.disabled = isRunning || !CAN_CONFIGURE_DASHBOARD;
+  camDeviceEl.disabled = isRunning || !CAN_CONFIGURE_DASHBOARD;
+  camModeEl.disabled = isRunning || !CAN_CONFIGURE_DASHBOARD;
+  confThresholdEl.disabled = isRunning || !CAN_CONFIGURE_DASHBOARD;
+  analysisNumEl.disabled = isRunning || !CAN_CONFIGURE_DASHBOARD;
+  modelSelectEl.disabled = isRunning || !CAN_CONFIGURE_DASHBOARD;
+  gridCountEnabledEl.disabled = isRunning || !CAN_CONFIGURE_DASHBOARD;
+  gridDebugEnabledEl.disabled = isRunning || !CAN_CONFIGURE_DASHBOARD;
+  gridScoreThresholdEl.disabled = isRunning || !CAN_CONFIGURE_DASHBOARD;
+
+  let mtxStatus = '';
   if (j && j.mediamtx) {
     if (!j.mediamtx.whep) {
-        mtxStatus = " [MediaMTX OFFLINE]";
-        statusEl.style.color = "#ff4444"; // Red warning
-        statusEl.style.fontWeight = "bold";
+      mtxStatus = ' [MediaMTX OFFLINE]';
+      statusEl.style.color = '#ff4444';
+      statusEl.style.fontWeight = 'bold';
     } else {
-        statusEl.style.color = "#eee"; // Normal color
-        statusEl.style.fontWeight = "normal";
+      statusEl.style.color = '#eee';
+      statusEl.style.fontWeight = 'normal';
     }
   }
-  // -----------------------------
 
-  let msg='status: '+state+' pid:' + ((j&&j.pipeline_id)||'-') + mtxStatus;
-  
-  if(j&&j.last_error&&state!=='running') msg+=' fail: '+j.last_error;
+  let msg = 'status: ' + state + ' pid:' + ((j && j.pipeline_id) || '-') + mtxStatus;
+  if (j && j.last_error && state !== 'running') msg += ' fail: ' + j.last_error;
 
   if (j && j.runtime && typeof j.runtime.grid_count_enabled === 'boolean') {
     gridCountEnabledEl.checked = j.runtime.grid_count_enabled;
@@ -386,188 +458,202 @@ function applyState(j){
     }
     msg += ']';
   }
-  
-  if(state === 'running' && j.config) {
-      if(j.config.video_reference) msg += ` [${j.config.video_reference}]`;
-      if(j.config.model) msg += ` [Model: ${j.config.model}]`;
-      if(j.config.model_task) msg += ` [Task: ${j.config.model_task}]`;
+
+  if (state === 'running' && j.config) {
+    if (j.config.video_reference) msg += ` [${j.config.video_reference}]`;
+    if (j.config.model) msg += ` [Model: ${j.config.model}]`;
+    if (j.config.model_task) msg += ` [Task: ${j.config.model_task}]`;
   }
-  statusEl.textContent=msg;
-  
+  statusEl.textContent = msg;
+
   if (state !== 'running') {
     disconnectWHEP_wf();
   }
 }
 
-async function refresh(){
-  try{
-    const r=await fetch('/api/status');
-    const j=await r.json();
+async function refresh() {
+  try {
+    const r = await fetch('/api/status');
+    const j = await r.json();
     applyState(j);
     return j;
-  }catch(e){
-    statusEl.textContent='status: error';
+  } catch (e) {
+    statusEl.textContent = 'status: error';
     return null;
   }
 }
 
-async function connectWHEP_wf(path, retryCount = 0, maxRetries = 5){
+async function connectWHEP_wf(path, retryCount = 0, maxRetries = 5) {
   const whep = '/' + encodeURIComponent(path) + '/whep';
-  try{
-    if(pc_wf) { try{pc_wf.close();}catch(e){} pc_wf=null; }
-    vWf.srcObject=null;
+  try {
+    if (pc_wf) {
+      try { pc_wf.close(); } catch (e) {}
+      pc_wf = null;
+    }
+    vWf.srcObject = null;
 
-    pc_wf=new RTCPeerConnection({iceServers:[{urls:['stun:stun.l.google.com:19302']}]});
-    pc_wf.addEventListener('track',(ev)=>{ vWf.srcObject=ev.streams[0]; });
-    
-    const offer=await pc_wf.createOffer({offerToReceiveVideo:true, offerToReceiveAudio:false});
+    pc_wf = new RTCPeerConnection({ iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }] });
+    pc_wf.addEventListener('track', (ev) => { vWf.srcObject = ev.streams[0]; });
+
+    const offer = await pc_wf.createOffer({ offerToReceiveVideo: true, offerToReceiveAudio: false });
     await pc_wf.setLocalDescription(offer);
 
-    const rr=await fetch(whep,{method:'POST',headers:{'Content-Type':'application/sdp'},body:offer.sdp});
-    if(!rr.ok){
+    const rr = await fetch(whep, { method: 'POST', headers: { 'Content-Type': 'application/sdp' }, body: offer.sdp });
+    if (!rr.ok) {
       if (rr.status === 404 && retryCount < maxRetries) {
         await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
         return connectWHEP_wf(path, retryCount + 1, maxRetries);
       }
-      throw new Error('WHEP HTTP '+rr.status);
+      throw new Error('WHEP HTTP ' + rr.status);
     }
-    const answer=await rr.text();
-    await pc_wf.setRemoteDescription({type:'answer', sdp:answer});
-  }catch(e){
+    const answer = await rr.text();
+    await pc_wf.setRemoteDescription({ type: 'answer', sdp: answer });
+  } catch (e) {
     console.error(e);
   }
 }
 
-function disconnectWHEP_wf(){
-  try{ if(pc_wf){ pc_wf.close(); } }catch(e){}
-  pc_wf=null; vWf.srcObject=null;
+function disconnectWHEP_wf() {
+  try { if (pc_wf) { pc_wf.close(); } } catch (e) {}
+  pc_wf = null;
+  vWf.srcObject = null;
 }
 
-btnRun.onclick=async()=>{
+btnRun.onclick = async () => {
   let payload = {};
-  
-  const confVal = parseFloat(confThresholdEl.value);
-  const analysisVal = analysisNumEl.value;
-  const modelVal = modelSelectEl.value;
 
-  // Common fields
-  let common = {
+  if (CAN_CONFIGURE_DASHBOARD) {
+    const confVal = parseFloat(confThresholdEl.value);
+    const analysisVal = analysisNumEl.value;
+    const modelVal = modelSelectEl.value;
+    const common = {
       vis_conf: confVal,
       analysis_number: analysisVal,
       model_path: modelVal,
       grid_count_enabled: gridCountEnabledEl.checked,
       grid_debug_enabled: gridDebugEnabledEl.checked,
       grid_score_threshold: parseFloat(gridScoreThresholdEl.value || '0')
-  };
+    };
 
-  if(sourceTypeEl.value === 'camera') {
+    if (sourceTypeEl.value === 'camera') {
       const camIdx = camDeviceEl.value;
-      if(camIdx === '' || !cameraList[camIdx]) { alert("Select a camera"); return; }
-      
+      if (camIdx === '' || !cameraList[camIdx]) { alert('Select a camera'); return; }
+
       const modeStr = camModeEl.value;
-      if(!modeStr) { alert("Select a mode"); return; }
-      
+      if (!modeStr) { alert('Select a mode'); return; }
+
       const mode = JSON.parse(modeStr);
-      
       payload = {
-          ...common,
-          source_type: 'camera',
-          device: cameraList[camIdx].device,
-          width: mode.width,
-          height: mode.height,
-          fps: mode.fps,
-          format: mode.format
+        ...common,
+        source_type: 'camera',
+        device: cameraList[camIdx].device,
+        width: mode.width,
+        height: mode.height,
+        fps: mode.fps,
+        format: mode.format
       };
-  } else {
+    } else {
       const path = uploadedPathEl.value;
-      if(!path) { alert("Upload a file first"); return; }
+      if (!path) { alert('Upload a file first'); return; }
       payload = {
-          ...common,
-          source_type: 'file',
-          video: path
+        ...common,
+        source_type: 'file',
+        video: path
       };
+    }
   }
 
-  try{
-    statusEl.textContent='status: requesting start...';
-    const startRes=await fetch('/api/start',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify(payload)
+  try {
+    statusEl.textContent = 'status: requesting start...';
+    const startRes = await fetch('/api/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
     });
-    if(!startRes.ok){
-        const err = await startRes.json();
-        throw new Error(err.error || startRes.status);
+    if (!startRes.ok) {
+      const err = await startRes.json().catch(() => ({}));
+      throw new Error(err.error || startRes.status);
     }
     await refresh();
     await connectWHEP_wf('pub-output');
-  }catch(e){
-    statusEl.textContent='status: failed -> '+e;
+  } catch (e) {
+    statusEl.textContent = 'status: failed -> ' + e;
     disconnectWHEP_wf();
   }
 };
 
-btnStop.onclick=async()=>{
-  try{
-    statusEl.textContent='status: stopping...';
+btnStop.onclick = async () => {
+  try {
+    statusEl.textContent = 'status: stopping...';
     disconnectWHEP_wf();
-    await fetch('/api/stop',{method:'POST'});
+    await fetch('/api/stop', { method: 'POST' });
     await refresh();
-  }catch(e){}
+  } catch (e) {
+    console.error(e);
+  }
 };
 
-uploadBtn.onclick=()=>{ uploadInput.click(); };
+uploadBtn.onclick = () => { uploadInput.click(); };
 
-uploadInput.onchange=function(){
-  if(!uploadInput.files.length) return;
-  if(isUploading) return;
+uploadInput.onchange = function () {
+  if (!uploadInput.files.length || isUploading) return;
 
-  const file=uploadInput.files[0];
-  const fd=new FormData();
-  fd.append('file',file);
+  const file = uploadInput.files[0];
+  const fd = new FormData();
+  fd.append('file', file);
   fileNameEl.textContent = file.name;
 
-  const xhr=new XMLHttpRequest();
-  xhr.open('POST','/api/upload');
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/upload');
 
-  xhr.upload.onprogress=function(e){
-    if(e.lengthComputable){
-      uploadProgress=Math.round((e.loaded/e.total)*100);
+  xhr.upload.onprogress = function (e) {
+    if (e.lengthComputable) {
+      uploadProgress = Math.round((e.loaded / e.total) * 100);
       applyState();
     }
   };
 
-  xhr.onload=function(){
-    isUploading=false;
-    if(xhr.status!==200){
-      statusEl.textContent='upload error: '+xhr.status;
+  xhr.onload = async function () {
+    isUploading = false;
+    if (xhr.status !== 200) {
+      statusEl.textContent = 'upload error: ' + xhr.status;
       refresh();
       return;
     }
-    try{
-      const j=JSON.parse(xhr.responseText);
+    try {
+      const j = JSON.parse(xhr.responseText);
       uploadedPathEl.value = j.video;
-      statusEl.textContent='status: upload complete';
+      statusEl.textContent = 'status: upload complete';
+      await saveDashboardSettings({ uploaded_path: j.video, source_type: 'file' });
+      sourceTypeEl.value = 'file';
+      syncSourceVisibility();
       refresh();
-    }catch(e){ console.error(e); }
+    } catch (e) {
+      console.error(e);
+    }
   };
 
-  isUploading=true; uploadProgress=0; applyState();
+  isUploading = true;
+  uploadProgress = 0;
+  applyState();
   xhr.send(fd);
 };
 
-window.addEventListener('load', async()=>{
-  loadCameras();
-  loadModels();
-  let j = await refresh();
-  setInterval(refresh,1500);
+window.addEventListener('load', async () => {
+  syncSourceVisibility();
+  if (CAN_CONFIGURE_DASHBOARD) {
+    await loadCameras();
+    await loadModels();
+  }
+  await refresh();
+  setInterval(refresh, 1500);
 
-  if(state==='running'){
+  if (state === 'running') {
     await connectWHEP_wf('pub-output');
   }
 });
 
-window.addEventListener('beforeunload',()=>{ disconnectWHEP_wf(); });
+window.addEventListener('beforeunload', () => { disconnectWHEP_wf(); });
 </script>
 </body>
 </html>

@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>User Management</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<style>
+body { margin:0; background:#111; color:#eee; font-family:system-ui, Segoe UI, Roboto, Arial; padding:20px; }
+h1 { margin:0 0 16px; font-weight:300; }
+.back-link { display:inline-block; margin-bottom:16px; color:#888; text-decoration:none; font-size:14px; }
+.back-link:hover { color:#eee; }
+.card { background:#1b1b1b; border:1px solid #333; border-radius:10px; padding:16px; margin-bottom:18px; }
+.form-row { display:flex; gap:12px; flex-wrap:wrap; align-items:end; }
+.field { display:flex; flex-direction:column; gap:6px; min-width:180px; }
+label { color:#aaa; font-size:12px; }
+input, select, button { background:#222; color:#eee; border:1px solid #333; border-radius:8px; padding:9px 11px; font-size:14px; }
+button { cursor:pointer; }
+button:hover { background:#2a2a2a; }
+.hint { color:#999; font-size:12px; margin-top:10px; }
+.error { color:#f87171; font-size:13px; min-height:18px; margin-top:10px; }
+table { width:100%; border-collapse:collapse; background:#222; border-radius:8px; overflow:hidden; }
+th, td { text-align:left; padding:12px 16px; border-bottom:1px solid #333; }
+th { background:#1b1b1b; color:#aaa; text-transform:uppercase; font-size:12px; }
+tr:last-child td { border-bottom:none; }
+</style>
+</head>
+<body>
+
+<a href="/" class="back-link">Back to Dashboard</a>
+
+<h1>User Management</h1>
+
+<div class="card">
+  <div class="form-row">
+    <div class="field">
+      <label for="newUsername">Username</label>
+      <input id="newUsername" type="text" autocomplete="off" />
+    </div>
+    <div class="field">
+      <label for="newPassword">Initial Password</label>
+      <input id="newPassword" type="password" autocomplete="new-password" />
+    </div>
+    <div class="field">
+      <label for="newRole">Role</label>
+      <select id="newRole">
+        <option value="user">User</option>
+        <option value="admin">Admin</option>
+      </select>
+    </div>
+    <button id="createUserBtn" type="button">Create User</button>
+  </div>
+  <div class="hint">New users must change password on first login.</div>
+  <div id="createUserError" class="error"></div>
+</div>
+
+<table id="usersTable">
+  <thead>
+    <tr>
+      <th>Username</th>
+      <th>Role</th>
+      <th>Status</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for user in users %}
+    <tr>
+      <td>{{ user.username }}</td>
+      <td>{{ user.roles|join(', ') }}</td>
+      <td>{% if user.force_password_change %}Password change required{% else %}Ready{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<script>
+document.getElementById('createUserBtn').addEventListener('click', async () => {
+  const username = document.getElementById('newUsername').value.trim();
+  const password = document.getElementById('newPassword').value;
+  const role = document.getElementById('newRole').value;
+  const errorEl = document.getElementById('createUserError');
+  errorEl.textContent = '';
+
+  try {
+    const response = await fetch('/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password, roles: [role] }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to create user.');
+    }
+    window.location.reload();
+  } catch (error) {
+    errorEl.textContent = error.message || 'Failed to create user.';
+  }
+});
+</script>
+
+</body>
+</html>

@@ -1,31 +1,33 @@
 import argparse
+import auth
+import cookies
 import csv
+import cv2
+import flask
+import glob
+import io
 import json
 import logging
 import os
-import uuid
-import glob
-import shutil
-import io
-import zipfile
-import socket
 import re
+import requests
+import shutil
+import socket
+import subprocess
 import sys
 import threading
-import subprocess
 import time
-from datetime import datetime
-from collections import deque
-from urllib.parse import quote
+import tokens
+import uuid
+import zipfile
 
-import cv2
-import requests
-from flask import Flask, Response, jsonify, request, send_file, send_from_directory
-from flasgger import Swagger
-
-from inference_pipeline import StreamPipeline
-from stream_readers import V4L2StreamReader, FileReader
 from camera_manager import CameraManager
+from collections import deque
+from datetime import datetime
+from flasgger import Swagger
+from inference_pipeline import StreamPipeline
+from stream_readers import FileReader, V4L2StreamReader
+from urllib.parse import quote
 
 LOGGER = logging.getLogger("app")
 CONFIG_FILEPATH = "/app/config.json"
@@ -38,7 +40,7 @@ MODEL_UPLOAD_EXTENSIONS = (".pt",)
 MODEL_COMPILE_METADATA_SUFFIX = ".compile.json"
 RESULT_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")
 
-app = Flask(__name__)
+app = flask.Flask(__name__, template_folder=".")
 
 # --- SWAGGER CONFIGURATION ---
 app.config['SWAGGER'] = {
@@ -49,6 +51,7 @@ app.config['SWAGGER'] = {
 
 # Initialize Flasgger
 swagger = Swagger(app)
+auth.init_auth_storage()
 
 # Global runtime state
 pipeline = None  # type: StreamPipeline | None
@@ -85,11 +88,7 @@ def _coerce_score(value):
         score = float(value)
     except (TypeError, ValueError):
         return None
-    if score < 0.0:
-        return 0.0
-    if score > 1.0:
-        return 1.0
-    return score
+    return max(min(score, 1.0), 0.0)
 
 
 def _coerce_threshold(value):
@@ -99,11 +98,7 @@ def _coerce_threshold(value):
         threshold = float(value)
     except (TypeError, ValueError):
         return 0.0
-    if threshold < 0.0:
-        return 0.0
-    if threshold > 1.0:
-        return 1.0
-    return threshold
+    return max(min(threshold, 1.0), 0.0)
 
 
 def get_grid_count_enabled():
@@ -723,6 +718,7 @@ def build_model_catalog():
         entry["compiled"] = engine is not None
         entry["display"] = f"[{model_type.upper()}] {base}"
         entry["task"] = get_catalog_model_task(model_type, base)
+        entry["owner_username"] = auth.get_model_owner_username(model_type, base)
         models.append(entry)
 
     return models
@@ -780,7 +776,7 @@ def _parse_iso_date(value, field_name):
 
 
 def _parse_results_date_filter():
-    return _parse_iso_date(request.args.get("date", "").strip(), "date")
+    return _parse_iso_date(flask.request.args.get("date", "").strip(), "date")
 
 
 def _result_matches_date(timestamp_value, selected_date=None):
@@ -846,7 +842,7 @@ def _collect_results_metadata(*, analysis_prefix="", selected_date=None):
     ]
 
     for run_id in run_dirs:
-        if analysis_prefix and not run_id.startswith(analysis_prefix):
+        if analysis_prefix and analysis_prefix not in run_id:
             continue
 
         metadata = _build_result_metadata(run_id)
@@ -936,25 +932,483 @@ def _coerce_csv_row(row):
     return coerced
 
 
+@app.before_request
+def protect_swagger_routes():
+    if not (flask.request.path.startswith("/apispec_") or flask.request.path.startswith("/api/docs")):
+        return None
+    user = auth.load_request_user()
+    if user is None:
+        return flask.jsonify({"error": "Unauthorized"}), 401
+    flask.g.current_user = user
+    if not auth.user_has_permission(user, "swagger:view"):
+        return flask.jsonify({"error": "Forbidden"}), 403
+    return None
+
+
+@app.route("/login")
+def login_page():
+    """
+    Serve the login page.
+    ---
+    tags:
+      - Pages
+    produces:
+      - text/html
+    responses:
+      200:
+        description: Login page HTML.
+      302:
+        description: Redirect to the dashboard when the caller is already authenticated.
+    """
+    user = auth.load_request_user()
+    if user is not None:
+        return flask.redirect(flask.url_for("index"))
+    return flask.render_template("login.html")
+
+
+@app.route("/auth/login", methods=["POST"])
+def auth_login():
+    """
+    Authenticate a local user and issue bearer tokens.
+    ---
+    tags:
+      - Auth
+    consumes:
+      - application/json
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - username
+            - password
+          properties:
+            username:
+              type: string
+            password:
+              type: string
+    responses:
+      200:
+        description: Access token, refresh token, and authenticated user identity.
+        schema:
+          type: object
+          properties:
+            access_token:
+              type: string
+            refresh_token:
+              type: string
+            user:
+              type: object
+              properties:
+                id:
+                  type: integer
+                username:
+                  type: string
+      401:
+        description: Invalid username or password.
+      403:
+        description: Password change is required before first login.
+    """
+    payload = flask.request.get_json(silent=True) or {}
+    user = auth.authenticate_user(payload.get("username", ""), payload.get("password", ""))
+    if user is None:
+        return flask.jsonify({"error": "Invalid username or password"}), 401
+    if user.get("force_password_change"):
+        return (
+            flask.jsonify(
+                {
+                    "error": "Password change required.",
+                    "password_change_required": True,
+                }
+            ),
+            403,
+        )
+
+    access_token = tokens.issue_access_token(user["id"])
+    refresh_token = auth.issue_refresh_token(user["id"])
+    response = flask.jsonify(
+        {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "user": {
+                "id": user["id"],
+                "username": user["username"],
+            },
+        }
+    )
+    return cookies.set_auth_cookies(
+        response,
+        access_token,
+        refresh_token,
+        access_max_age=tokens.ACCESS_TOKEN_TTL_SECONDS,
+        refresh_max_age=tokens.REFRESH_TOKEN_TTL_SECONDS,
+    )
+
+
+@app.route("/auth/refresh", methods=["POST"])
+def auth_refresh():
+    """
+    Exchange a refresh token for a new bearer access token.
+    ---
+    tags:
+      - Auth
+    consumes:
+      - application/json
+    parameters:
+      - name: body
+        in: body
+        required: false
+        schema:
+          type: object
+          properties:
+            refresh_token:
+              type: string
+              description: Optional refresh token. When omitted, the refresh cookie is used.
+    responses:
+      200:
+        description: Refreshed access token, rotated refresh token, and authenticated user identity.
+        schema:
+          type: object
+          properties:
+            access_token:
+              type: string
+            refresh_token:
+              type: string
+            user:
+              type: object
+              properties:
+                id:
+                  type: integer
+                username:
+                  type: string
+      401:
+        description: Missing or invalid refresh token.
+    """
+    payload = flask.request.get_json(silent=True) or {}
+    refresh_token = (payload.get("refresh_token") or cookies.get_refresh_token_from_request(flask.request)).strip()
+    if not refresh_token:
+        return flask.jsonify({"error": "Missing refresh token"}), 401
+
+    rotated = auth.rotate_refresh_token(refresh_token)
+    if rotated is None:
+        return flask.jsonify({"error": "Invalid refresh token"}), 401
+
+    user = rotated["user"]
+    access_token = tokens.issue_access_token(user["id"])
+    response = flask.jsonify(
+        {
+            "access_token": access_token,
+            "refresh_token": rotated["refresh_token"],
+            "user": {
+                "id": user["id"],
+                "username": user["username"],
+            },
+        }
+    )
+    return cookies.set_auth_cookies(
+        response,
+        access_token,
+        rotated["refresh_token"],
+        access_max_age=tokens.ACCESS_TOKEN_TTL_SECONDS,
+        refresh_max_age=tokens.REFRESH_TOKEN_TTL_SECONDS,
+    )
+
+
+@app.route("/auth/change-password", methods=["POST"])
+def auth_change_password():
+    """
+    Change a local user's password and clear the first-login password-change requirement.
+    ---
+    tags:
+      - Auth
+    consumes:
+      - application/json
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - username
+            - current_password
+            - new_password
+          properties:
+            username:
+              type: string
+            current_password:
+              type: string
+            new_password:
+              type: string
+    responses:
+      200:
+        description: Password updated successfully.
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+      400:
+        description: Invalid password-change payload.
+      401:
+        description: Invalid username or current password.
+    """
+    payload = flask.request.get_json(silent=True) or {}
+    try:
+        user = auth.change_password(
+            payload.get("username"),
+            payload.get("current_password"),
+            payload.get("new_password"),
+        )
+    except ValueError as exc:
+        return flask.jsonify({"error": str(exc)}), 400
+    if user is None:
+        return flask.jsonify({"error": "Invalid username or current password"}), 401
+    return flask.jsonify({"success": True})
+
+
+@app.route("/auth/logout", methods=["POST"])
+@auth.require_permission()
+def auth_logout():
+    """
+    Revoke the current refresh token and clear auth cookies.
+    ---
+    tags:
+      - Auth
+    responses:
+      200:
+        description: Logout completed successfully.
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+      401:
+        description: Missing or invalid access token.
+    """
+    auth.revoke_refresh_token(cookies.get_refresh_token_from_request(flask.request))
+    response = flask.jsonify({"success": True})
+    return cookies.clear_auth_cookies(response)
+
+
+@app.route("/auth/me")
+@auth.require_permission()
+def auth_me():
+    """
+    Return the authenticated user identity.
+    ---
+    tags:
+      - Auth
+    responses:
+      200:
+        description: Authenticated user identity.
+        schema:
+          type: object
+          properties:
+            id:
+              type: integer
+            username:
+              type: string
+      401:
+        description: Missing or invalid access token.
+    """
+    user = flask.g.current_user
+    return flask.jsonify(
+        {
+            "id": user["id"],
+            "username": user["username"],
+        }
+    )
+
+
+@app.route("/users", methods=["POST"])
+@auth.require_permission("users:manage")
+def create_user_route():
+    """
+    Create a local user with one or more roles.
+    ---
+    tags:
+      - Auth
+    consumes:
+      - application/json
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - username
+            - password
+            - roles
+          properties:
+            username:
+              type: string
+            password:
+              type: string
+            roles:
+              type: array
+              items:
+                type: string
+                enum: ['admin', 'user']
+    responses:
+      201:
+        description: Created user summary.
+        schema:
+          type: object
+          properties:
+            id:
+              type: integer
+            username:
+              type: string
+      400:
+        description: Invalid payload.
+      401:
+        description: Missing or invalid access token.
+      403:
+        description: Authenticated user lacks permission to manage users.
+      409:
+        description: Username already exists.
+    """
+    payload = flask.request.get_json(silent=True) or {}
+    try:
+        user = auth.create_user(
+            payload.get("username"),
+            payload.get("password"),
+            payload.get("roles"),
+        )
+    except ValueError as exc:
+        message = str(exc)
+        status = 409 if "exists" in message.lower() else 400
+        return flask.jsonify({"error": message}), status
+
+    return (
+        flask.jsonify(
+            {
+                "id": user["id"],
+                "username": user["username"],
+            }
+        ),
+        201,
+    )
+
+
+@app.route("/users")
+@auth.require_permission("users:manage", html_redirect=True)
+def users_page():
+    """
+    Serve the user-management page.
+    ---
+    tags:
+      - Pages
+    produces:
+      - text/html
+    responses:
+      200:
+        description: User-management HTML.
+      302:
+        description: Redirect to the login page when the caller is not authenticated.
+      403:
+        description: Authenticated user lacks permission to manage users.
+    """
+    return flask.render_template(
+        "users.html",
+        **auth.build_page_context(flask.g.current_user, users=auth.list_users()),
+    )
+
+
+@app.route("/settings")
+@auth.require_permission(html_redirect=True)
+def settings_page():
+    """
+    Serve the authenticated user settings page.
+    ---
+    tags:
+      - Pages
+    produces:
+      - text/html
+    responses:
+      200:
+        description: User settings HTML.
+      302:
+        description: Redirect to the login page when the caller is not authenticated.
+      401:
+        description: Missing or invalid access token.
+    """
+    return flask.render_template(
+        "settings.html",
+        role_label=", ".join(flask.g.current_user.get("roles", [])),
+        **auth.build_page_context(flask.g.current_user),
+    )
+
+
 @app.route("/")
+@auth.require_permission("dashboard:view", html_redirect=True)
 def index():
-    """Serve the main dashboard."""
-    return send_file("index.html")
+    """
+    Serve the main dashboard page.
+    ---
+    tags:
+      - Pages
+    produces:
+      - text/html
+    responses:
+      200:
+        description: Dashboard HTML.
+      302:
+        description: Redirect to the login page when the caller is not authenticated.
+      403:
+        description: Authenticated user lacks permission to view the dashboard.
+    """
+    return flask.render_template("index.html", **auth.build_page_context(flask.g.current_user))
 
 
 @app.route("/results")
+@auth.require_permission("results:view", html_redirect=True)
 def results_page():
-    """Serve the results UI."""
-    return send_file("results.html")
+    """
+    Serve the results page.
+    ---
+    tags:
+      - Pages
+    produces:
+      - text/html
+    responses:
+      200:
+        description: Results page HTML.
+      302:
+        description: Redirect to the login page when the caller is not authenticated.
+      403:
+        description: Authenticated user lacks permission to view results.
+    """
+    return flask.render_template("results.html", **auth.build_page_context(flask.g.current_user))
 
 
 @app.route("/models")
+@auth.require_permission("models:view", html_redirect=True)
 def models_page():
-    """Serve the models catalog UI."""
-    return send_file("models.html")
+    """
+    Serve the model catalog page.
+    ---
+    tags:
+      - Pages
+    produces:
+      - text/html
+    responses:
+      200:
+        description: Model catalog HTML.
+      302:
+        description: Redirect to the login page when the caller is not authenticated.
+      403:
+        description: Authenticated user lacks permission to view the model catalog.
+    """
+    return flask.render_template("models.html", **auth.build_page_context(flask.g.current_user))
 
 
 @app.route("/api/config")
+@auth.require_permission("dashboard:view")
 def api_config():
     """
     Get basic runtime configuration.
@@ -970,10 +1424,128 @@ def api_config():
             stream_port:
               type: integer
     """
-    return jsonify({"stream_port": 8889})
+    return flask.jsonify({"stream_port": 8889})
+
+
+@app.route("/api/dashboard-settings", methods=["GET"])
+@auth.require_permission("dashboard_settings:view")
+def api_get_dashboard_settings():
+    """
+    Get the persisted dashboard settings used as defaults for new runs.
+    ---
+    tags:
+      - Configuration
+    responses:
+      200:
+        description: Current dashboard settings.
+        schema:
+          type: object
+          properties:
+            analysis_number:
+              type: string
+            source_type:
+              type: string
+              enum: ['camera', 'file']
+            camera_device:
+              type: string
+            camera_mode:
+              type: object
+              properties:
+                width:
+                  type: integer
+                height:
+                  type: integer
+                fps:
+                  type: integer
+                format:
+                  type: string
+            uploaded_path:
+              type: string
+            model_path:
+              type: string
+            vis_conf:
+              type: number
+            grid_count_enabled:
+              type: boolean
+            grid_debug_enabled:
+              type: boolean
+            grid_score_threshold:
+              type: number
+      401:
+        description: Missing or invalid access token.
+      403:
+        description: Authenticated user lacks permission to view dashboard settings.
+    """
+    return flask.jsonify(auth.get_dashboard_settings())
+
+
+@app.route("/api/dashboard-settings", methods=["PUT"])
+@auth.require_permission("dashboard:configure")
+def api_put_dashboard_settings():
+    """
+    Update the persisted dashboard settings used as defaults for new runs.
+    ---
+    tags:
+      - Configuration
+    consumes:
+      - application/json
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          properties:
+            analysis_number:
+              type: string
+            source_type:
+              type: string
+              enum: ['camera', 'file']
+            camera_device:
+              type: string
+            camera_mode:
+              type: object
+              properties:
+                width:
+                  type: integer
+                height:
+                  type: integer
+                fps:
+                  type: integer
+                format:
+                  type: string
+            uploaded_path:
+              type: string
+            model_path:
+              type: string
+            vis_conf:
+              type: number
+            grid_count_enabled:
+              type: boolean
+            grid_debug_enabled:
+              type: boolean
+            grid_score_threshold:
+              type: number
+    responses:
+      200:
+        description: Updated dashboard settings.
+      400:
+        description: Invalid settings payload.
+      401:
+        description: Missing or invalid access token.
+      403:
+        description: Authenticated user lacks permission to update dashboard settings.
+    """
+    payload = flask.request.get_json(silent=True) or {}
+    try:
+        settings = auth.update_dashboard_settings(payload)
+    except (TypeError, ValueError) as exc:
+        return flask.jsonify({"error": str(exc)}), 400
+    return flask.jsonify(settings)
 
 
 @app.route("/api/grid", methods=["GET"])
+@auth.require_permission("dashboard:view")
 def api_get_grid():
     """
     Get the current grid feature state.
@@ -1002,10 +1574,11 @@ def api_get_grid():
               type: boolean
               description: True when the feature was switched off automatically because the EMA score dropped below the threshold.
     """
-    return jsonify(get_grid_api_state())
+    return flask.jsonify(get_grid_api_state())
 
 
 @app.route("/api/grid", methods=["PUT"])
+@auth.require_permission("dashboard:configure")
 def api_put_grid():
     """
     Update grid feature settings.
@@ -1050,14 +1623,28 @@ def api_put_grid():
       400:
         description: Missing grid settings in request body
     """
-    payload = request.get_json(silent=True) or {}
+    payload = flask.request.get_json(silent=True) or {}
     if not apply_grid_api_update(payload):
-        return jsonify({"error": "Missing grid settings"}), 400
+        return flask.jsonify({"error": "Missing grid settings"}), 400
 
-    return jsonify(get_grid_api_state())
+    update_payload = {}
+    if "enabled" in payload:
+        update_payload["grid_count_enabled"] = payload.get("enabled")
+    if "debug_enabled" in payload:
+        update_payload["grid_debug_enabled"] = payload.get("debug_enabled")
+    if "score_threshold" in payload:
+        update_payload["grid_score_threshold"] = payload.get("score_threshold")
+    if update_payload:
+        try:
+            auth.update_dashboard_settings(update_payload)
+        except (TypeError, ValueError):
+            pass
+
+    return flask.jsonify(get_grid_api_state())
 
 
 @app.route("/api/models")
+@auth.require_permission("models:view")
 def api_models():
     """
     List available *.engine models.
@@ -1081,6 +1668,10 @@ def api_models():
                     type: string
                   path:
                     type: string
+                  display:
+                    type: string
+                  owner_username:
+                    type: string
     """
     try:
         models = []
@@ -1100,16 +1691,18 @@ def api_models():
                     "path": f,
                     "name": name,
                     "type": parent,
-                    "display": f"[{parent.upper()}] {name}"
+                    "display": f"[{parent.upper()}] {name}",
+                    "owner_username": auth.get_model_owner_username(parent, os.path.splitext(name)[0]),
                 })
         
-        return jsonify({"models": models})
+        return flask.jsonify({"models": models})
     except Exception as e:
         LOGGER.error(f"Failed to list models: {e}")
-        return jsonify({"error": str(e)}), 500
+        return flask.jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/model-catalog")
+@auth.require_permission("models:view")
 def api_model_catalog():
     """
     List available model sources and their TensorRT engines (if compiled).
@@ -1152,15 +1745,23 @@ def api_model_catalog():
                     description: Saved Ultralytics task override for this model. Null for non-UL models.
                   compiled:
                     type: boolean
+                  owner_username:
+                    type: string
+            tensorrt:
+              type: object
+              properties:
+                current:
+                  type: string
     """
     try:
-        return jsonify({"models": build_model_catalog(), "tensorrt": {"current": get_current_tensorrt_version()}})
+        return flask.jsonify({"models": build_model_catalog(), "tensorrt": {"current": get_current_tensorrt_version()}})
     except Exception as e:
         LOGGER.error(f"Failed to list model catalog: {e}")
-        return jsonify({"error": str(e)}), 500
+        return flask.jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/model-upload", methods=["POST"])
+@auth.require_permission("models:manage")
 def api_model_upload():
     """
     Upload a model weights file into the catalog.
@@ -1169,33 +1770,64 @@ def api_model_upload():
       - Configuration
     consumes:
       - multipart/form-data
+    parameters:
+      - name: type
+        in: formData
+        type: string
+        required: true
+        enum: ['ul', 'rf']
+        description: Target model family for the uploaded weights file.
+      - name: file
+        in: formData
+        type: file
+        required: true
+        description: Ultralytics or RF-DETR weights file in `.pt` format.
     responses:
       200:
         description: Model uploaded successfully
+        schema:
+          type: object
+          properties:
+            uploaded:
+              type: object
+              properties:
+                type:
+                  type: string
+                name:
+                  type: string
+                path:
+                  type: string
+            tensorrt:
+              type: object
+              properties:
+                current:
+                  type: string
       400:
         description: Invalid upload request
+      409:
+        description: A model with the same filename already exists.
     """
-    model_type = (request.form.get("type") or "").strip().lower()
+    model_type = (flask.request.form.get("type") or "").strip().lower()
     if model_type not in ("ul", "rf"):
-        return jsonify({"error": "Invalid model type."}), 400
+        return flask.jsonify({"error": "Invalid model type."}), 400
 
-    uploaded_file = request.files.get("file")
+    uploaded_file = flask.request.files.get("file")
     if uploaded_file is None or not uploaded_file.filename:
-        return jsonify({"error": "Missing model file."}), 400
+        return flask.jsonify({"error": "Missing model file."}), 400
 
     filename = _sanitize_uploaded_model_filename(uploaded_file.filename)
     if not filename:
-        return jsonify({"error": "Invalid filename."}), 400
+        return flask.jsonify({"error": "Invalid filename."}), 400
 
     ext = os.path.splitext(filename)[1].lower()
     if ext not in MODEL_UPLOAD_EXTENSIONS:
-        return jsonify({"error": "Only .pt model weights are supported."}), 400
+        return flask.jsonify({"error": "Only .pt model weights are supported."}), 400
 
     target_dir = os.path.join(MODEL_DIR, model_type)
     os.makedirs(target_dir, exist_ok=True)
     target_path = os.path.join(target_dir, filename)
     if os.path.exists(target_path):
-        return jsonify({"error": "A model with this filename already exists."}), 409
+        return flask.jsonify({"error": "A model with this filename already exists."}), 409
 
     try:
         uploaded_file.save(target_path)
@@ -1206,9 +1838,11 @@ def api_model_upload():
                 os.remove(target_path)
         except OSError:
             pass
-        return jsonify({"error": "Failed to store uploaded model."}), 500
+        return flask.jsonify({"error": "Failed to store uploaded model."}), 500
 
-    return jsonify(
+    auth.store_model_owner(model_type, os.path.splitext(filename)[0], flask.g.current_user["id"])
+
+    return flask.jsonify(
         {
             "uploaded": {
                 "type": model_type,
@@ -1221,6 +1855,7 @@ def api_model_upload():
 
 
 @app.route("/api/model-compile", methods=["POST"])
+@auth.require_permission("models:manage")
 def api_model_compile():
     """
     Start async model compilation to TensorRT (FP16).
@@ -1229,16 +1864,42 @@ def api_model_compile():
       - Configuration
     consumes:
       - application/json
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - type
+            - name
+          properties:
+            type:
+              type: string
+              enum: ['ul', 'rf']
+            name:
+              type: string
     responses:
       200:
         description: Compile job queued
+        schema:
+          type: object
+          properties:
+            job_id:
+              type: string
+            already_running:
+              type: boolean
+      400:
+        description: Invalid compile request or model is already compiled.
+      404:
+        description: Model not found.
     """
-    payload = request.get_json(silent=True) or {}
+    payload = flask.request.get_json(silent=True) or {}
     model_type = payload.get("type")
     model_name = payload.get("name")
 
     if model_type not in ("ul", "rf") or not model_name:
-        return jsonify({"error": "Invalid model type or name."}), 400
+        return flask.jsonify({"error": "Invalid model type or name."}), 400
 
     catalog = build_model_catalog()
     entry = next(
@@ -1246,20 +1907,20 @@ def api_model_compile():
         None,
     )
     if entry is None:
-        return jsonify({"error": "Model not found."}), 404
+        return flask.jsonify({"error": "Model not found."}), 404
 
     if entry.get("compiled"):
-        return jsonify({"error": "Model already compiled."}), 400
+        return flask.jsonify({"error": "Model already compiled."}), 400
 
     with compile_jobs_lock:
         existing_job = _find_active_job_for_model(model_type, model_name)
         if existing_job is not None:
-            return jsonify({"job_id": existing_job["id"], "already_running": True})
+            return flask.jsonify({"job_id": existing_job["id"], "already_running": True})
 
     source_paths = entry.get("source_paths", [])
     source_pt = next((p for p in source_paths if p.endswith(".pt")), None)
     if not source_pt:
-        return jsonify({"error": "No .pt source found for compilation."}), 400
+        return flask.jsonify({"error": "No .pt source found for compilation."}), 400
 
     if model_type == "ul":
         command = [
@@ -1294,10 +1955,11 @@ def api_model_compile():
     )
     thread.start()
 
-    return jsonify({"job_id": job_id})
+    return flask.jsonify({"job_id": job_id})
 
 
 @app.route("/api/model-task", methods=["POST"])
+@auth.require_permission("models:manage")
 def api_model_task():
     """
     Save the Ultralytics task override for a catalog model.
@@ -1346,13 +2008,13 @@ def api_model_task():
       404:
         description: Model not found
     """
-    payload = request.get_json(silent=True) or {}
+    payload = flask.request.get_json(silent=True) or {}
     model_type = payload.get("type")
     model_name = payload.get("name")
     task = payload.get("task")
 
     if model_type != "ul" or not model_name:
-        return jsonify({"error": "Invalid model type or name."}), 400
+        return flask.jsonify({"error": "Invalid model type or name."}), 400
 
     catalog = build_model_catalog()
     entry = next(
@@ -1360,14 +2022,14 @@ def api_model_task():
         None,
     )
     if entry is None:
-        return jsonify({"error": "Model not found."}), 404
+        return flask.jsonify({"error": "Model not found."}), 404
 
     try:
         selected_task = set_catalog_model_task(model_type, model_name, task)
     except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+        return flask.jsonify({"error": str(exc)}), 400
 
-    return jsonify({
+    return flask.jsonify({
         "type": model_type,
         "name": model_name,
         "task": selected_task,
@@ -1375,6 +2037,7 @@ def api_model_task():
 
 
 @app.route("/api/model-delete", methods=["POST"])
+@auth.require_permission("models:manage")
 def api_model_delete():
     """
     Delete all stored artifacts for a catalog model.
@@ -1421,12 +2084,12 @@ def api_model_delete():
       409:
         description: Model is currently running and cannot be deleted
     """
-    payload = request.get_json(silent=True) or {}
+    payload = flask.request.get_json(silent=True) or {}
     model_type = payload.get("type")
     model_name = payload.get("name")
 
     if model_type not in ("ul", "rf") or not model_name:
-        return jsonify({"error": "Invalid model type or name."}), 400
+        return flask.jsonify({"error": "Invalid model type or name."}), 400
 
     catalog = build_model_catalog()
     entry = next(
@@ -1434,12 +2097,12 @@ def api_model_delete():
         None,
     )
     if entry is None:
-        return jsonify({"error": "Model not found."}), 404
+        return flask.jsonify({"error": "Model not found."}), 404
 
     artifact_paths = collect_model_artifact_paths(entry)
     current_model_path = current_config.get("model_path")
     if is_pipeline_running() and current_model_path in artifact_paths:
-        return jsonify({"error": "Cannot delete the model that is currently running."}), 409
+        return flask.jsonify({"error": "Cannot delete the model that is currently running."}), 409
 
     deleted = []
     for path in artifact_paths:
@@ -1450,11 +2113,12 @@ def api_model_delete():
             continue
         except Exception as exc:
             LOGGER.error("Failed to delete model artifact %s: %s", path, exc)
-            return jsonify({"error": f"Failed to delete {path}: {exc}"}), 500
+            return flask.jsonify({"error": f"Failed to delete {path}: {exc}"}), 500
 
     clear_catalog_model_task(model_type, model_name)
+    auth.delete_model_owner(model_type, model_name)
 
-    return jsonify({
+    return flask.jsonify({
         "type": model_type,
         "name": model_name,
         "deleted": deleted,
@@ -1462,6 +2126,7 @@ def api_model_delete():
 
 
 @app.route("/api/model-compile-jobs")
+@auth.require_permission("models:view")
 def api_model_compile_jobs():
     """
     List compile jobs for UI restore after close/refresh.
@@ -1471,6 +2136,35 @@ def api_model_compile_jobs():
     responses:
       200:
         description: Compile job list
+        schema:
+          type: object
+          properties:
+            jobs:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  status:
+                    type: string
+                  created_at:
+                    type: string
+                  started_at:
+                    type: string
+                  finished_at:
+                    type: string
+                  returncode:
+                    type: integer
+                  model:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      name:
+                        type: string
+                      source:
+                        type: string
     """
     with compile_jobs_lock:
         jobs = []
@@ -1487,26 +2181,60 @@ def api_model_compile_jobs():
                 }
             )
     jobs.sort(key=lambda item: item.get("created_at") or "", reverse=True)
-    return jsonify({"jobs": jobs})
+    return flask.jsonify({"jobs": jobs})
 
 
 @app.route("/api/model-compile/<job_id>")
+@auth.require_permission("models:view")
 def api_model_compile_status(job_id):
     """
     Get compile job status and logs.
     ---
     tags:
       - Configuration
+    parameters:
+      - name: job_id
+        in: path
+        type: string
+        required: true
+        description: Compile job identifier returned by `/api/model-compile`.
     responses:
       200:
         description: Compile job status
+        schema:
+          type: object
+          properties:
+            id:
+              type: string
+            status:
+              type: string
+            created_at:
+              type: string
+            started_at:
+              type: string
+            finished_at:
+              type: string
+            returncode:
+              type: integer
+            command:
+              type: array
+              items:
+                type: string
+            model:
+              type: object
+            logs:
+              type: array
+              items:
+                type: string
+      404:
+        description: Job not found.
     """
     with compile_jobs_lock:
         job = compile_jobs.get(job_id)
         if job is None:
-            return jsonify({"error": "Job not found."}), 404
+            return flask.jsonify({"error": "Job not found."}), 404
 
-        return jsonify(
+        return flask.jsonify(
             {
                 "id": job["id"],
                 "status": job["status"],
@@ -1522,6 +2250,7 @@ def api_model_compile_status(job_id):
 
 
 @app.route("/api/cameras")
+@auth.require_permission("cameras:view")
 def api_cameras():
     """
     List attached cameras and their modes.
@@ -1547,13 +2276,24 @@ def api_cameras():
                     type: array
                     items:
                       type: object
+                      properties:
+                        width:
+                          type: integer
+                        height:
+                          type: integer
+                        fps:
+                          type: integer
+                        format:
+                          type: string
+      500:
+        description: Camera enumeration failed.
     """
     try:
         cams = CameraManager.get_available_cameras()
-        return jsonify({"cameras": cams})
+        return flask.jsonify({"cameras": cams})
     except Exception as e:
         LOGGER.error(f"Failed to list cameras: {e}")
-        return jsonify({"error": str(e)}), 500
+        return flask.jsonify({"error": str(e)}), 500
 
 
 def check_port(host, port, timeout=0.1):
@@ -1565,6 +2305,7 @@ def check_port(host, port, timeout=0.1):
 
 
 @app.route("/api/status")
+@auth.require_permission("status:view")
 def api_status():
     """
     Get pipeline status.
@@ -1604,6 +2345,21 @@ def api_status():
                   type: boolean
                 rtsp:
                   type: boolean
+            config:
+              type: object
+              properties:
+                video_reference:
+                  type: string
+                model:
+                  type: string
+                model_task:
+                  type: string
+            threads:
+              type: array
+              items:
+                type: string
+            last_error:
+              type: string
     """
     global pipeline_id
     thread_states = pipeline_thread_states()
@@ -1617,7 +2373,7 @@ def api_status():
     mtx_whep = check_port("127.0.0.1", 8889)
     mtx_rtsp = check_port("127.0.0.1", 8554)
 
-    return jsonify({
+    return flask.jsonify({
         "state": state,
         "pipeline_id": pid_value,
         "last_error": last_error,
@@ -1633,6 +2389,7 @@ def api_status():
 
 
 @app.route("/api/results")
+@auth.require_permission("results:view")
 def api_list_results():
     """
     List all results.
@@ -1660,28 +2417,50 @@ def api_list_results():
                     type: string
                   timestamp:
                     type: string
-                  video_size:
+                  files:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        path:
+                          type: string
+                        size:
+                          type: string
+                  owner_username:
                     type: string
+      400:
+        description: Invalid date filter.
+      500:
+        description: Result listing failed.
     """
     try:
         selected_date = _parse_results_date_filter()
-        results_list = _collect_results_metadata(selected_date=selected_date)
+        results_list = auth.filter_results_for_user(
+            flask.g.current_user,
+            HQ_OUTPUT_DIR,
+            _collect_results_metadata(selected_date=selected_date),
+        )
         for item in results_list:
             item.pop("_mtime", None)
             item.pop("run_path", None)
             item.pop("csv_path", None)
             item.pop("video_path", None)
+            if auth.is_admin(flask.g.current_user):
+                item["owner_username"] = auth.get_result_owner_username(HQ_OUTPUT_DIR, item["id"])
 
-        return jsonify({"results": results_list})
+        return flask.jsonify({"results": results_list})
 
     except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+        return flask.jsonify({"error": str(exc)}), 400
     except Exception as e:
         LOGGER.error(f"Failed to list results: {e}")
-        return jsonify({"error": str(e)}), 500
+        return flask.jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/results/search")
+@auth.require_permission("results:view")
 def api_search_results():
     """
     Search results by Analysis ID.
@@ -1729,15 +2508,21 @@ def api_search_results():
                           type: string
     """
     try:
-        analysis_id = request.args.get('analysis_id', '').strip()
+        analysis_id = flask.request.args.get('analysis_id', '').strip()
         selected_date = _parse_results_date_filter()
         results_list = []
-        host_url = request.host_url.rstrip('/')
+        host_url = flask.request.host_url.rstrip('/')
 
-        for item in _collect_results_metadata(
-            analysis_prefix=analysis_id,
-            selected_date=selected_date,
-        ):
+        visible_results = auth.filter_results_for_user(
+            flask.g.current_user,
+            HQ_OUTPUT_DIR,
+            _collect_results_metadata(
+                analysis_prefix=analysis_id,
+                selected_date=selected_date,
+            ),
+        )
+
+        for item in visible_results:
             if not item.get("video_path") and not item.get("csv_path"):
                 continue
 
@@ -1778,16 +2563,17 @@ def api_search_results():
                 "images": images,
             })
 
-        return jsonify({"results": results_list})
+        return flask.jsonify({"results": results_list})
 
     except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+        return flask.jsonify({"error": str(exc)}), 400
     except Exception as e:
         LOGGER.error(f"Failed to search results: {e}")
-        return jsonify({"error": str(e)}), 500
+        return flask.jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/results/<pid>/last-row")
+@auth.require_permission("results:inspect")
 def api_result_last_csv_row(pid):
     """
     Return the last non-empty row from the result CSV as JSON.
@@ -1834,32 +2620,39 @@ def api_result_last_csv_row(pid):
                         type: number
       400:
         description: Invalid analysis ID
+      403:
+        description: Authenticated user cannot inspect this result.
       404:
         description: CSV file or row not found
+      500:
+        description: Failed to read the CSV row.
     """
     try:
         if not pid or ".." in pid or "/" in pid:
-            return jsonify({"error": "Invalid ID"}), 400
+            return flask.jsonify({"error": "Invalid ID"}), 400
+        if not auth.user_can_access_result(flask.g.current_user, HQ_OUTPUT_DIR, pid):
+            return flask.jsonify({"error": "Forbidden"}), 403
 
         csv_path = os.path.join(HQ_OUTPUT_DIR, pid, f"{pid}.csv")
         if not os.path.isfile(csv_path):
-            return jsonify({"error": "CSV not found"}), 404
+            return flask.jsonify({"error": "CSV not found"}), 404
 
         row = _read_last_csv_row(csv_path)
         if row is None:
-            return jsonify({"error": "CSV is empty"}), 404
+            return flask.jsonify({"error": "CSV is empty"}), 404
 
-        return jsonify({
+        return flask.jsonify({
             "analysis_id": pid,
             "row": _coerce_csv_row(row),
         })
 
     except Exception as exc:
         LOGGER.error("Failed to read last CSV row for %s: %s", pid, exc)
-        return jsonify({"error": str(exc)}), 500
+        return flask.jsonify({"error": str(exc)}), 500
 
 
 @app.route("/api/results/<pid>", methods=["DELETE"])
+@auth.require_permission("results:delete")
 def api_delete_result(pid):
     """
     Delete a result set.
@@ -1875,10 +2668,23 @@ def api_delete_result(pid):
     responses:
       200:
         description: Files deleted successfully
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            deleted:
+              type: array
+              items:
+                type: string
+      400:
+        description: Invalid analysis ID.
+      500:
+        description: Result deletion failed.
     """
     try:
         if not pid or ".." in pid or "/" in pid:
-            return jsonify({"error": "Invalid ID"}), 400
+            return flask.jsonify({"error": "Invalid ID"}), 400
 
         run_dir = os.path.join(HQ_OUTPUT_DIR, pid)
         deleted_files = []
@@ -1889,16 +2695,18 @@ def api_delete_result(pid):
                     rel_path = os.path.relpath(os.path.join(root, name), HQ_OUTPUT_DIR)
                     deleted_files.append(rel_path)
             shutil.rmtree(run_dir)
+        auth.delete_result_owner(pid)
 
         LOGGER.info(f"Deleted results for ID {pid}: {deleted_files}")
-        return jsonify({"success": True, "deleted": deleted_files})
+        return flask.jsonify({"success": True, "deleted": deleted_files})
 
     except Exception as e:
         LOGGER.error(f"Failed to delete results for {pid}: {e}")
-        return jsonify({"error": str(e)}), 500
+        return flask.jsonify({"error": str(e)}), 500
 
 
 @app.route("/download/<path:filename>")
+@auth.require_permission("results:download")
 def download_file(filename):
     """
     Download a file from the HQ output directory.
@@ -1914,25 +2722,47 @@ def download_file(filename):
     responses:
       200:
         description: File download
+      403:
+        description: Authenticated user cannot access this result file.
       404:
         description: Not found
     """
     try:
-        return send_from_directory(HQ_OUTPUT_DIR, filename, as_attachment=True)
+        run_id = (filename or "").split("/", 1)[0]
+        if not run_id or not auth.user_can_access_result(flask.g.current_user, HQ_OUTPUT_DIR, run_id):
+            return flask.jsonify({"error": "Forbidden"}), 403
+        return flask.send_from_directory(HQ_OUTPUT_DIR, filename, as_attachment=True)
     except Exception as e:
-        return jsonify({"error": str(e)}), 404
+        return flask.jsonify({"error": str(e)}), 404
 
 
 @app.route("/vendor/<path:filename>")
 def vendor_file(filename):
-    """Serve bundled frontend assets."""
+    """
+    Serve bundled static frontend assets.
+    ---
+    tags:
+      - Static
+    parameters:
+      - name: filename
+        in: path
+        type: string
+        required: true
+        description: Relative asset path within the bundled vendor directory.
+    responses:
+      200:
+        description: Static asset response.
+      404:
+        description: Asset not found.
+    """
     try:
-        return send_from_directory(VENDOR_DIR, filename)
+        return flask.send_from_directory(VENDOR_DIR, filename)
     except Exception as e:
-        return jsonify({"error": str(e)}), 404
+        return flask.jsonify({"error": str(e)}), 404
 
 
 @app.route("/api/results/<pid>/download")
+@auth.require_permission("results:download")
 def api_download_result(pid):
     """
     Download a result folder as a ZIP archive.
@@ -1948,16 +2778,22 @@ def api_download_result(pid):
     responses:
       200:
         description: ZIP archive of the result folder
+      400:
+        description: Invalid analysis ID.
+      403:
+        description: Authenticated user cannot access this result.
       404:
         description: Not found
     """
     try:
         if not pid or ".." in pid or "/" in pid:
-            return jsonify({"error": "Invalid ID"}), 400
+            return flask.jsonify({"error": "Invalid ID"}), 400
+        if not auth.user_can_access_result(flask.g.current_user, HQ_OUTPUT_DIR, pid):
+            return flask.jsonify({"error": "Forbidden"}), 403
 
         run_dir = os.path.join(HQ_OUTPUT_DIR, pid)
         if not os.path.isdir(run_dir):
-            return jsonify({"error": "Not found"}), 404
+            return flask.jsonify({"error": "Not found"}), 404
 
         archive = io.BytesIO()
         with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -1968,7 +2804,7 @@ def api_download_result(pid):
                     zf.write(full_path, rel_path)
 
         archive.seek(0)
-        return send_file(
+        return flask.send_file(
             archive,
             mimetype="application/zip",
             as_attachment=True,
@@ -1976,10 +2812,11 @@ def api_download_result(pid):
         )
     except Exception as e:
         LOGGER.error(f"Failed to create zip for {pid}: {e}")
-        return jsonify({"error": str(e)}), 500
+        return flask.jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/start", methods=["POST"])
+@auth.require_permission("pipeline:start")
 def api_start():
     """
     Start the inference pipeline.
@@ -2008,6 +2845,9 @@ def api_start():
               type: integer
             fps:
               type: integer
+            format:
+              type: string
+              description: Camera pixel format, for example `MJPG`.
             video:
               type: string
               description: Path to uploaded video file
@@ -2019,9 +2859,14 @@ def api_start():
               description: Optional Ultralytics task override. When omitted, the saved catalog setting is used and defaults to segment.
             vis_conf:
               type: number
+            vis_strategy:
+              type: string
             grid_count_enabled:
               type: boolean
               description: Optional initial grid feature state. When enabled, grid detection runs and counting is limited to the detected viewport.
+            grid_debug_enabled:
+              type: boolean
+              description: Optional initial grid debug overlay state.
             grid_score_threshold:
               type: number
               minimum: 0
@@ -2039,11 +2884,15 @@ def api_start():
               type: string
       400:
         description: Already running or invalid input
+      403:
+        description: Authenticated user cannot override admin-controlled dashboard settings.
+      500:
+        description: Pipeline start failed.
     """
     global pipeline, last_error, current_config, pipeline_id
 
     if is_pipeline_running():
-        return jsonify({"error": "already running"}), 400
+        return flask.jsonify({"error": "already running"}), 400
 
     if pipeline is not None and not is_pipeline_running():
         try:
@@ -2057,7 +2906,11 @@ def api_start():
     tmp_pipeline = None
 
     try:
-        data = request.json or {}
+        raw_data = flask.request.get_json(silent=True) or {}
+        try:
+            data = auth.resolve_dashboard_start_payload(raw_data, flask.g.current_user)
+        except PermissionError as exc:
+            return flask.jsonify({"error": str(exc)}), 403
         
         source_type = data.get("source_type", "file")
         set_grid_score(None)
@@ -2178,8 +3031,30 @@ def api_start():
             "model_path": model_path,
             "model_task": resolved_model_task,
         }
+        auth.store_result_owner(pipeline_id, flask.g.current_user["id"])
 
-        return jsonify({"success": True, "pipeline_id": pipeline_id})
+        if auth.user_has_permission(flask.g.current_user, "dashboard:configure"):
+            auth.update_dashboard_settings(
+                {
+                    "analysis_number": data.get("analysis_number", ""),
+                    "source_type": source_type,
+                    "camera_device": data.get("device", ""),
+                    "camera_mode": {
+                        "width": data.get("width", 1280),
+                        "height": data.get("height", 720),
+                        "fps": data.get("fps", 30),
+                        "format": data.get("format", "MJPG"),
+                    },
+                    "uploaded_path": data.get("video", ""),
+                    "model_path": model_path,
+                    "vis_conf": requested_conf,
+                    "grid_count_enabled": data.get("grid_count_enabled", get_grid_count_enabled()),
+                    "grid_debug_enabled": data.get("grid_debug_enabled", get_grid_debug_enabled()),
+                    "grid_score_threshold": data.get("grid_score_threshold", get_grid_score_threshold()),
+                }
+            )
+
+        return flask.jsonify({"success": True, "pipeline_id": pipeline_id})
 
     except Exception as e:
         last_error = str(e)
@@ -2189,10 +3064,11 @@ def api_start():
                 tmp_pipeline.__exit__(type(e), e, e.__traceback__)
             except Exception:
                 pass
-        return jsonify({"error": str(e)}), 500
+        return flask.jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/stop", methods=["POST"])
+@auth.require_permission("pipeline:stop")
 def api_stop():
     """
     Stop the inference pipeline.
@@ -2202,12 +3078,19 @@ def api_stop():
     responses:
       200:
         description: Pipeline stopped
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+      500:
+        description: Pipeline stop failed.
     """
     global pipeline, last_error, current_config, pipeline_id
 
     if pipeline is None and not is_pipeline_running():
         current_config = {}
-        return jsonify({"success": True})
+        return flask.jsonify({"success": True})
 
     try:
         if pipeline is not None:
@@ -2216,14 +3099,15 @@ def api_stop():
         pipeline, pipeline_id = None, None
         current_config = {}
 
-        return jsonify({"success": True})
+        return flask.jsonify({"success": True})
     except Exception as e:
         last_error = str(e)
         LOGGER.exception("Failed to stop pipeline: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return flask.jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/upload", methods=["POST"])
+@auth.require_permission("upload:video")
 def api_upload():
     """
     Upload a video file.
@@ -2247,37 +3131,73 @@ def api_upload():
             video:
               type: string
               description: Server path to the uploaded file
+      400:
+        description: Missing file or invalid filename.
+      500:
+        description: Upload failed.
     """
-    if "file" not in request.files:
-        return jsonify({"error": "no file"}), 400
+    if "file" not in flask.request.files:
+        return flask.jsonify({"error": "no file"}), 400
 
-    file = request.files["file"]
+    file = flask.request.files["file"]
     if file.filename == "":
-        return jsonify({"error": "no filename"}), 400
+        return flask.jsonify({"error": "no filename"}), 400
+
+    filename = os.path.basename(file.filename)
+    if not filename:
+        return flask.jsonify({"error": "invalid filename"}), 400
 
     os.makedirs("uploads", exist_ok=True)
-    path = os.path.join("uploads", file.filename)
+    path = os.path.join("uploads", filename)
     file.save(path)
+    try:
+        auth.update_dashboard_settings({"uploaded_path": path})
+    except (TypeError, ValueError):
+        pass
 
-    return jsonify({"video": path})
+    return flask.jsonify({"video": path})
 
 
 @app.route("/<path:path>/whep", methods=["GET", "POST", "OPTIONS"])
+@auth.require_permission("dashboard:view")
 def proxy_whep(path):
+    """
+    Proxy WHEP signaling requests to the local MediaMTX instance.
+    ---
+    tags:
+      - Streaming
+    parameters:
+      - name: path
+        in: path
+        type: string
+        required: true
+        description: Stream path forwarded to the upstream `/<path>/whep` endpoint.
+    responses:
+      200:
+        description: Successful proxied WHEP response.
+      201:
+        description: Successful proxied WHEP response created by the upstream service.
+      204:
+        description: Successful proxied WHEP response without content.
+      401:
+        description: Missing or invalid access token.
+      403:
+        description: Authenticated user lacks permission to view the dashboard stream.
+    """
     # Proxy WHEP requests to the local mediamtx server
     target_url = "http://127.0.0.1:8889/%s/whep" % path
-    headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
+    headers = {k: v for k, v in flask.request.headers.items() if k.lower() != "host"}
 
-    if request.method == "OPTIONS":
+    if flask.request.method == "OPTIONS":
         resp = requests.options(target_url, headers=headers)
-    elif request.method == "POST":
-        resp = requests.post(target_url, data=request.data, headers=headers)
+    elif flask.request.method == "POST":
+        resp = requests.post(target_url, data=flask.request.data, headers=headers)
     else:
         resp = requests.get(target_url, headers=headers)
 
     excluded_headers = {"content-encoding", "content-length", "transfer-encoding", "connection"}
     response_headers = [(name, value) for (name, value) in resp.raw.headers.items() if name.lower() not in excluded_headers]
-    return Response(resp.content, resp.status_code, response_headers)
+    return flask.Response(resp.content, resp.status_code, response_headers)
 
 
 if __name__ == "__main__":

@@ -115,6 +115,7 @@ tr:hover { background: #2a2a2a; }
       <thead>
           <tr>
               <th>Model</th>
+              <th>Owner</th>
               <th>Sources</th>
               <th>TensorRT Engine</th>
               <th>Task</th>
@@ -304,6 +305,7 @@ async function loadModels() {
                     <div class="mono">${display}</div>
                     <div class="meta">Type: ${(model.type || '').toUpperCase()}</div>
                 </td>
+                <td>${model.owner_username || 'system'}</td>
                 <td>
                     <div class="mono">${sourcesLabel}</div>
                     <div class="meta">${(model.sources || []).join(', ')}</div>

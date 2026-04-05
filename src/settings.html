@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>User Settings</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<style>
+body { margin:0; background:#111; color:#eee; font-family:system-ui, Segoe UI, Roboto, Arial; padding:20px; }
+h1 { margin:0 0 16px; font-weight:300; }
+.back-link { display:inline-block; margin-bottom:16px; color:#888; text-decoration:none; font-size:14px; }
+.back-link:hover { color:#eee; }
+.card { background:#1b1b1b; border:1px solid #333; border-radius:10px; padding:16px; margin-bottom:18px; max-width:520px; }
+.field-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px; }
+.field { display:flex; flex-direction:column; gap:6px; }
+label { color:#aaa; font-size:12px; }
+input, button {
+  background:#222;
+  color:#eee;
+  border:1px solid #333;
+  border-radius:8px;
+  padding:9px 11px;
+  font-size:14px;
+}
+input[readonly] {
+  color:#bbb;
+  background:#191919;
+}
+button { cursor:pointer; }
+button:hover { background:#2a2a2a; }
+.hint { color:#999; font-size:12px; margin-top:10px; }
+.message { min-height:18px; margin-top:10px; font-size:13px; }
+.message.error { color:#f87171; }
+.message.success { color:#86efac; }
+</style>
+</head>
+<body>
+
+<a href="/" class="back-link">Back to Dashboard</a>
+
+<h1>User Settings</h1>
+
+<div class="card">
+  <div class="field-grid">
+    <div class="field">
+      <label for="settingsUsername">Username</label>
+      <input id="settingsUsername" type="text" value="{{ current_user.username }}" readonly />
+    </div>
+    <div class="field">
+      <label for="settingsRole">Role</label>
+      <input id="settingsRole" type="text" value="{{ role_label or '-' }}" readonly />
+    </div>
+  </div>
+  <div class="hint">Username and role are assigned by an administrator.</div>
+</div>
+
+<div class="card">
+  <div class="field-grid">
+    <div class="field">
+      <label for="settingsCurrentPassword">Current Password</label>
+      <input id="settingsCurrentPassword" type="password" autocomplete="current-password" />
+    </div>
+    <div class="field">
+      <label for="settingsNewPassword">New Password</label>
+      <input id="settingsNewPassword" type="password" autocomplete="new-password" />
+    </div>
+  </div>
+  <button id="changePasswordBtn" type="button" style="margin-top: 12px;">Change Password</button>
+  <div class="hint">Use your current password to set a new one.</div>
+  <div id="changePasswordMessage" class="message"></div>
+</div>
+
+<script>
+const SETTINGS_USERNAME = {{ current_user.username | tojson }};
+
+document.getElementById('changePasswordBtn').addEventListener('click', async () => {
+  const currentPassword = document.getElementById('settingsCurrentPassword').value;
+  const newPassword = document.getElementById('settingsNewPassword').value;
+  const messageEl = document.getElementById('changePasswordMessage');
+
+  messageEl.textContent = '';
+  messageEl.className = 'message';
+
+  try {
+    const response = await fetch('/auth/change-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: SETTINGS_USERNAME,
+        current_password: currentPassword,
+        new_password: newPassword,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.error || 'Password change failed.');
+    }
+    document.getElementById('settingsCurrentPassword').value = '';
+    document.getElementById('settingsNewPassword').value = '';
+    messageEl.textContent = 'Password updated successfully.';
+    messageEl.classList.add('success');
+  } catch (error) {
+    messageEl.textContent = error.message || 'Password change failed.';
+    messageEl.classList.add('error');
+  }
+});
+</script>
+
+</body>
+</html>
