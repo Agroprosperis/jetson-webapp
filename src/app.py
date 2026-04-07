@@ -1135,12 +1135,15 @@ def auth_change_password():
             - username
             - current_password
             - new_password
+            - confirm_password
           properties:
             username:
               type: string
             current_password:
               type: string
             new_password:
+              type: string
+            confirm_password:
               type: string
     responses:
       200:
@@ -1156,6 +1159,8 @@ def auth_change_password():
         description: Invalid username or current password.
     """
     payload = flask.request.get_json(silent=True) or {}
+    if payload.get("new_password") != payload.get("confirm_password"):
+        return flask.jsonify({"error": "Passwords do not match"}), 400
     try:
         user = auth.change_password(
             payload.get("username"),

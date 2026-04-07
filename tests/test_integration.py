@@ -33,7 +33,12 @@ def login(username: str, password: str):
     return status, json.loads(body)
 
 
-def change_password(username: str, current_password: str, new_password: str):
+def change_password(
+    username: str,
+    current_password: str,
+    new_password: str,
+    confirm_password: str | None = None,
+):
     status, _, body = request(
         "POST",
         "/auth/change-password",
@@ -41,6 +46,7 @@ def change_password(username: str, current_password: str, new_password: str):
             "username": username,
             "current_password": current_password,
             "new_password": new_password,
+            "confirm_password": new_password if confirm_password is None else confirm_password,
         },
     )
     return status, json.loads(body)
@@ -108,6 +114,11 @@ class AuthIntegrationTests(unittest.TestCase):
 
 
 class ForcedPasswordChangeTests(unittest.TestCase):
+    def test_login_page_has_confirm_password_field(self):
+        status, _, body = request("GET", "/login")
+        self.assertEqual(status, 200)
+        self.assertIn('id="confirmLoginPassword"', body)
+
     def test_admin_created_user_must_change_password_on_first_login(self):
         username = create_user()
         with self.assertRaises(urllib.error.HTTPError) as ctx:
@@ -120,6 +131,12 @@ class ForcedPasswordChangeTests(unittest.TestCase):
         status, data = change_password(username, TEST_USER_PASSWORD, TEST_USER_NEW_PASSWORD)
         self.assertEqual(status, 200)
         self.assertTrue(data["success"])
+
+    def test_admin_created_user_cannot_change_initial_password_with_mismatch(self):
+        username = create_user()
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            change_password(username, TEST_USER_PASSWORD, TEST_USER_NEW_PASSWORD, "different-password")
+        self.assertEqual(ctx.exception.code, 400)
 
     def test_user_can_log_in_after_initial_password_change(self):
         username = create_user()
@@ -628,6 +645,7 @@ class UserSettingsPageTests(unittest.TestCase):
     def test_settings_page_has_password_fields(self):
         self.assertIn('id="settingsCurrentPassword"', self.body)
         self.assertIn('id="settingsNewPassword"', self.body)
+        self.assertIn('id="settingsConfirmPassword"', self.body)
         self.assertIn('id="changePasswordBtn"', self.body)
 
 

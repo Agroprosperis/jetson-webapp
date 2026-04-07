@@ -79,7 +79,11 @@ button:hover { background: #1d4ed8; }
   </form>
   <form id="changePasswordForm" class="hidden">
     <label for="newLoginPassword">New Password</label>
-    <input id="newLoginPassword" name="newLoginPassword" type="password" autocomplete="new-password" />
+    <input id="newLoginPassword" name="newLoginPassword" type="password" autocomplete="new-password" required />
+
+    <label for="confirmLoginPassword">Confirm Password</label>
+    <input id="confirmLoginPassword" name="confirmLoginPassword" type="password" autocomplete="new-password" required />
+
     <button type="submit">Change Password</button>
   </form>
 </div>
@@ -121,8 +125,14 @@ document.getElementById('loginForm').addEventListener('submit', async (event) =>
 document.getElementById('changePasswordForm').addEventListener('submit', async (event) => {
   event.preventDefault();
   const newPassword = document.getElementById('newLoginPassword').value;
+  const confirmPassword = document.getElementById('confirmLoginPassword').value;
   const errorEl = document.getElementById('error');
   errorEl.textContent = '';
+
+  if (newPassword !== confirmPassword) {
+    errorEl.textContent = 'Passwords do not match.';
+    return;
+  }
 
   try {
     const response = await fetch('/auth/change-password', {
@@ -132,6 +142,7 @@ document.getElementById('changePasswordForm').addEventListener('submit', async (
         username: pendingUsername,
         current_password: pendingPassword,
         new_password: newPassword,
+        confirm_password: confirmPassword,
       }),
     });
     const data = await response.json().catch(() => ({}));

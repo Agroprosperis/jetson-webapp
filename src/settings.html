@@ -11,6 +11,7 @@ h1 { margin:0 0 16px; font-weight:300; }
 .back-link:hover { color:#eee; }
 .card { background:#1b1b1b; border:1px solid #333; border-radius:10px; padding:16px; margin-bottom:18px; max-width:520px; }
 .field-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px; }
+.password-fields { display:flex; flex-direction:column; gap:12px; max-width:320px; }
 .field { display:flex; flex-direction:column; gap:6px; }
 label { color:#aaa; font-size:12px; }
 input, button {
@@ -54,7 +55,7 @@ button:hover { background:#2a2a2a; }
 </div>
 
 <div class="card">
-  <div class="field-grid">
+  <div class="password-fields">
     <div class="field">
       <label for="settingsCurrentPassword">Current Password</label>
       <input id="settingsCurrentPassword" type="password" autocomplete="current-password" />
@@ -62,6 +63,10 @@ button:hover { background:#2a2a2a; }
     <div class="field">
       <label for="settingsNewPassword">New Password</label>
       <input id="settingsNewPassword" type="password" autocomplete="new-password" />
+    </div>
+    <div class="field">
+      <label for="settingsConfirmPassword">Confirm Password</label>
+      <input id="settingsConfirmPassword" type="password" autocomplete="new-password" />
     </div>
   </div>
   <button id="changePasswordBtn" type="button" style="margin-top: 12px;">Change Password</button>
@@ -75,10 +80,17 @@ const SETTINGS_USERNAME = {{ current_user.username | tojson }};
 document.getElementById('changePasswordBtn').addEventListener('click', async () => {
   const currentPassword = document.getElementById('settingsCurrentPassword').value;
   const newPassword = document.getElementById('settingsNewPassword').value;
+  const confirmPassword = document.getElementById('settingsConfirmPassword').value;
   const messageEl = document.getElementById('changePasswordMessage');
 
   messageEl.textContent = '';
   messageEl.className = 'message';
+
+  if (newPassword !== confirmPassword) {
+    messageEl.textContent = 'Passwords do not match.';
+    messageEl.classList.add('error');
+    return;
+  }
 
   try {
     const response = await fetch('/auth/change-password', {
@@ -88,6 +100,7 @@ document.getElementById('changePasswordBtn').addEventListener('click', async () 
         username: SETTINGS_USERNAME,
         current_password: currentPassword,
         new_password: newPassword,
+        confirm_password: confirmPassword,
       }),
     });
     const data = await response.json().catch(() => ({}));
@@ -96,6 +109,7 @@ document.getElementById('changePasswordBtn').addEventListener('click', async () 
     }
     document.getElementById('settingsCurrentPassword').value = '';
     document.getElementById('settingsNewPassword').value = '';
+    document.getElementById('settingsConfirmPassword').value = '';
     messageEl.textContent = 'Password updated successfully.';
     messageEl.classList.add('success');
   } catch (error) {
