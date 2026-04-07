@@ -1,9 +1,1140 @@
-# API Documentation
+# Desktop Inference Pipeline API
 
-**Version:** 0.0.0
+**Version:** 0.0.1
 
-**Description:** 
+**Description:** powered by Flasgger
 
-**Terms of Service:** 
+**Terms of Service:** /tos
 
+## Authentication
+
+- Log in with `POST /auth/login` to obtain an `access_token` and `refresh_token`.
+- Send the access token on protected endpoints with `Authorization: Bearer <access_token>`.
+- Refresh expired access tokens with `POST /auth/refresh`.
+
+---
+
+## Serve the main dashboard page.
+**GET** `/`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X GET "http://localhost:8000/" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: Dashboard HTML.
+---
+
+## List attached cameras and their modes.
+**GET** `/api/cameras`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X GET "http://localhost:8000/api/cameras" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: List of V4L2 devices and supported modes
+```json
+{
+  "cameras": [
+    {
+      "device": "string",
+      "modes": [
+        {
+          "format": "string",
+          "fps": 0,
+          "height": 0,
+          "width": 0
+        }
+      ],
+      "name": "string"
+    }
+  ]
+}
+```
+
+---
+
+## Get basic runtime configuration.
+**GET** `/api/config`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X GET "http://localhost:8000/api/config" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: Basic configuration values
+```json
+{
+  "stream_port": 0
+}
+```
+
+---
+
+## Get the persisted dashboard settings used as defaults for new runs.
+**GET** `/api/dashboard-settings`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X GET "http://localhost:8000/api/dashboard-settings" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: Current dashboard settings.
+```json
+{
+  "analysis_number": "string",
+  "camera_device": "string",
+  "camera_mode": {
+    "format": "string",
+    "fps": 0,
+    "height": 0,
+    "width": 0
+  },
+  "grid_count_enabled": true,
+  "grid_debug_enabled": true,
+  "grid_score_threshold": 0.0,
+  "model_path": "string",
+  "source_type": "camera",
+  "uploaded_path": "string",
+  "vis_conf": 0.0
+}
+```
+
+---
+
+## Update the persisted dashboard settings used as defaults for new runs.
+**PUT** `/api/dashboard-settings`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X PUT "http://localhost:8000/api/dashboard-settings" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"analysis_number": "string", "camera_device": "string", "camera_mode": {"format": "string", "fps": 0, "height": 0, "width": 0}, "grid_count_enabled": true, "grid_debug_enabled": true, "grid_score_threshold": 0.0, "model_path": "string", "source_type": "camera", "uploaded_path": "string", "vis_conf": 0.0}'
+```
+
+### Response
+**200 OK**: Updated dashboard settings.
+---
+
+## Get the current grid feature state.
+**GET** `/api/grid`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X GET "http://localhost:8000/api/grid" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: Current grid feature state
+```json
+{
+  "auto_disabled": true,
+  "debug_enabled": true,
+  "enabled": true,
+  "score": 0.0,
+  "score_threshold": 0.0
+}
+```
+
+---
+
+## Update grid feature settings.
+**PUT** `/api/grid`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X PUT "http://localhost:8000/api/grid" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"debug_enabled": true, "enabled": true, "score_threshold": 0.0}'
+```
+
+### Response
+**200 OK**: Updated grid feature state
+```json
+{
+  "auto_disabled": true,
+  "debug_enabled": true,
+  "enabled": true,
+  "score": 0.0,
+  "score_threshold": 0.0
+}
+```
+
+---
+
+## List available model sources and their TensorRT engines (if compiled).
+**GET** `/api/model-catalog`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X GET "http://localhost:8000/api/model-catalog" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: List of model files and their TensorRT engines
+```json
+{
+  "models": [
+    {
+      "compiled": true,
+      "engine": {
+        "name": "string",
+        "path": "string"
+      },
+      "name": "string",
+      "owner_username": "string",
+      "source_paths": [
+        "string"
+      ],
+      "sources": [
+        "string"
+      ],
+      "task": "segment",
+      "type": "string"
+    }
+  ],
+  "tensorrt": {
+    "current": "string"
+  }
+}
+```
+
+---
+
+## Start async model compilation to TensorRT (FP16).
+**POST** `/api/model-compile`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X POST "http://localhost:8000/api/model-compile" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "string", "type": "ul"}'
+```
+
+### Response
+**200 OK**: Compile job queued
+```json
+{
+  "already_running": true,
+  "job_id": "string"
+}
+```
+
+---
+
+## List compile jobs for UI restore after close/refresh.
+**GET** `/api/model-compile-jobs`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X GET "http://localhost:8000/api/model-compile-jobs" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: Compile job list
+```json
+{
+  "jobs": [
+    {
+      "created_at": "string",
+      "finished_at": "string",
+      "id": "string",
+      "model": {
+        "name": "string",
+        "source": "string",
+        "type": "string"
+      },
+      "returncode": 0,
+      "started_at": "string",
+      "status": "string"
+    }
+  ]
+}
+```
+
+---
+
+## Get compile job status and logs.
+**GET** `/api/model-compile/{job_id}`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Parameters
+- `job_id` (path, string, required) - Compile job identifier returned by `/api/model-compile`.
+
+### Request Sample
+```shell
+curl -X GET "http://localhost:8000/api/model-compile/string" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: Compile job status
+```json
+{
+  "command": [
+    "string"
+  ],
+  "created_at": "string",
+  "finished_at": "string",
+  "id": "string",
+  "logs": [
+    "string"
+  ],
+  "model": {},
+  "returncode": 0,
+  "started_at": "string",
+  "status": "string"
+}
+```
+
+---
+
+## Delete all stored artifacts for a catalog model.
+**POST** `/api/model-delete`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X POST "http://localhost:8000/api/model-delete" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "string", "type": "ul"}'
+```
+
+### Response
+**200 OK**: Deleted artifact list
+```json
+{
+  "deleted": [
+    "string"
+  ],
+  "name": "string",
+  "type": "string"
+}
+```
+
+---
+
+## Save the Ultralytics task override for a catalog model.
+**POST** `/api/model-task`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X POST "http://localhost:8000/api/model-task" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "string", "task": "segment", "type": "ul"}'
+```
+
+### Response
+**200 OK**: Saved task override
+```json
+{
+  "name": "string",
+  "task": "segment",
+  "type": "string"
+}
+```
+
+---
+
+## Upload a model weights file into the catalog.
+**POST** `/api/model-upload`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Parameters
+- `type` (formData, string, required): allowed values `ul, rf` - Target model family for the uploaded weights file.
+- `file` (formData, file, required) - Ultralytics or RF-DETR weights file in `.pt` format.
+
+### Request Sample
+```shell
+curl -X POST "http://localhost:8000/api/model-upload" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: Model uploaded successfully
+```json
+{
+  "tensorrt": {
+    "current": "string"
+  },
+  "uploaded": {
+    "name": "string",
+    "path": "string",
+    "type": "string"
+  }
+}
+```
+
+---
+
+## List available *.engine models.
+**GET** `/api/models`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X GET "http://localhost:8000/api/models" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: List of available TensorRT engine files
+```json
+{
+  "models": [
+    {
+      "display": "string",
+      "name": "string",
+      "owner_username": "string",
+      "path": "string",
+      "type": "string"
+    }
+  ]
+}
+```
+
+---
+
+## List all results.
+**GET** `/api/results`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Parameters
+- `date` (query, string, optional) - Optional exact date in YYYY-MM-DD format.
+
+### Request Sample
+```shell
+curl -X GET "http://localhost:8000/api/results?date=string" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: List of processed videos
+```json
+{
+  "results": [
+    {
+      "files": [
+        {
+          "name": "string",
+          "path": "string",
+          "size": "string"
+        }
+      ],
+      "id": "string",
+      "owner_username": "string",
+      "timestamp": "string"
+    }
+  ]
+}
+```
+
+---
+
+## Search results by Analysis ID.
+**GET** `/api/results/search`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Parameters
+- `analysis_id` (query, string, optional) - The Analysis ID or Timestamp to filter by
+- `date` (query, string, optional) - Optional exact date in YYYY-MM-DD format.
+
+### Request Sample
+```shell
+curl -X GET "http://localhost:8000/api/results/search?analysis_id=string&date=string" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: List of matching results with download links
+```json
+{
+  "results": [
+    {
+      "analysis_id": "string",
+      "csv_url": "string",
+      "images": [
+        {
+          "name": "string",
+          "size": "string",
+          "url": "string"
+        }
+      ],
+      "video_url": "string"
+    }
+  ]
+}
+```
+
+---
+
+## Delete a result set.
+**DELETE** `/api/results/{pid}`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Parameters
+- `pid` (path, string, required) - The Analysis ID to delete
+
+### Request Sample
+```shell
+curl -X DELETE "http://localhost:8000/api/results/string" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: Files deleted successfully
+```json
+{
+  "deleted": [
+    "string"
+  ],
+  "success": true
+}
+```
+
+---
+
+## Download a result folder as a ZIP archive.
+**GET** `/api/results/{pid}/download`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Parameters
+- `pid` (path, string, required) - The Analysis ID to download
+
+### Request Sample
+```shell
+curl -X GET "http://localhost:8000/api/results/string/download" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: ZIP archive of the result folder
+---
+
+## Return the last non-empty row from the result CSV as JSON.
+**GET** `/api/results/{pid}/last-row`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Parameters
+- `pid` (path, string, required) - The Analysis ID to inspect
+
+### Request Sample
+```shell
+curl -X GET "http://localhost:8000/api/results/string/last-row" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: Last CSV row
+```json
+{
+  "analysis_id": "string",
+  "row": {
+    "analysis_number": "string",
+    "detections": [
+      {
+        "bbox": [
+          0
+        ],
+        "class_id": 0,
+        "confidence": 0.0
+      }
+    ],
+    "frame": 0,
+    "s_value": 0.0,
+    "total_unique_objects": 0
+  }
+}
+```
+
+---
+
+## Capture a manual snapshot from the active pipeline.
+**POST** `/api/snapshot`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X POST "http://localhost:8000/api/snapshot" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: Snapshot saved successfully.
+```json
+{
+  "filename": "string",
+  "path": "string",
+  "pipeline_id": "string",
+  "success": true
+}
+```
+
+---
+
+## Start the inference pipeline.
+**POST** `/api/start`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X POST "http://localhost:8000/api/start" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"analysis_number": "string", "device": "string", "format": "string", "fps": 0, "grid_count_enabled": true, "grid_debug_enabled": true, "grid_score_threshold": 0.0, "height": 0, "model_path": "string", "model_task": "segment", "source_type": "camera", "video": "string", "vis_conf": 0.0, "vis_strategy": "string", "width": 0}'
+```
+
+### Response
+**200 OK**: Pipeline started successfully
+```json
+{
+  "pipeline_id": "string",
+  "success": true
+}
+```
+
+---
+
+## Get pipeline status.
+**GET** `/api/status`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X GET "http://localhost:8000/api/status" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: Current state, threads, and MediaMTX status
+```json
+{
+  "config": {
+    "model": "string",
+    "model_task": "string",
+    "video_reference": "string"
+  },
+  "last_error": "string",
+  "mediamtx": {
+    "rtsp": true,
+    "whep": true
+  },
+  "pipeline_id": "string",
+  "runtime": {
+    "grid_auto_disabled": true,
+    "grid_count_enabled": true,
+    "grid_score": 0.0,
+    "grid_score_threshold": 0.0
+  },
+  "state": "idle",
+  "threads": [
+    "string"
+  ]
+}
+```
+
+---
+
+## Stop the inference pipeline.
+**POST** `/api/stop`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X POST "http://localhost:8000/api/stop" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: Pipeline stopped
+```json
+{
+  "success": true
+}
+```
+
+---
+
+## Upload a video file.
+**POST** `/api/upload`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Parameters
+- `file` (formData, file, required) - The video file to upload
+
+### Request Sample
+```shell
+curl -X POST "http://localhost:8000/api/upload" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: File uploaded successfully
+```json
+{
+  "video": "string"
+}
+```
+
+---
+
+## Change a local user's password and clear the first-login password-change requirement.
+**POST** `/auth/change-password`
+
+
+
+**Auth:** No bearer token required. Provide `username`, `current_password`, `new_password`, and `confirm_password`.
+
+### Request Sample
+```shell
+curl -X POST "http://localhost:8000/auth/change-password" \
+  -H "accept: application/json" \
+  -H "Content-Type: application/json" \
+  -d '{"confirm_password": "string", "current_password": "string", "new_password": "string", "username": "string"}'
+```
+
+### Response
+**200 OK**: Password updated successfully.
+```json
+{
+  "success": true
+}
+```
+
+---
+
+## Authenticate a local user and issue bearer tokens.
+**POST** `/auth/login`
+
+
+
+**Auth:** No token required. Returns `access_token` and `refresh_token`.
+
+### Request Sample
+```shell
+curl -X POST "http://localhost:8000/auth/login" \
+  -H "accept: application/json" \
+  -H "Content-Type: application/json" \
+  -d '{"password": "string", "username": "string"}'
+```
+
+### Response
+**200 OK**: Access token, refresh token, and authenticated user identity.
+```json
+{
+  "access_token": "string",
+  "refresh_token": "string",
+  "user": {
+    "id": 0,
+    "username": "string"
+  }
+}
+```
+
+---
+
+## Revoke the current refresh token and clear auth cookies.
+**POST** `/auth/logout`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X POST "http://localhost:8000/auth/logout" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: Logout completed successfully.
+```json
+{
+  "success": true
+}
+```
+
+---
+
+## Return the authenticated user identity.
+**GET** `/auth/me`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X GET "http://localhost:8000/auth/me" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: Authenticated user identity.
+```json
+{
+  "id": 0,
+  "username": "string"
+}
+```
+
+---
+
+## Exchange a refresh token for a new bearer access token.
+**POST** `/auth/refresh`
+
+
+
+**Auth:** No access token required. Provide the refresh token in the request body or refresh cookie.
+
+### Request Sample
+```shell
+curl -X POST "http://localhost:8000/auth/refresh" \
+  -H "accept: application/json" \
+  -H "Content-Type: application/json" \
+  -d '{"refresh_token": "string"}'
+```
+
+### Response
+**200 OK**: Refreshed access token, rotated refresh token, and authenticated user identity.
+```json
+{
+  "access_token": "string",
+  "refresh_token": "string",
+  "user": {
+    "id": 0,
+    "username": "string"
+  }
+}
+```
+
+---
+
+## Download a file from the HQ output directory.
+**GET** `/download/{filename}`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Parameters
+- `filename` (path, string, required) - Relative file path within the results directory
+
+### Request Sample
+```shell
+curl -X GET "http://localhost:8000/download/string" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: File download
+---
+
+## Serve the login page.
+**GET** `/login`
+
+
+
+**Auth:** No access token required.
+
+### Request Sample
+```shell
+curl -X GET "http://localhost:8000/login" \
+  -H "accept: application/json" \
+```
+
+### Response
+**200 OK**: Login page HTML.
+---
+
+## Serve the model catalog page.
+**GET** `/models`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X GET "http://localhost:8000/models" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: Model catalog HTML.
+---
+
+## Serve the results page.
+**GET** `/results`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X GET "http://localhost:8000/results" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: Results page HTML.
+---
+
+## Serve the authenticated user settings page.
+**GET** `/settings`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X GET "http://localhost:8000/settings" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: User settings HTML.
+---
+
+## Serve the user-management page.
+**GET** `/users`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X GET "http://localhost:8000/users" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: User-management HTML.
+---
+
+## Create a local user with one or more roles.
+**POST** `/users`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X POST "http://localhost:8000/users" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"password": "string", "roles": ["admin"], "username": "string"}'
+```
+
+### Response
+**200 OK**: Created user summary.
+```json
+{
+  "id": 0,
+  "username": "string"
+}
+```
+
+---
+
+## Serve bundled static frontend assets.
+**GET** `/vendor/{filename}`
+
+
+
+**Auth:** No access token required.
+
+### Parameters
+- `filename` (path, string, required) - Relative asset path within the bundled vendor directory.
+
+### Request Sample
+```shell
+curl -X GET "http://localhost:8000/vendor/string" \
+  -H "accept: application/json" \
+```
+
+### Response
+**200 OK**: Static asset response.
+---
+
+## Proxy WHEP signaling requests to the local MediaMTX instance.
+**GET** `/{path}/whep`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Parameters
+- `path` (path, string, required) - Stream path forwarded to the upstream `/<path>/whep` endpoint.
+
+### Request Sample
+```shell
+curl -X GET "http://localhost:8000/string/whep" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: Successful proxied WHEP response.
+---
+
+## Proxy WHEP signaling requests to the local MediaMTX instance.
+**POST** `/{path}/whep`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Parameters
+- `path` (path, string, required) - Stream path forwarded to the upstream `/<path>/whep` endpoint.
+
+### Request Sample
+```shell
+curl -X POST "http://localhost:8000/string/whep" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: Successful proxied WHEP response.
 ---

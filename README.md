@@ -113,11 +113,10 @@ docker run --network host --runtime=nvidia --rm -it --device=/dev/video0 -v "$(p
 
 
 # How to Update the API readme file
-Run application as described in previous section, log in as `admin/admin`, get an access token, and execute:
+Run application as described in previous section, then execute:
 ```
 cd ${REPO_DIR}
-TOKEN=$(curl -s -X POST http://localhost:8000/auth/login -H 'Content-Type: application/json' -d '{"username":"admin","password":"admin"}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
-curl -H "Authorization: Bearer ${TOKEN}" http://localhost:8000/apispec_1.json > auto_swagger.json
+curl http://localhost:8000/apispec_1.json > auto_swagger.json
 python3 generate_docs.py
 ```
 

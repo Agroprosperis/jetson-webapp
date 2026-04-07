@@ -324,11 +324,17 @@ class PermissionIntegrationTests(unittest.TestCase):
         status, _, _ = request("GET", "/api/status", token=user_token())
         self.assertEqual(status, 200)
 
-    def test_admin_can_access_swagger(self):
-        status, headers, body = request("GET", "/apispec_1.json", token=admin_tokens()["access_token"])
+    def test_swagger_spec_is_public(self):
+        status, headers, body = request("GET", "/apispec_1.json")
         self.assertEqual(status, 200)
         self.assertIn("application/json", headers.get("Content-Type", ""))
         self.assertIn("/api/config", json.loads(body)["paths"])
+
+    def test_swagger_ui_is_public(self):
+        status, headers, body = request("GET", "/api/docs/")
+        self.assertEqual(status, 200)
+        self.assertIn("text/html", headers.get("Content-Type", ""))
+        self.assertIn("swagger", body.lower())
 
     def test_admin_can_access_main_panel_html(self):
         status, headers, body = request("GET", "/", token=admin_tokens()["access_token"])

@@ -1,5 +1,33 @@
 import json
 
+
+BASE_URL = "http://localhost:8000"
+PUBLIC_OPERATIONS = {
+    ("GET", "/login"),
+    ("GET", "/vendor/{filename}"),
+    ("POST", "/auth/change-password"),
+    ("POST", "/auth/login"),
+    ("POST", "/auth/refresh"),
+}
+
+
+def operation_requires_bearer_token(method, path):
+    return (method.upper(), path) not in PUBLIC_OPERATIONS
+
+
+def auth_note_for_operation(method, path):
+    method = method.upper()
+    if (method, path) == ("POST", "/auth/login"):
+        return "No token required. Returns `access_token` and `refresh_token`."
+    if (method, path) == ("POST", "/auth/refresh"):
+        return "No access token required. Provide the refresh token in the request body or refresh cookie."
+    if (method, path) == ("POST", "/auth/change-password"):
+        return "No bearer token required. Provide `username`, `current_password`, `new_password`, and `confirm_password`."
+    if operation_requires_bearer_token(method, path):
+        return "Bearer access token required. Add `-H \"Authorization: Bearer <access_token>\"`."
+    return "No access token required."
+
+
 def generate_example(schema, definitions):
     """Recursively generates dummy JSON data from a Swagger schema."""
     if not schema:
@@ -66,8 +94,8 @@ def build_sample_url(path, parameters):
             query_parts.append(f"{name}={sample_value}")
 
     if query_parts:
-        return f"http://localhost{sample_path}?" + "&".join(query_parts)
-    return f"http://localhost{sample_path}"
+        return f"{BASE_URL}{sample_path}?" + "&".join(query_parts)
+    return f"{BASE_URL}{sample_path}"
 
 
 def append_parameters_markdown(md, parameters):
@@ -108,6 +136,10 @@ def main():
     md.append(f"**Version:** {info.get('version', '0.0.0')}\n")
     md.append(f"**Description:** {info.get('description', '')}\n")
     md.append(f"**Terms of Service:** {info.get('termsOfService', '')}\n")
+    md.append("## Authentication\n")
+    md.append("- Log in with `POST /auth/login` to obtain an `access_token` and `refresh_token`.")
+    md.append("- Send the access token on protected endpoints with `Authorization: Bearer <access_token>`.")
+    md.append("- Refresh expired access tokens with `POST /auth/refresh`.\n")
     md.append("---\n")
 
     definitions = swagger.get('definitions', {})
@@ -122,6 +154,7 @@ def main():
             md.append(f"## {summary}")
             md.append(f"**{method_upper}** `{path}`\n")
             md.append(f"{details.get('description', '')}\n")
+            md.append(f"**Auth:** {auth_note_for_operation(method_upper, path)}\n")
 
             parameters = details.get('parameters', [])
             append_parameters_markdown(md, parameters)
@@ -131,6 +164,8 @@ def main():
             md.append("```shell")
             md.append(f'curl -X {method_upper} "{build_sample_url(path, parameters)}" \\')
             md.append('  -H "accept: application/json" \\')
+            if operation_requires_bearer_token(method_upper, path):
+                md.append('  -H "Authorization: Bearer <access_token>" \\')
 
             # Handle Body Parameter for cURL
             body_param = next((p for p in parameters if p.get('in') == 'body'), None)

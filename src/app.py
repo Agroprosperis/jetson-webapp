@@ -932,19 +932,6 @@ def _coerce_csv_row(row):
     return coerced
 
 
-@app.before_request
-def protect_swagger_routes():
-    if not (flask.request.path.startswith("/apispec_") or flask.request.path.startswith("/api/docs")):
-        return None
-    user = auth.load_request_user()
-    if user is None:
-        return flask.jsonify({"error": "Unauthorized"}), 401
-    flask.g.current_user = user
-    if not auth.user_has_permission(user, "swagger:view"):
-        return flask.jsonify({"error": "Forbidden"}), 403
-    return None
-
-
 @app.route("/login")
 def login_page():
     """
