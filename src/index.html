@@ -291,11 +291,13 @@ function updateModes() {
 
   const modes = cameraList[idx].modes || [];
   const wantedMode = INITIAL_DASHBOARD_SETTINGS.camera_mode || {};
+
   modes.forEach(m => {
     const opt = document.createElement('option');
     opt.value = JSON.stringify(m);
     opt.textContent = `${m.width}x${m.height} @ ${m.fps}fps (${m.format})`;
     if (
+      INITIAL_DASHBOARD_SETTINGS.camera_device &&
       m.width === wantedMode.width &&
       m.height === wantedMode.height &&
       m.fps === wantedMode.fps &&
@@ -321,7 +323,13 @@ camDeviceEl.onchange = async () => {
   });
 };
 
-camModeEl.onchange = () => saveDashboardSettings({ camera_mode: selectedCameraMode() });
+camModeEl.onchange = () => {
+  const cam = cameraList[camDeviceEl.value];
+  saveDashboardSettings({
+    camera_device: cam ? cam.device : '',
+    camera_mode: selectedCameraMode(),
+  });
+};
 refreshCamsBtn.onclick = loadCameras;
 
 async function updateGridSettings() {

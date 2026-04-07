@@ -3,8 +3,26 @@ import re
 import logging
 
 LOGGER = logging.getLogger("camera_manager")
+PREFERRED_CAMERA_MODE = {"width": 2592, "height": 1944, "fps": 30, "format": "MJPG"}
 
 class CameraManager:
+    @staticmethod
+    def _is_preferred_mode(mode):
+        return mode == PREFERRED_CAMERA_MODE
+
+    @staticmethod
+    def get_default_camera_selection():
+        cameras = CameraManager.get_available_cameras()
+        if not cameras:
+            return None, None
+
+        camera = cameras[0]
+        modes = camera.get("modes") or []
+        if not modes:
+            return camera, None
+
+        return camera, modes[0]
+
     @staticmethod
     def get_available_cameras():
         """
@@ -53,9 +71,12 @@ class CameraManager:
         # 2. Get formats for each device
         for cam in devices:
             cam["modes"] = CameraManager._get_modes_for_device(cam["device"])
+            cam["modes"].sort(key=lambda mode: 0 if CameraManager._is_preferred_mode(mode) else 1)
 
         # Filter out devices with no capture modes (metadata nodes)
-        return [c for c in devices if len(c["modes"]) > 0]
+        devices = [c for c in devices if len(c["modes"]) > 0]
+        devices.sort(key=lambda cam: 0 if any(CameraManager._is_preferred_mode(mode) for mode in cam["modes"]) else 1)
+        return devices
 
     @staticmethod
     def _get_modes_for_device(device_path):

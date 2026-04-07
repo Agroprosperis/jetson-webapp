@@ -3012,7 +3012,14 @@ def api_start():
             pixel_format = data.get("format", "MJPG")
             
             if not device:
-                raise ValueError("No device selected")
+                default_camera, default_mode = CameraManager.get_default_camera_selection()
+                if default_camera is None or default_mode is None:
+                    raise ValueError("No device selected")
+                device = default_camera["device"]
+                width = int(default_mode["width"])
+                height = int(default_mode["height"])
+                fps = int(default_mode["fps"])
+                pixel_format = default_mode["format"]
 
             args_dict["mode"] = "v4l2-gs"
             args_dict["device"] = device
