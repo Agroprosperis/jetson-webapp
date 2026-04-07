@@ -31,6 +31,25 @@ Optional: Logs:
 sudo journalctl -u tilletia-app.service -f
 ```
 
+After a reinstall or a clean data reset, the best default entry page is:
+```
+http://localhost:8000/login
+```
+
+Bootstrap local user:
+```
+admin / admin
+```
+
+# Authentication and RBAC
+The application uses local authentication with bearer access tokens.
+
+- `admin`: full access to the dashboard configuration, models page, users page, Swagger, and all results.
+- `user`: can run and stop analysis, view REST status endpoints, and see only their own results.
+- New users are created by an admin and must change the initial password on first login.
+- Owner columns are shown only for admin views where ownership is relevant.
+
+
 Optional: Run stack without installing service:
 ```
 cd ${REPO_DIR}/deploy
@@ -94,10 +113,11 @@ docker run --network host --runtime=nvidia --rm -it --device=/dev/video0 -v "$(p
 
 
 # How to Update the API readme file
-Run application as described in previous section and execute
+Run application as described in previous section, log in as `admin/admin`, get an access token, and execute:
 ```
 cd ${REPO_DIR}
-curl http://localhost:8000/apispec_1.json > auto_swagger.json
+TOKEN=$(curl -s -X POST http://localhost:8000/auth/login -H 'Content-Type: application/json' -d '{"username":"admin","password":"admin"}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+curl -H "Authorization: Bearer ${TOKEN}" http://localhost:8000/apispec_1.json > auto_swagger.json
 python3 generate_docs.py
 ```
 
