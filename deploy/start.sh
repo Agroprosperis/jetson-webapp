@@ -39,10 +39,10 @@ echo "Started services"
 docker compose -f "$COMPOSE_FILE" ps
 
 if command -v curl >/dev/null 2>&1; then
-  echo "Waiting for web app health on http://127.0.0.1:8000/api/config ..."
+  echo "Waiting for web app health on http://127.0.0.1:8000/login ..."
   healthy=0
   for _ in $(seq 1 30); do
-    if curl -fsS --max-time 2 http://127.0.0.1:8000/api/config >/dev/null 2>&1; then
+    if curl -fsS --max-time 2 http://127.0.0.1:8000/login >/dev/null 2>&1; then
       healthy=1
       break
     fi
