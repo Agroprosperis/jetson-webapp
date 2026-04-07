@@ -10,7 +10,7 @@ from itsdangerous import URLSafeTimedSerializer
 import cookies
 
 
-ACCESS_TOKEN_TTL_SECONDS = 15 * 60
+ACCESS_TOKEN_TTL_SECONDS = 24 * 60 * 60
 REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
 TOKEN_SECRET_PATH = "/app/runs/tilletia.token"
 
@@ -38,11 +38,19 @@ def generate_refresh_token():
     return secrets.token_urlsafe(32)
 
 
-def get_request_access_token(request):
+def get_authorization_access_token(request):
     auth_header = (request.headers.get("Authorization") or "").strip()
     if auth_header.lower().startswith("bearer "):
-        return auth_header[7:].strip()
-    return (request.cookies.get(cookies.ACCESS_COOKIE_NAME) or "").strip() or None
+        return auth_header[7:].strip() or None
+    return None
+
+
+def get_cookie_access_token(request):
+    return cookies.get_access_token_from_request(request) or None
+
+
+def get_request_access_token(request):
+    return get_authorization_access_token(request) or get_cookie_access_token(request)
 
 
 def hash_refresh_token(token):

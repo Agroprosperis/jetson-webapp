@@ -82,6 +82,7 @@ a:hover { text-decoration: underline; }
     <tbody id="resultsBody"></tbody>
 </table>
 
+<script src="/auth-client.js"></script>
 <script>
 const CAN_DELETE_RESULTS = {{ 'true' if can_delete_results else 'false' }};
 const SHOW_OWNER_COLUMN = {{ 'true' if can_view_result_owners else 'false' }};

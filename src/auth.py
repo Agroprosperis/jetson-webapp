@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 import threading
+import cookies
 import tokens
 
 from datetime import datetime, timedelta
@@ -517,6 +518,35 @@ def issue_refresh_token(user_id):
         connection.close()
 
 
+def authenticate_refresh_token(raw_token):
+    if not raw_token:
+        return None
+
+    token_hash = tokens.hash_refresh_token(raw_token)
+    connection = _connect()
+    try:
+        row = connection.execute(
+            """
+            SELECT user_id, expires_at, revoked_at
+            FROM refresh_tokens
+            WHERE token_hash = ?
+            """,
+            (token_hash,),
+        ).fetchone()
+        if row is None or row["revoked_at"]:
+            return None
+
+        expires_at = row["expires_at"] or ""
+        if expires_at.endswith("Z"):
+            expires_at = expires_at[:-1]
+        if datetime.fromisoformat(expires_at) <= _utcnow():
+            return None
+
+        return get_user_by_id(row["user_id"])
+    finally:
+        connection.close()
+
+
 def change_password(username, current_password, new_password):
     username = (username or "").strip()
     if not username:
@@ -553,17 +583,38 @@ def load_request_user():
     if cached is not None:
         return cached
 
-    token_value = tokens.get_request_access_token(flask.request)
-    if not token_value:
+    auth_header_token = tokens.get_authorization_access_token(flask.request)
+    if auth_header_token:
+        user_id = tokens.verify_access_token(auth_header_token)
+        if not user_id:
+            return None
+        user = get_user_by_id(user_id)
+        if user is not None:
+            flask.g._current_user = user
+        return user
+
+    cookie_access_token = tokens.get_cookie_access_token(flask.request)
+    if cookie_access_token:
+        user_id = tokens.verify_access_token(cookie_access_token)
+        if user_id:
+            user = get_user_by_id(user_id)
+            if user is not None:
+                flask.g._current_user = user
+            return user
+
+    refresh_token = cookies.get_refresh_token_from_request(flask.request)
+    if not refresh_token:
         return None
 
-    user_id = tokens.verify_access_token(token_value)
-    if not user_id:
+    user = authenticate_refresh_token(refresh_token)
+    if user is None:
         return None
 
-    user = get_user_by_id(user_id)
-    if user is not None:
-        flask.g._current_user = user
+    flask.g._current_user = user
+    flask.g._auth_cookie_refresh = {
+        "access_token": tokens.issue_access_token(user["id"]),
+        "refresh_token": refresh_token,
+    }
     return user
 
 
@@ -714,9 +765,14 @@ def delete_model_owner(model_type, model_name):
 
 
 def unauthorized_response(*, html_redirect=False):
-    if html_redirect and _request_wants_html() and not tokens.get_request_access_token(flask.request):
-        return flask.redirect(flask.url_for("login_page"))
-    return flask.jsonify({"error": "Unauthorized"}), 401
+    if html_redirect and _request_wants_html() and not tokens.get_authorization_access_token(flask.request):
+        response = flask.redirect(flask.url_for("login_page"))
+    else:
+        response = flask.make_response(flask.jsonify({"error": "Unauthorized"}), 401)
+
+    if not tokens.get_authorization_access_token(flask.request):
+        response = cookies.clear_auth_cookies(response)
+    return response
 
 
 def update_dashboard_settings(payload):

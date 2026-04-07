@@ -173,6 +173,7 @@ select { border: 1px solid #444; }
   </div>
 </div>
 
+<script src="/auth-client.js"></script>
 <script>
 const CAN_CONFIGURE_DASHBOARD = {{ 'true' if can_configure_dashboard else 'false' }};
 const INITIAL_DASHBOARD_SETTINGS = {{ dashboard_settings_json | safe }};

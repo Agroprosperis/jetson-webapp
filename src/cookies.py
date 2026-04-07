@@ -8,6 +8,10 @@ def clear_auth_cookies(response):
     return response
 
 
+def get_access_token_from_request(request):
+    return (request.cookies.get(ACCESS_COOKIE_NAME) or "").strip()
+
+
 def get_refresh_token_from_request(request):
     return (request.cookies.get(REFRESH_COOKIE_NAME) or "").strip()
 

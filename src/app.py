@@ -30,6 +30,7 @@ from stream_readers import FileReader, V4L2StreamReader
 from urllib.parse import quote
 
 LOGGER = logging.getLogger("app")
+SRC_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILEPATH = "/app/config.json"
 HQ_OUTPUT_DIR = "/app/output_hq"
 MODEL_DIR = "/app/model"
@@ -52,6 +53,24 @@ app.config['SWAGGER'] = {
 # Initialize Flasgger
 swagger = Swagger(app)
 auth.init_auth_storage()
+
+
+@app.after_request
+def apply_pending_auth_cookies(response):
+    if getattr(flask.g, "_skip_auth_cookie_refresh", False):
+        return response
+
+    pending = getattr(flask.g, "_auth_cookie_refresh", None)
+    if pending is None:
+        return response
+
+    return cookies.set_auth_cookies(
+        response,
+        pending["access_token"],
+        pending["refresh_token"],
+        access_max_age=tokens.ACCESS_TOKEN_TTL_SECONDS,
+        refresh_max_age=tokens.REFRESH_TOKEN_TTL_SECONDS,
+    )
 
 # Global runtime state
 pipeline = None  # type: StreamPipeline | None
@@ -953,6 +972,11 @@ def login_page():
     return flask.render_template("login.html")
 
 
+@app.route("/auth-client.js")
+def auth_client_asset():
+    return flask.send_from_directory(SRC_DIR, "auth_client.js", mimetype="application/javascript")
+
+
 @app.route("/auth/login", methods=["POST"])
 def auth_login():
     """
@@ -1180,6 +1204,7 @@ def auth_logout():
       401:
         description: Missing or invalid access token.
     """
+    flask.g._skip_auth_cookie_refresh = True
     auth.revoke_refresh_token(cookies.get_refresh_token_from_request(flask.request))
     response = flask.jsonify({"success": True})
     return cookies.clear_auth_cookies(response)

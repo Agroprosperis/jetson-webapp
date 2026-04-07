@@ -15,9 +15,9 @@ TEST_USER_NEW_PASSWORD = "TestUser_Str0ng!Pass_2026_Changed"
 OUTPUT_HQ_DIR = Path(__file__).resolve().parents[1] / "data" / "output_hq"
 
 
-def request(method: str, path: str, token: str | None = None, payload=None):
+def request(method: str, path: str, token: str | None = None, payload=None, extra_headers: dict | None = None):
     data = None if payload is None else json.dumps(payload).encode("utf-8")
-    headers = {}
+    headers = dict(extra_headers or {})
     if payload is not None:
         headers["Content-Type"] = "application/json"
     if token:
@@ -108,6 +108,30 @@ class AuthIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         self.assertIn("access_token", json.loads(body))
+
+    def test_cookie_auth_auto_refreshes_from_refresh_cookie(self):
+        _, login_data = login("admin", "admin")
+        status, _, body = request(
+            "GET",
+            "/auth/me",
+            extra_headers={
+                "Cookie": (
+                    "tilletia_access_token=expired-token; "
+                    f"tilletia_refresh_token={login_data['refresh_token']}"
+                )
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["username"], "admin")
+
+    def test_page_request_with_invalid_cookie_redirects_to_login(self):
+        status, _, body = request(
+            "GET",
+            "/",
+            extra_headers={"Cookie": "tilletia_access_token=expired-token"},
+        )
+        self.assertEqual(status, 200)
+        self.assertIn('id="loginForm"', body)
 
     def test_admin_can_create_user_with_role(self):
         self.assertTrue(create_user().startswith("test_user_"))
