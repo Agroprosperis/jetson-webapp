@@ -2,6 +2,7 @@ import numpy as np
 import supervision as sv
 import logging
 import cv2
+import os
 from datetime import datetime
 
 from s_value_model import calculate_s_value
@@ -17,6 +18,22 @@ SEEN_TRACK_IDS: set[int] = set()
 CUMULATIVE_OBJECTS: int = 0
 
 LOGGER = logging.getLogger("visualization")
+
+
+def _format_banner_model_name(args) -> str:
+    model_path = getattr(args, "model_path", "") or ""
+    if not model_path:
+        return "unknown"
+
+    return os.path.basename(model_path)
+
+
+def _format_banner_mode(args, frame_w: int, frame_h: int) -> str:
+    fps = getattr(args, "fps", None)
+    if fps is None:
+        return f"{frame_w}x{frame_h}"
+
+    return f"{frame_w}x{frame_h} @ {fps}fps"
 
 
 def _update_cumulative_objects(
@@ -84,42 +101,53 @@ def tracks_to_sv_detections(tracks: np.ndarray) -> sv.Detections:
     )
 
 
-def draw_combined_banner(scene: np.ndarray, count: int, s_value: float, analysis_id: str) -> np.ndarray:
+def draw_combined_banner(scene: np.ndarray, count: int, s_value: float, analysis_id: str, args) -> np.ndarray:
     """
-    Draws the total object count, the calculated S-metric, and the Analysis ID (Pipeline ID).
+    Draws the run metadata banner for all rendered outputs.
     """
-    # 1. Get current local time in human readable format
     current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    frame_h, frame_w = scene.shape[:2]
+    mode_text = _format_banner_mode(args, frame_w, frame_h)
+    model_text = _format_banner_model_name(args)
+    lines = [
+        f"{current_time_str} | Objects: {count} | S: {s_value:.1f}",
+        f"Model: {model_text} | Mode: {mode_text}",
+        f"{analysis_id}",
+    ]
 
-    # 2. Define Text (Added Time at the start, rounded S to 1 decimal)
-    text = f"{current_time_str} | Objects: {count} | S: {s_value:.1f} | {analysis_id}"
-    
-    # 3. visual settings
     font = cv2.FONT_HERSHEY_SIMPLEX
-    scale = 1.0
+    scale = 0.9
     thickness = 2
-    text_color = (255, 255, 255) # White
-    bg_color = (0, 0, 0)         # Black
-    
-    # 4. Calculate size
-    (text_w, text_h), baseline = cv2.getTextSize(text, font, scale, thickness)
-    
-    # 5. Define positions (Top-Left corner with padding)
-    x, y = 30, 60
-    pad = 10
-    
-    # 6. Draw Background Rectangle
+    text_color = (255, 255, 255)
+    bg_color = (0, 0, 0)
+    bg_alpha = 0.55
+    panel_x = 20
+    panel_y = 20
+    pad_x = 12
+    pad_y = 12
+    line_gap = 8
+
+    text_metrics = [cv2.getTextSize(line, font, scale, thickness) for line in lines]
+    text_block_width = max(size[0][0] for size in text_metrics)
+    text_block_height = sum(size[0][1] + size[1] for size in text_metrics)
+    text_block_height += line_gap * (len(text_metrics) - 1)
+
+    overlay = scene.copy()
     cv2.rectangle(
-        scene,
-        (x - pad, y - text_h - pad),
-        (x + text_w + pad, y + pad),
+        overlay,
+        (panel_x, panel_y),
+        (panel_x + text_block_width + (pad_x * 2), panel_y + text_block_height + (pad_y * 2)),
         bg_color,
-        -1 # Filled
+        -1,
     )
-    
-    # 7. Draw Text
-    cv2.putText(scene, text, (x, y), font, scale, text_color, thickness)
-    
+    cv2.addWeighted(overlay, bg_alpha, scene, 1.0 - bg_alpha, 0.0, scene)
+
+    cursor_y = panel_y + pad_y
+    for line, ((_, text_h), baseline) in zip(lines, text_metrics):
+        baseline_y = cursor_y + text_h
+        cv2.putText(scene, line, (panel_x + pad_x, baseline_y), font, scale, text_color, thickness)
+        cursor_y += text_h + baseline + line_gap
+
     return scene
 
 
@@ -155,7 +183,7 @@ def visualize_frame_with_supervision(
     s_metric = calculate_s_value(cumulative_count)
     
     p_id = getattr(args, "pipeline_id", "unknown")
-    vis = draw_combined_banner(vis, cumulative_count, s_metric, f"{p_id}")
+    vis = draw_combined_banner(vis, cumulative_count, s_metric, f"{p_id}", args)
 
     return vis, cumulative_count
 
