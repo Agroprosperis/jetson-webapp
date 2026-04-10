@@ -183,6 +183,7 @@ let state = 'idle';
 let isUploading = false;
 let uploadProgress = 0;
 let cameraList = [];
+let modelThresholdByPath = {};
 
 const statusEl = document.getElementById('status');
 const btnRun = document.getElementById('run');
@@ -225,6 +226,26 @@ async function saveDashboardSettings(payload) {
   });
 }
 
+function formatThresholdValue(value, fallback = 0.75) {
+  const normalized = Number.isFinite(value) ? value : fallback;
+  return normalized.toFixed(2);
+}
+
+async function applySelectedModelDefaults({ persist = false } = {}) {
+  const selectedPath = modelSelectEl.value;
+  const payload = { model_path: selectedPath };
+  const selectedThreshold = modelThresholdByPath[selectedPath];
+
+  if (Number.isFinite(selectedThreshold)) {
+    confThresholdEl.value = formatThresholdValue(selectedThreshold);
+    payload.vis_conf = selectedThreshold;
+  }
+
+  if (persist) {
+    await saveDashboardSettings(payload);
+  }
+}
+
 function syncSourceVisibility() {
   if (sourceTypeEl.value === 'camera') {
     camControls.classList.remove('hidden');
@@ -242,7 +263,7 @@ sourceTypeEl.onchange = async () => {
 
 analysisNumEl.onchange = () => saveDashboardSettings({ analysis_number: analysisNumEl.value });
 confThresholdEl.onchange = () => saveDashboardSettings({ vis_conf: parseFloat(confThresholdEl.value || '0.75') });
-modelSelectEl.onchange = () => saveDashboardSettings({ model_path: modelSelectEl.value });
+modelSelectEl.onchange = () => applySelectedModelDefaults({ persist: true });
 
 logoutBtn.onclick = async () => {
   try {
@@ -376,6 +397,7 @@ gridScoreThresholdEl.onchange = async () => {
 
 async function loadModels() {
   modelSelectEl.innerHTML = '<option value="">Loading...</option>';
+  modelThresholdByPath = {};
   try {
     const res = await fetch('/api/models');
     const data = await res.json();
@@ -391,6 +413,8 @@ async function loadModels() {
     }
 
     models.forEach(m => {
+      const threshold = Number.isFinite(m.default_confidence_threshold) ? m.default_confidence_threshold : 0.75;
+      modelThresholdByPath[m.path] = threshold;
       const opt = document.createElement('option');
       opt.value = m.path;
       opt.textContent = m.display;
@@ -403,6 +427,8 @@ async function loadModels() {
     if (!modelSelectEl.value && models.length > 0) {
       modelSelectEl.selectedIndex = 0;
     }
+
+    await applySelectedModelDefaults();
   } catch (e) {
     console.error(e);
     modelSelectEl.innerHTML = '<option value="">Error loading models</option>';

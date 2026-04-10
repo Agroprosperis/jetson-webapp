@@ -4,7 +4,6 @@ import cookies
 import csv
 import cv2
 import flask
-import glob
 import io
 import json
 import logging
@@ -13,8 +12,6 @@ import re
 import requests
 import shutil
 import socket
-import subprocess
-import sys
 import threading
 import time
 import tokens
@@ -22,10 +19,16 @@ import uuid
 import zipfile
 
 from camera_manager import CameraManager
-from collections import deque
 from datetime import datetime
 from flasgger import Swagger
 from inference_pipeline import StreamPipeline
+from model_manager import (
+    ModelConflictError,
+    ModelManager,
+    ModelManagerError,
+    ModelNotFoundError,
+    ModelValidationError,
+)
 from stream_readers import FileReader, V4L2StreamReader
 from urllib.parse import quote
 
@@ -33,12 +36,7 @@ LOGGER = logging.getLogger("app")
 SRC_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILEPATH = "/app/config.json"
 HQ_OUTPUT_DIR = "/app/output_hq"
-MODEL_DIR = "/app/model"
-MODEL_TASKS_FILEPATH = os.path.join(MODEL_DIR, "model_tasks.json")
 VENDOR_DIR = "/opt/web/vendor"
-VALID_UL_MODEL_TASKS = ("segment", "detect", "auto")
-MODEL_UPLOAD_EXTENSIONS = (".pt",)
-MODEL_COMPILE_METADATA_SUFFIX = ".compile.json"
 RESULT_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")
 
 app = flask.Flask(__name__, template_folder=".")
@@ -53,6 +51,7 @@ app.config['SWAGGER'] = {
 # Initialize Flasgger
 swagger = Swagger(app)
 auth.init_auth_storage()
+model_manager = ModelManager(auth_module=auth, logger=LOGGER)
 
 
 @app.after_request
@@ -77,9 +76,6 @@ pipeline = None  # type: StreamPipeline | None
 current_config = {}
 last_error = None  # type: str | None
 pipeline_id = None  # type: str | None
-compile_jobs = {}
-compile_jobs_lock = threading.Lock()
-model_task_overrides_lock = threading.Lock()
 runtime_options = {
     "grid_count_enabled": True,
     "grid_debug_enabled": False,
@@ -210,537 +206,6 @@ def apply_grid_api_update(payload):
         updated = True
 
     return updated
-
-
-def _append_compile_log(job_id, line):
-    with compile_jobs_lock:
-        job = compile_jobs.get(job_id)
-        if job is None:
-            return
-        job["logs"].append(line)
-
-
-def _find_active_job_for_model(model_type, model_name):
-    active_states = {"queued", "running"}
-    selected = None
-    for job in compile_jobs.values():
-        model = job.get("model") or {}
-        if model.get("type") != model_type or model.get("name") != model_name:
-            continue
-        if job.get("status") not in active_states:
-            continue
-        created = job.get("created_at", "")
-        if selected is None or created > selected.get("created_at", ""):
-            selected = job
-    return selected
-
-
-def _model_task_key(model_type, model_name):
-    return f"{model_type}:{model_name}"
-
-
-def _sanitize_ul_model_task(task):
-    if not isinstance(task, str):
-        return None
-    normalized = task.strip().lower()
-    if normalized in VALID_UL_MODEL_TASKS:
-        return normalized
-    return None
-
-
-def _read_model_task_overrides_unlocked():
-    if not os.path.exists(MODEL_TASKS_FILEPATH):
-        return {}
-
-    try:
-        with open(MODEL_TASKS_FILEPATH, "r") as task_input:
-            data = json.load(task_input)
-    except FileNotFoundError:
-        return {}
-    except Exception as exc:
-        LOGGER.error("Failed to read model task config %s: %s", MODEL_TASKS_FILEPATH, exc)
-        return {}
-
-    if not isinstance(data, dict):
-        return {}
-
-    overrides = {}
-    for key, value in data.items():
-        if not isinstance(key, str):
-            continue
-        task = _sanitize_ul_model_task(value)
-        if task is not None:
-            overrides[key] = task
-    return overrides
-
-
-def _write_model_task_overrides_unlocked(overrides):
-    sanitized = {}
-    for key, value in (overrides or {}).items():
-        if not isinstance(key, str):
-            continue
-        task = _sanitize_ul_model_task(value)
-        if task is not None:
-            sanitized[key] = task
-
-    os.makedirs(os.path.dirname(MODEL_TASKS_FILEPATH), exist_ok=True)
-    tmp_path = f"{MODEL_TASKS_FILEPATH}.tmp"
-    with open(tmp_path, "w") as task_output:
-        json.dump(sanitized, task_output, indent=2, sort_keys=True)
-        task_output.write("\n")
-    os.replace(tmp_path, MODEL_TASKS_FILEPATH)
-
-
-def get_catalog_model_task(model_type, model_name):
-    if model_type != "ul":
-        return None
-
-    with model_task_overrides_lock:
-        overrides = _read_model_task_overrides_unlocked()
-    return overrides.get(_model_task_key(model_type, model_name), "segment")
-
-
-def set_catalog_model_task(model_type, model_name, task):
-    if model_type != "ul":
-        raise ValueError("Task override is only supported for Ultralytics models.")
-
-    normalized_task = _sanitize_ul_model_task(task)
-    if normalized_task is None:
-        raise ValueError("Invalid model task.")
-
-    with model_task_overrides_lock:
-        overrides = _read_model_task_overrides_unlocked()
-        key = _model_task_key(model_type, model_name)
-        if normalized_task == "segment":
-            overrides.pop(key, None)
-        else:
-            overrides[key] = normalized_task
-        _write_model_task_overrides_unlocked(overrides)
-
-    return normalized_task
-
-
-def clear_catalog_model_task(model_type, model_name):
-    with model_task_overrides_lock:
-        overrides = _read_model_task_overrides_unlocked()
-        changed = False
-        for candidate in {model_name, model_name.removesuffix("-fp16")}:
-            key = _model_task_key(model_type, candidate)
-            if key in overrides:
-                overrides.pop(key, None)
-                changed = True
-        if changed:
-            _write_model_task_overrides_unlocked(overrides)
-
-
-def resolve_model_task_for_path(model_path):
-    if not model_path:
-        return "segment"
-
-    normalized = os.path.normpath(model_path)
-    try:
-        relative = os.path.relpath(normalized, MODEL_DIR)
-    except ValueError:
-        return "segment"
-
-    parts = relative.split(os.sep)
-    if len(parts) < 2:
-        return "segment"
-
-    model_type = parts[0]
-    if model_type != "ul":
-        return "auto"
-
-    base_name = os.path.splitext(parts[-1])[0]
-    candidates = [base_name]
-    if base_name.endswith("-fp16"):
-        candidates.append(base_name[:-5])
-
-    with model_task_overrides_lock:
-        overrides = _read_model_task_overrides_unlocked()
-
-    for candidate in candidates:
-        task = overrides.get(_model_task_key(model_type, candidate))
-        if task is not None:
-            return task
-    return "segment"
-
-
-def get_current_tensorrt_version():
-    try:
-        import tensorrt as trt
-        return str(trt.__version__)
-    except Exception:
-        return None
-
-
-def _compile_metadata_path(engine_path):
-    if not engine_path:
-        return None
-    return f"{engine_path}{MODEL_COMPILE_METADATA_SUFFIX}"
-
-
-def _read_compile_metadata(engine_path):
-    metadata_path = _compile_metadata_path(engine_path)
-    if not metadata_path or not os.path.isfile(metadata_path):
-        return {}
-    try:
-        with open(metadata_path, "r", encoding="utf-8") as fp:
-            data = json.load(fp)
-        return data if isinstance(data, dict) else {}
-    except Exception as exc:
-        LOGGER.warning("Failed to read compile metadata %s: %s", metadata_path, exc)
-        return {}
-
-
-def _write_compile_metadata(engine_path, *, model_type=None, source_path=None, command=None):
-    metadata_path = _compile_metadata_path(engine_path)
-    if not metadata_path:
-        return
-    payload = {
-        "tensorrt_version": get_current_tensorrt_version(),
-        "compiled_at": datetime.utcnow().isoformat() + "Z",
-    }
-    if model_type:
-        payload["model_type"] = model_type
-    if source_path:
-        payload["source_path"] = source_path
-    if command:
-        payload["command"] = list(command)
-    try:
-        with open(metadata_path, "w", encoding="utf-8") as fp:
-            json.dump(payload, fp, indent=2, sort_keys=True)
-    except Exception as exc:
-        LOGGER.warning("Failed to write compile metadata %s: %s", metadata_path, exc)
-
-
-def _resolve_compiled_engine_path(model_type, source_path):
-    if not source_path:
-        return None
-
-    source_dir = os.path.dirname(source_path)
-    source_base = os.path.splitext(os.path.basename(source_path))[0]
-    candidates = []
-    if model_type == "rf":
-        candidates.extend([
-            os.path.join(source_dir, f"{source_base}-fp16.engine"),
-            os.path.join(source_dir, f"{source_base}.engine"),
-        ])
-    else:
-        candidates.extend([
-            os.path.join(source_dir, f"{source_base}.engine"),
-            os.path.join(source_dir, f"{source_base}-fp16.engine"),
-        ])
-
-    for candidate in candidates:
-        if os.path.isfile(candidate):
-            return candidate
-    return None
-
-
-def _record_compile_metadata(job_id):
-    with compile_jobs_lock:
-        job = compile_jobs.get(job_id)
-        if job is None:
-            return
-        model = job.get("model", {})
-        source_path = model.get("source")
-        model_type = model.get("type")
-        command = job.get("command")
-
-    engine_path = _resolve_compiled_engine_path(model_type, source_path)
-    if not engine_path:
-        return
-
-    _write_compile_metadata(
-        engine_path,
-        model_type=model_type,
-        source_path=source_path,
-        command=command,
-    )
-    _append_compile_log(job_id, f"Saved compile metadata: {_compile_metadata_path(engine_path)}")
-
-
-def _cleanup_ul_compile_intermediates(job_id):
-    with compile_jobs_lock:
-        job = compile_jobs.get(job_id)
-        if job is None:
-            return
-        model = job.get("model", {})
-        source_path = model.get("source")
-        model_type = model.get("type")
-        started_ts = job.get("started_ts", time.time())
-
-    if model_type != "ul" or not source_path:
-        return
-
-    source_dir = os.path.dirname(source_path)
-    source_base = os.path.splitext(os.path.basename(source_path))[0]
-    candidates = set()
-    for pattern in (
-        os.path.join(source_dir, f"{source_base}*.onnx"),
-        os.path.join("/app/runs", "**", f"{source_base}*.onnx"),
-    ):
-        for path in glob.glob(pattern, recursive=True):
-            if os.path.isfile(path):
-                candidates.add(path)
-
-    for path in sorted(candidates):
-        try:
-            if os.path.getmtime(path) + 2 < started_ts:
-                continue
-        except OSError:
-            continue
-        try:
-            os.remove(path)
-            _append_compile_log(job_id, f"Removed intermediate artifact: {path}")
-        except Exception as exc:
-            _append_compile_log(job_id, f"Failed to remove intermediate artifact {path}: {exc}")
-
-
-def _sanitize_uploaded_model_filename(filename):
-    safe_name = os.path.basename((filename or "").strip())
-    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", safe_name)
-    return safe_name.strip("._")
-
-
-def collect_model_artifact_paths(entry):
-    if not entry:
-        return []
-
-    base_dir = os.path.join(MODEL_DIR, entry["type"])
-    base_name = entry["name"]
-    artifacts = set(entry.get("source_paths") or [])
-
-    engine = entry.get("engine") or {}
-    engine_path = engine.get("path")
-    if engine_path:
-        artifacts.add(engine_path)
-        metadata_path = _compile_metadata_path(engine_path)
-        if metadata_path:
-            artifacts.add(metadata_path)
-
-    for suffix in (".pt", ".onnx", ".engine"):
-        artifacts.add(os.path.join(base_dir, f"{base_name}{suffix}"))
-    if not base_name.endswith("-fp16"):
-        artifacts.add(os.path.join(base_dir, f"{base_name}-fp16.engine"))
-
-    for candidate in list(artifacts):
-        if candidate.endswith(".engine"):
-            metadata_path = _compile_metadata_path(candidate)
-            if metadata_path:
-                artifacts.add(metadata_path)
-
-    return sorted(path for path in artifacts if os.path.isfile(path))
-
-
-def _normalize_ul_engine_output(job_id):
-    with compile_jobs_lock:
-        job = compile_jobs.get(job_id)
-        if job is None:
-            return
-        model = job.get("model", {})
-        source_pt = model.get("source")
-        started_ts = job.get("started_ts", time.time())
-
-    if not source_pt:
-        return
-
-    source_dir = os.path.dirname(source_pt)
-    source_base = os.path.splitext(os.path.basename(source_pt))[0]
-    expected_engine = os.path.join(source_dir, f"{source_base}.engine")
-    if os.path.exists(expected_engine):
-        _append_compile_log(job_id, f"Engine ready: {expected_engine}")
-        return
-
-    candidates = []
-    search_patterns = [
-        os.path.join(source_dir, "*.engine"),
-        "/app/*.engine",
-        "/app/runs/**/*.engine",
-    ]
-    for pattern in search_patterns:
-        for path in glob.glob(pattern, recursive=True):
-            if not os.path.isfile(path):
-                continue
-            try:
-                mtime = os.path.getmtime(path)
-            except OSError:
-                continue
-            if mtime + 2 < started_ts:
-                continue
-            score = 0
-            filename = os.path.basename(path)
-            if source_base in filename:
-                score += 10
-            if path.startswith(source_dir):
-                score += 5
-            candidates.append((score, mtime, path))
-
-    if not candidates:
-        _append_compile_log(
-            job_id,
-            "Compile finished, but no engine artifact was found in expected paths.",
-        )
-        return
-
-    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    best_path = candidates[0][2]
-    if best_path == expected_engine:
-        _append_compile_log(job_id, f"Engine ready: {expected_engine}")
-        return
-
-    try:
-        shutil.move(best_path, expected_engine)
-        _append_compile_log(
-            job_id,
-            f"Moved engine artifact to model folder: {expected_engine}",
-        )
-    except Exception as exc:
-        _append_compile_log(
-            job_id,
-            f"Failed to move engine artifact to {expected_engine}: {exc}",
-        )
-
-
-def _run_compile_job(job_id, command, cwd=None):
-    with compile_jobs_lock:
-        job = compile_jobs.get(job_id)
-        if job is None:
-            return
-        job["status"] = "running"
-        job["started_at"] = datetime.utcnow().isoformat() + "Z"
-        job["started_ts"] = time.time()
-        job["command"] = command
-
-    try:
-        process = subprocess.Popen(
-            command,
-            cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            universal_newlines=True,
-        )
-    except Exception as exc:
-        _append_compile_log(job_id, f"Failed to start compile: {exc}")
-        with compile_jobs_lock:
-            job = compile_jobs.get(job_id)
-            if job is not None:
-                job["status"] = "error"
-                job["finished_at"] = datetime.utcnow().isoformat() + "Z"
-                job["returncode"] = None
-        return
-
-    total_lines = 0
-    last_heartbeat = time.time()
-    try:
-        for line in process.stdout:
-            if line:
-                total_lines += 1
-                clean = line.rstrip()
-                _append_compile_log(job_id, clean)
-
-                now = time.time()
-                if now - last_heartbeat >= 15:
-                    with compile_jobs_lock:
-                        job = compile_jobs.get(job_id)
-                        started_ts = (job or {}).get("started_ts", now)
-                    elapsed = int(now - started_ts)
-                    _append_compile_log(
-                        job_id,
-                        f"[still running] {elapsed}s elapsed, processed {total_lines} output lines",
-                    )
-                    last_heartbeat = now
-    except Exception as exc:
-        _append_compile_log(job_id, f"Error reading output: {exc}")
-
-    process.wait()
-    with compile_jobs_lock:
-        model_type = (compile_jobs.get(job_id) or {}).get("model", {}).get("type")
-    if process.returncode == 0:
-        if model_type == "ul":
-            _normalize_ul_engine_output(job_id)
-            _cleanup_ul_compile_intermediates(job_id)
-        _record_compile_metadata(job_id)
-
-    with compile_jobs_lock:
-        job = compile_jobs.get(job_id)
-        if job is not None:
-            job["returncode"] = process.returncode
-            job["finished_at"] = datetime.utcnow().isoformat() + "Z"
-            job["status"] = "done" if process.returncode == 0 else "error"
-
-
-def build_model_catalog():
-    model_map = {}
-    model_types = ["ul", "rf"]
-    model_exts = [".onnx", ".pt"]
-
-    for model_type in model_types:
-        base_dir = os.path.join(MODEL_DIR, model_type)
-        if not os.path.isdir(base_dir):
-            continue
-
-        for ext in model_exts:
-            for path in glob.glob(os.path.join(base_dir, f"*{ext}")):
-                filename = os.path.basename(path)
-                base = os.path.splitext(filename)[0]
-                key = (model_type, base)
-                entry = model_map.get(key)
-                if entry is None:
-                    entry = {
-                        "name": base,
-                        "type": model_type,
-                        "sources": [],
-                        "source_paths": [],
-                    }
-                    model_map[key] = entry
-
-                entry["sources"].append(ext.lstrip("."))
-                entry["source_paths"].append(path)
-        for path in glob.glob(os.path.join(base_dir, "*.engine")):
-            filename = os.path.basename(path)
-            base = os.path.splitext(filename)[0]
-            key = (model_type, base)
-            if key not in model_map:
-                model_map[key] = {
-                    "name": base,
-                    "type": model_type,
-                    "sources": [],
-                    "source_paths": [],
-                }
-
-    models = []
-    for (model_type, base), entry in sorted(model_map.items(), key=lambda item: item[0]):
-        base_dir = os.path.join(MODEL_DIR, model_type)
-        engine_name = f"{base}.engine"
-        engine_path = os.path.join(base_dir, engine_name)
-        engine = None
-
-        if os.path.exists(engine_path):
-            engine = {"name": engine_name, "path": engine_path}
-        elif not base.endswith("-fp16"):
-            fp16_name = f"{base}-fp16.engine"
-            fp16_path = os.path.join(base_dir, fp16_name)
-            if os.path.exists(fp16_path):
-                engine = {"name": fp16_name, "path": fp16_path}
-
-        if engine is not None:
-            engine_metadata = _read_compile_metadata(engine["path"])
-            if engine_metadata:
-                engine["tensorrt_version"] = engine_metadata.get("tensorrt_version")
-                engine["compiled_at"] = engine_metadata.get("compiled_at")
-
-        entry["engine"] = engine
-        entry["compiled"] = engine is not None
-        entry["display"] = f"[{model_type.upper()}] {base}"
-        entry["task"] = get_catalog_model_task(model_type, base)
-        entry["owner_username"] = auth.get_model_owner_username(model_type, base)
-        models.append(entry)
-
-    return models
 
 
 def is_pipeline_running():
@@ -1687,32 +1152,13 @@ def api_models():
                     type: string
                   display:
                     type: string
+                  default_confidence_threshold:
+                    type: number
                   owner_username:
                     type: string
     """
     try:
-        models = []
-        # Search in UL and RF folders for engine files
-        search_paths = [
-            os.path.join(MODEL_DIR, "ul", "*.engine"),
-            os.path.join(MODEL_DIR, "rf", "*.engine")
-        ]
-        
-        for p in search_paths:
-            files = glob.glob(p)
-            for f in files:
-                parent = os.path.basename(os.path.dirname(f))
-                name = os.path.basename(f)
-                
-                models.append({
-                    "path": f,
-                    "name": name,
-                    "type": parent,
-                    "display": f"[{parent.upper()}] {name}",
-                    "owner_username": auth.get_model_owner_username(parent, os.path.splitext(name)[0]),
-                })
-        
-        return flask.jsonify({"models": models})
+        return flask.jsonify({"models": model_manager.list_engine_models()})
     except Exception as e:
         LOGGER.error(f"Failed to list models: {e}")
         return flask.jsonify({"error": str(e)}), 500
@@ -1760,6 +1206,9 @@ def api_model_catalog():
                     type: string
                     enum: ['segment', 'detect', 'auto']
                     description: Saved Ultralytics task override for this model. Null for non-UL models.
+                  default_confidence_threshold:
+                    type: number
+                    description: Saved per-model default confidence threshold used by the main dashboard when this model is selected.
                   compiled:
                     type: boolean
                   owner_username:
@@ -1771,7 +1220,12 @@ def api_model_catalog():
                   type: string
     """
     try:
-        return flask.jsonify({"models": build_model_catalog(), "tensorrt": {"current": get_current_tensorrt_version()}})
+        return flask.jsonify(
+            {
+                "models": model_manager.build_model_catalog(),
+                "tensorrt": {"current": model_manager.get_current_tensorrt_version()},
+            }
+        )
     except Exception as e:
         LOGGER.error(f"Failed to list model catalog: {e}")
         return flask.jsonify({"error": str(e)}), 500
@@ -1824,51 +1278,27 @@ def api_model_upload():
       409:
         description: A model with the same filename already exists.
     """
-    model_type = (flask.request.form.get("type") or "").strip().lower()
-    if model_type not in ("ul", "rf"):
-        return flask.jsonify({"error": "Invalid model type."}), 400
-
+    model_type = flask.request.form.get("type")
     uploaded_file = flask.request.files.get("file")
-    if uploaded_file is None or not uploaded_file.filename:
-        return flask.jsonify({"error": "Missing model file."}), 400
-
-    filename = _sanitize_uploaded_model_filename(uploaded_file.filename)
-    if not filename:
-        return flask.jsonify({"error": "Invalid filename."}), 400
-
-    ext = os.path.splitext(filename)[1].lower()
-    if ext not in MODEL_UPLOAD_EXTENSIONS:
-        return flask.jsonify({"error": "Only .pt model weights are supported."}), 400
-
-    target_dir = os.path.join(MODEL_DIR, model_type)
-    os.makedirs(target_dir, exist_ok=True)
-    target_path = os.path.join(target_dir, filename)
-    if os.path.exists(target_path):
-        return flask.jsonify({"error": "A model with this filename already exists."}), 409
 
     try:
-        uploaded_file.save(target_path)
-    except Exception as exc:
-        LOGGER.error("Failed to save uploaded model %s: %s", target_path, exc)
-        try:
-            if os.path.exists(target_path):
-                os.remove(target_path)
-        except OSError:
-            pass
-        return flask.jsonify({"error": "Failed to store uploaded model."}), 500
-
-    auth.store_model_owner(model_type, os.path.splitext(filename)[0], flask.g.current_user["id"])
-
-    return flask.jsonify(
-        {
-            "uploaded": {
-                "type": model_type,
-                "name": os.path.splitext(filename)[0],
-                "path": target_path,
-            },
-            "tensorrt": {"current": get_current_tensorrt_version()},
-        }
-    )
+        uploaded = model_manager.upload_model(
+            model_type,
+            uploaded_file,
+            flask.g.current_user["id"],
+        )
+        return flask.jsonify(
+            {
+                "uploaded": uploaded,
+                "tensorrt": {"current": model_manager.get_current_tensorrt_version()},
+            }
+        )
+    except ModelValidationError as exc:
+        return flask.jsonify({"error": str(exc)}), 400
+    except ModelConflictError as exc:
+        return flask.jsonify({"error": str(exc)}), 409
+    except ModelManagerError as exc:
+        return flask.jsonify({"error": str(exc)}), 500
 
 
 @app.route("/api/model-compile", methods=["POST"])
@@ -1912,67 +1342,18 @@ def api_model_compile():
         description: Model not found.
     """
     payload = flask.request.get_json(silent=True) or {}
-    model_type = payload.get("type")
-    model_name = payload.get("name")
 
-    if model_type not in ("ul", "rf") or not model_name:
-        return flask.jsonify({"error": "Invalid model type or name."}), 400
-
-    catalog = build_model_catalog()
-    entry = next(
-        (item for item in catalog if item["type"] == model_type and item["name"] == model_name),
-        None,
-    )
-    if entry is None:
-        return flask.jsonify({"error": "Model not found."}), 404
-
-    if entry.get("compiled"):
-        return flask.jsonify({"error": "Model already compiled."}), 400
-
-    with compile_jobs_lock:
-        existing_job = _find_active_job_for_model(model_type, model_name)
-        if existing_job is not None:
-            return flask.jsonify({"job_id": existing_job["id"], "already_running": True})
-
-    source_paths = entry.get("source_paths", [])
-    source_pt = next((p for p in source_paths if p.endswith(".pt")), None)
-    if not source_pt:
-        return flask.jsonify({"error": "No .pt source found for compilation."}), 400
-
-    if model_type == "ul":
-        command = [
-            "yolo",
-            "export",
-            "format=engine",
-            f"model={source_pt}",
-            "imgsz=640",
-            "half",
-        ]
-    else:
-        command = [sys.executable, "/app/convert.py", "--model", source_pt]
-
-    job_id = uuid.uuid4().hex
-    with compile_jobs_lock:
-        compile_jobs[job_id] = {
-            "id": job_id,
-            "status": "queued",
-            "logs": deque(maxlen=500),
-            "created_at": datetime.utcnow().isoformat() + "Z",
-            "model": {
-                "type": model_type,
-                "name": model_name,
-                "source": source_pt,
-            },
-        }
-
-    thread = threading.Thread(
-        target=_run_compile_job,
-        args=(job_id, command, "/app"),
-        daemon=True,
-    )
-    thread.start()
-
-    return flask.jsonify({"job_id": job_id})
+    try:
+        return flask.jsonify(
+            model_manager.start_compile(
+                payload.get("type"),
+                payload.get("name"),
+            )
+        )
+    except ModelValidationError as exc:
+        return flask.jsonify({"error": str(exc)}), 400
+    except ModelNotFoundError as exc:
+        return flask.jsonify({"error": str(exc)}), 404
 
 
 @app.route("/api/model-task", methods=["POST"])
@@ -2026,31 +1407,74 @@ def api_model_task():
         description: Model not found
     """
     payload = flask.request.get_json(silent=True) or {}
-    model_type = payload.get("type")
-    model_name = payload.get("name")
-    task = payload.get("task")
-
-    if model_type != "ul" or not model_name:
-        return flask.jsonify({"error": "Invalid model type or name."}), 400
-
-    catalog = build_model_catalog()
-    entry = next(
-        (item for item in catalog if item["type"] == model_type and item["name"] == model_name),
-        None,
-    )
-    if entry is None:
-        return flask.jsonify({"error": "Model not found."}), 404
 
     try:
-        selected_task = set_catalog_model_task(model_type, model_name, task)
-    except ValueError as exc:
+        return flask.jsonify(
+            model_manager.set_model_task(
+                payload.get("type"),
+                payload.get("name"),
+                payload.get("task"),
+            )
+        )
+    except ModelValidationError as exc:
         return flask.jsonify({"error": str(exc)}), 400
+    except ModelNotFoundError as exc:
+        return flask.jsonify({"error": str(exc)}), 404
 
-    return flask.jsonify({
-        "type": model_type,
-        "name": model_name,
-        "task": selected_task,
-    })
+
+@app.route("/api/model-metadata", methods=["POST"])
+@auth.require_permission("models:manage")
+def api_model_metadata():
+    """
+    Save editable metadata for a catalog model.
+    ---
+    tags:
+      - Configuration
+    consumes:
+      - application/json
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - type
+            - name
+            - default_confidence_threshold
+          properties:
+            type:
+              type: string
+              enum: ['ul', 'rf']
+            name:
+              type: string
+            default_confidence_threshold:
+              type: number
+              minimum: 0
+              maximum: 1
+              description: Saved per-model default confidence threshold for the main dashboard.
+    responses:
+      200:
+        description: Saved model metadata
+      400:
+        description: Invalid payload
+      404:
+        description: Model not found
+    """
+    payload = flask.request.get_json(silent=True) or {}
+
+    try:
+        return flask.jsonify(
+            model_manager.set_model_default_confidence_threshold(
+                payload.get("type"),
+                payload.get("name"),
+                payload.get("default_confidence_threshold"),
+            )
+        )
+    except ModelValidationError as exc:
+        return flask.jsonify({"error": str(exc)}), 400
+    except ModelNotFoundError as exc:
+        return flask.jsonify({"error": str(exc)}), 404
 
 
 @app.route("/api/model-delete", methods=["POST"])
@@ -2102,44 +1526,24 @@ def api_model_delete():
         description: Model is currently running and cannot be deleted
     """
     payload = flask.request.get_json(silent=True) or {}
-    model_type = payload.get("type")
-    model_name = payload.get("name")
 
-    if model_type not in ("ul", "rf") or not model_name:
-        return flask.jsonify({"error": "Invalid model type or name."}), 400
-
-    catalog = build_model_catalog()
-    entry = next(
-        (item for item in catalog if item["type"] == model_type and item["name"] == model_name),
-        None,
-    )
-    if entry is None:
-        return flask.jsonify({"error": "Model not found."}), 404
-
-    artifact_paths = collect_model_artifact_paths(entry)
-    current_model_path = current_config.get("model_path")
-    if is_pipeline_running() and current_model_path in artifact_paths:
-        return flask.jsonify({"error": "Cannot delete the model that is currently running."}), 409
-
-    deleted = []
-    for path in artifact_paths:
-        try:
-            os.remove(path)
-            deleted.append(path)
-        except FileNotFoundError:
-            continue
-        except Exception as exc:
-            LOGGER.error("Failed to delete model artifact %s: %s", path, exc)
-            return flask.jsonify({"error": f"Failed to delete {path}: {exc}"}), 500
-
-    clear_catalog_model_task(model_type, model_name)
-    auth.delete_model_owner(model_type, model_name)
-
-    return flask.jsonify({
-        "type": model_type,
-        "name": model_name,
-        "deleted": deleted,
-    })
+    try:
+        return flask.jsonify(
+            model_manager.delete_model(
+                payload.get("type"),
+                payload.get("name"),
+                current_model_path=current_config.get("model_path"),
+                pipeline_running=is_pipeline_running(),
+            )
+        )
+    except ModelValidationError as exc:
+        return flask.jsonify({"error": str(exc)}), 400
+    except ModelNotFoundError as exc:
+        return flask.jsonify({"error": str(exc)}), 404
+    except ModelConflictError as exc:
+        return flask.jsonify({"error": str(exc)}), 409
+    except ModelManagerError as exc:
+        return flask.jsonify({"error": str(exc)}), 500
 
 
 @app.route("/api/model-compile-jobs")
@@ -2183,22 +1587,7 @@ def api_model_compile_jobs():
                       source:
                         type: string
     """
-    with compile_jobs_lock:
-        jobs = []
-        for job in compile_jobs.values():
-            jobs.append(
-                {
-                    "id": job["id"],
-                    "status": job.get("status"),
-                    "created_at": job.get("created_at"),
-                    "started_at": job.get("started_at"),
-                    "finished_at": job.get("finished_at"),
-                    "returncode": job.get("returncode"),
-                    "model": job.get("model"),
-                }
-            )
-    jobs.sort(key=lambda item: item.get("created_at") or "", reverse=True)
-    return flask.jsonify({"jobs": jobs})
+    return flask.jsonify({"jobs": model_manager.list_compile_jobs()})
 
 
 @app.route("/api/model-compile/<job_id>")
@@ -2246,24 +1635,10 @@ def api_model_compile_status(job_id):
       404:
         description: Job not found.
     """
-    with compile_jobs_lock:
-        job = compile_jobs.get(job_id)
-        if job is None:
-            return flask.jsonify({"error": "Job not found."}), 404
-
-        return flask.jsonify(
-            {
-                "id": job["id"],
-                "status": job["status"],
-                "created_at": job.get("created_at"),
-                "started_at": job.get("started_at"),
-                "finished_at": job.get("finished_at"),
-                "returncode": job.get("returncode"),
-                "command": job.get("command"),
-                "model": job.get("model"),
-                "logs": list(job.get("logs", [])),
-            }
-        )
+    try:
+        return flask.jsonify(model_manager.get_compile_job(job_id))
+    except ModelNotFoundError as exc:
+        return flask.jsonify({"error": str(exc)}), 404
 
 
 @app.route("/api/cameras")
@@ -3007,10 +2382,16 @@ def api_start():
         if not model_path:
             model_path = "/app/model/weights-fp16.engine"
 
-        requested_model_task = _sanitize_ul_model_task(data.get("model_task"))
-        resolved_model_task = requested_model_task or resolve_model_task_for_path(model_path)
+        requested_model_task = model_manager.sanitize_ul_model_task(data.get("model_task"))
+        resolved_model_task = requested_model_task or model_manager.resolve_model_task_for_path(model_path)
 
-        requested_conf = float(data.get("vis_conf", 0.75))
+        if "vis_conf" in raw_data:
+            requested_conf = float(raw_data.get("vis_conf"))
+        else:
+            requested_conf = model_manager.resolve_model_default_confidence_threshold_for_path(
+                model_path,
+                fallback=data.get("vis_conf", model_manager.DEFAULT_MODEL_CONFIDENCE_THRESHOLD),
+            )
         vis_strategy = data.get("vis_strategy", "tracker")
         
         args_dict.update(dict(

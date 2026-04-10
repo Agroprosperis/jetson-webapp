@@ -119,6 +119,7 @@ tr:hover { background: #2a2a2a; }
               <th>Sources</th>
               <th>TensorRT Engine</th>
               <th>Task</th>
+              <th>Default Conf</th>
               <th>Action</th>
           </tr>
       </thead>
@@ -270,6 +271,9 @@ async function loadModels() {
             const latestJob = getLatestJobForModel(model.type, model.name);
             const isCompiling = latestJob && (latestJob.status === 'queued' || latestJob.status === 'running');
             const selectedTask = model.task || 'segment';
+            const defaultConfidenceThreshold = Number.isFinite(model.default_confidence_threshold)
+                ? model.default_confidence_threshold
+                : 0.75;
 
             let engineHtml = '<span class="tag tag-warn">Not compiled</span>';
             if (model.compiled && model.engine) {
@@ -287,6 +291,21 @@ async function loadModels() {
                    </select>
                    <div class="meta">Controls the Ultralytics task.</div>`
                 : '<span class="meta">N/A</span>';
+            const defaultConfidenceHtml = `
+                <input
+                    class="default-confidence-input"
+                    type="number"
+                    min="0.00"
+                    max="1.00"
+                    step="0.05"
+                    value="${defaultConfidenceThreshold.toFixed(2)}"
+                    data-name="${model.name}"
+                    data-type="${model.type}"
+                    data-previous="${defaultConfidenceThreshold.toFixed(2)}"
+                    style="width: 90px;"
+                />
+                <div class="meta">Used by the dashboard for this model.</div>
+            `;
             const actionParts = [];
             if (isCompiling) {
                 actionParts.push(`<button type="button" class="btn-ghost btn-open-job" data-job-id="${latestJob.id}" data-job-title="Compiling ${model.type.toUpperCase()} / ${model.name}">View Logs</button>`);
@@ -313,6 +332,7 @@ async function loadModels() {
                 </td>
                 <td>${engineHtml}${statusMeta}</td>
                 <td>${taskHtml}</td>
+                <td>${defaultConfidenceHtml}</td>
                 <td>${actionHtml}</td>
             `;
 
@@ -335,6 +355,9 @@ async function loadModels() {
         });
         tbody.querySelectorAll('.task-select').forEach(select => {
             select.addEventListener('change', () => updateModelTask(select));
+        });
+        tbody.querySelectorAll('.default-confidence-input').forEach(input => {
+            input.addEventListener('change', () => updateModelDefaultConfidence(input));
         });
         tbody.querySelectorAll('.btn-delete-model').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -478,6 +501,45 @@ async function updateModelTask(selectEl) {
         alert(err.message || 'Failed to save task.');
     } finally {
         selectEl.disabled = false;
+    }
+}
+
+async function updateModelDefaultConfidence(inputEl) {
+    const name = inputEl.getAttribute('data-name');
+    const type = inputEl.getAttribute('data-type');
+    const previous = inputEl.getAttribute('data-previous') || '0.75';
+    const threshold = parseFloat(inputEl.value);
+
+    if (!name || !type || !Number.isFinite(threshold)) {
+        inputEl.value = previous;
+        return;
+    }
+
+    inputEl.disabled = true;
+    try {
+        const res = await fetch('/api/model-metadata', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name,
+                type,
+                default_confidence_threshold: threshold
+            })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            throw new Error(data.error || 'Failed to save default confidence threshold.');
+        }
+        const savedThreshold = Number.isFinite(data.default_confidence_threshold)
+            ? data.default_confidence_threshold
+            : threshold;
+        inputEl.value = savedThreshold.toFixed(2);
+        inputEl.setAttribute('data-previous', savedThreshold.toFixed(2));
+    } catch (err) {
+        inputEl.value = previous;
+        alert(err.message || 'Failed to save default confidence threshold.');
+    } finally {
+        inputEl.disabled = false;
     }
 }
 
