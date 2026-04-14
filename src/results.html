@@ -188,7 +188,7 @@ async function loadResults() {
                 const fileUrl = `/download/${encodeURI(file.path)}`;
                 const fileOwnerCell = SHOW_OWNER_COLUMN ? '<td></td>' : '';
                 const processButton = CAN_CONFIGURE_DASHBOARD && typeLabel === 'video'
-                    ? `<button type="button" class="btn-process" onclick="processResultVideo('${item.id}')">Process</button>`
+                    ? `<button type="button" class="btn-process" onclick='processResultVideo(${JSON.stringify(item.id)}, ${JSON.stringify(file.path)})'>Process</button>`
                     : '';
                 tr.innerHTML = `
                     <td>${file.name}</td>
@@ -227,7 +227,7 @@ async function loadResults() {
     }
 }
 
-async function processResultVideo(pid) {
+async function processResultVideo(pid, filePath) {
     try {
         if (window.Swal) {
             Swal.fire({
@@ -240,6 +240,8 @@ async function processResultVideo(pid) {
 
         const res = await fetch(`/api/results/${encodeURIComponent(pid)}/process-source`, {
             method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: filePath || '' }),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {

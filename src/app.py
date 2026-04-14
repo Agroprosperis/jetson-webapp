@@ -312,6 +312,25 @@ def _build_download_url(host_url, relative_path):
     return f"{host_url}/download/{quote(relative_path, safe='/')}"
 
 
+def _resolve_result_video_path(run_id, requested_relative_path=""):
+    run_dir = os.path.abspath(os.path.join(HQ_OUTPUT_DIR, run_id))
+    if requested_relative_path:
+        normalized_relative_path = str(requested_relative_path).replace("\\", "/").lstrip("/")
+        if normalized_relative_path.split("/", 1)[0] != run_id:
+            raise ValueError("Invalid result video path.")
+        candidate_path = os.path.abspath(os.path.join(HQ_OUTPUT_DIR, normalized_relative_path))
+        if candidate_path != run_dir and not candidate_path.startswith(run_dir + os.sep):
+            raise ValueError("Invalid result video path.")
+    else:
+        candidate_path = os.path.abspath(os.path.join(run_dir, f"{run_id}.mkv"))
+
+    if os.path.splitext(candidate_path)[1].lower() not in {".mkv", ".mp4", ".avi", ".mov"}:
+        raise ValueError("Selected result file is not a video.")
+    if not os.path.isfile(candidate_path):
+        raise FileNotFoundError("Result video not found.")
+    return candidate_path
+
+
 def _is_result_image(filename):
     return os.path.splitext(filename)[1].lower() in RESULT_IMAGE_EXTENSIONS
 
@@ -2129,13 +2148,16 @@ def api_prepare_result_process_source(pid):
         if not auth.user_can_access_result(flask.g.current_user, HQ_OUTPUT_DIR, pid):
             return flask.jsonify({"error": "Forbidden"}), 403
 
-        metadata = _build_result_metadata(pid)
-        if metadata is None:
+        if _build_result_metadata(pid) is None:
             return flask.jsonify({"error": "Result not found."}), 404
 
-        video_path = metadata.get("video_path")
-        if not video_path or not os.path.isfile(video_path):
-            return flask.jsonify({"error": "No result video available for processing."}), 404
+        payload = flask.request.get_json(silent=True) or {}
+        try:
+            video_path = _resolve_result_video_path(pid, payload.get("path", ""))
+        except ValueError as exc:
+            return flask.jsonify({"error": str(exc)}), 400
+        except FileNotFoundError as exc:
+            return flask.jsonify({"error": str(exc)}), 404
 
         auth.update_dashboard_settings(
             {

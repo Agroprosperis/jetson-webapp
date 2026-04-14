@@ -489,6 +489,24 @@ def build_rtsp_and_hq_gst(host: str, port: int, path: str, width: int, height: i
     return pipeline
 
 
+def build_hq_file_gst(width: int, height: int, fps: int, hq_path: str) -> str:
+    bitrate_kbit = 16000
+    pipeline = (
+        "appsrc is-live=true block=true format=time do-timestamp=true "
+        "max-bytes=100000000 ! "
+        "queue max-size-buffers=5 leaky=no ! "
+        f"video/x-raw,format=BGR,width={width},height={height},framerate={fps}/1 ! "
+        "videoconvert ! video/x-raw,format=I420 ! "
+        f"x264enc tune=zerolatency speed-preset=ultrafast bitrate={bitrate_kbit} "
+        "key-int-max=30 bframes=0 sliced-threads=true threads=4 ! "
+        "h264parse config-interval=-1 ! "
+        "matroskamux ! "
+        f"filesink location=\"{hq_path}\" sync=false "
+    )
+    LOGGER.info("File pipeline: %s", pipeline)
+    return pipeline
+
+
 class GridResultBuffer:
     def __init__(self, max_items: int = GRID_RESULT_HISTORY_SIZE) -> None:
         self._max_items = max(int(max_items), 1)
@@ -852,7 +870,7 @@ def output_loop(
     stop_event: threading.Event,
     args,
 ) -> None:
-    output_writer, csv_file, csv_writer = None, None, None
+    output_writer, raw_output_writer, csv_file, csv_writer = None, None, None, None
     frame_count = 0
     pipeline_id = getattr(args, "pipeline_id", "unknown")
     hq_output_dir = getattr(args, "hq_output_dir", "/app")
@@ -905,6 +923,9 @@ def output_loop(
                 hq_path = os.path.join(run_dir, f"{pipeline_id}.mkv")
                 out_pipeline = build_rtsp_and_hq_gst(args.stream_host, args.stream_port, args.output_path, w, h, args.fps, hq_path)
                 output_writer = cv2.VideoWriter(out_pipeline, cv2.CAP_GSTREAMER, 0, args.fps, (w, h), True)
+                raw_hq_path = os.path.join(run_dir, f"{pipeline_id}-raw.mkv")
+                raw_out_pipeline = build_hq_file_gst(w, h, args.fps, raw_hq_path)
+                raw_output_writer = cv2.VideoWriter(raw_out_pipeline, cv2.CAP_GSTREAMER, 0, args.fps, (w, h), True)
                 hq_csv_path = os.path.join(run_dir, f"{pipeline_id}.csv")
                 csv_file = open(hq_csv_path, "w", newline="", encoding="utf-8")
                 csv_writer = csv.writer(csv_file)
@@ -953,9 +974,13 @@ def output_loop(
             
             if output_writer is not None:
                 output_writer.write(vis)
+            if raw_output_writer is not None:
+                raw_output_writer.write(frame)
     finally:
         if output_writer is not None: 
             output_writer.release()
+        if raw_output_writer is not None:
+            raw_output_writer.release()
 
         if csv_file is not None: 
             csv_file.close()
