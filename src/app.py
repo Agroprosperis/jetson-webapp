@@ -29,6 +29,7 @@ from model_manager import (
     ModelNotFoundError,
     ModelValidationError,
 )
+from result_ids import generate_unique_result_run_id
 from stream_readers import FileReader, V4L2StreamReader
 from urllib.parse import quote
 
@@ -2430,7 +2431,7 @@ def api_start():
 
         analysis_num = data.get("analysis_number", "").strip()
         if analysis_num:
-            pipeline_id = analysis_num
+            pipeline_id = generate_unique_result_run_id(analysis_num, HQ_OUTPUT_DIR)
         else:
             start_time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             pipeline_id = f"{start_time_str}-{uuid.uuid4().hex}"
