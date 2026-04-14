@@ -26,6 +26,11 @@ a:hover { text-decoration: underline; }
     border-radius: 4px; cursor: pointer; font-size: 12px;
 }
 .btn-download:hover { background: #1d4ed8; }
+.btn-process {
+    background: #16a34a; color: white; border: none; padding: 6px 12px;
+    border-radius: 4px; cursor: pointer; font-size: 12px;
+}
+.btn-process:hover { background: #15803d; }
 .empty { padding: 20px; text-align: center; color: #777; font-style: italic; }
 .back-link { display: inline-block; margin-bottom: 20px; color: #888; text-decoration: none; font-size: 14px;}
 .back-link:hover { color: #eee; }
@@ -50,6 +55,7 @@ a:hover { text-decoration: underline; }
 }
 .toolbar button { cursor:pointer; }
 .toolbar button:hover { background:#2a2a2a; }
+.file-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 </style>
 </head>
 <body>
@@ -85,6 +91,7 @@ a:hover { text-decoration: underline; }
 <script src="/auth-client.js"></script>
 <script>
 const CAN_DELETE_RESULTS = {{ 'true' if can_delete_results else 'false' }};
+const CAN_CONFIGURE_DASHBOARD = {{ 'true' if can_configure_dashboard else 'false' }};
 const SHOW_OWNER_COLUMN = {{ 'true' if can_view_result_owners else 'false' }};
 
 function buildResultsUrl() {
@@ -180,12 +187,20 @@ async function loadResults() {
 
                 const fileUrl = `/download/${encodeURI(file.path)}`;
                 const fileOwnerCell = SHOW_OWNER_COLUMN ? '<td></td>' : '';
+                const processButton = CAN_CONFIGURE_DASHBOARD && typeLabel === 'video'
+                    ? `<button type="button" class="btn-process" onclick="processResultVideo('${item.id}')">Process</button>`
+                    : '';
                 tr.innerHTML = `
                     <td>${file.name}</td>
                     ${fileOwnerCell}
                     <td class="file-type">${typeLabel}</td>
                     <td>${file.size || '-'}</td>
-                    <td><a href="${fileUrl}" download>Download</a></td>
+                    <td>
+                        <div class="file-actions">
+                            <a href="${fileUrl}" download>Download</a>
+                            ${processButton}
+                        </div>
+                    </td>
                 `;
                 tbody.appendChild(tr);
             });
@@ -209,6 +224,35 @@ async function loadResults() {
     } catch(e) {
         document.getElementById('loading').textContent = `Error loading results: ${e.message}`;
         console.error(e);
+    }
+}
+
+async function processResultVideo(pid) {
+    try {
+        if (window.Swal) {
+            Swal.fire({
+                title: 'Preparing video',
+                text: 'Using the existing result video as a new file source...',
+                allowOutsideClick: false,
+                didOpen: () => Swal.showLoading(),
+            });
+        }
+
+        const res = await fetch(`/api/results/${encodeURIComponent(pid)}/process-source`, {
+            method: 'POST',
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            throw new Error(data.error || 'Failed to prepare result video.');
+        }
+
+        window.location.href = '/';
+    } catch (e) {
+        if (window.Swal) {
+            Swal.fire({ icon: 'error', title: 'Process failed', text: e.message });
+        } else {
+            alert(`Failed to prepare result video: ${e.message}`);
+        }
     }
 }
 

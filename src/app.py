@@ -2097,6 +2097,64 @@ def api_delete_result(pid):
         return flask.jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/results/<pid>/process-source", methods=["POST"])
+@auth.require_permission("dashboard:configure")
+def api_prepare_result_process_source(pid):
+    """
+    Reuse a processed result video as the current dashboard file source.
+    ---
+    tags:
+      - Results
+    responses:
+      200:
+        description: Result video prepared as the dashboard file source.
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            video:
+              type: string
+            file_name:
+              type: string
+      403:
+        description: Authenticated user cannot reuse this result.
+      404:
+        description: Result or result video not found.
+      500:
+        description: Failed to prepare the result video for processing.
+    """
+    try:
+        if not auth.user_can_access_result(flask.g.current_user, HQ_OUTPUT_DIR, pid):
+            return flask.jsonify({"error": "Forbidden"}), 403
+
+        metadata = _build_result_metadata(pid)
+        if metadata is None:
+            return flask.jsonify({"error": "Result not found."}), 404
+
+        video_path = metadata.get("video_path")
+        if not video_path or not os.path.isfile(video_path):
+            return flask.jsonify({"error": "No result video available for processing."}), 404
+
+        auth.update_dashboard_settings(
+            {
+                "source_type": "file",
+                "uploaded_path": video_path,
+            }
+        )
+
+        return flask.jsonify(
+            {
+                "success": True,
+                "video": video_path,
+                "file_name": os.path.basename(video_path),
+            }
+        )
+    except Exception as e:
+        LOGGER.error(f"Failed to prepare result video for processing {pid}: {e}")
+        return flask.jsonify({"error": str(e)}), 500
+
+
 @app.route("/download/<path:filename>")
 @auth.require_permission("results:download")
 def download_file(filename):

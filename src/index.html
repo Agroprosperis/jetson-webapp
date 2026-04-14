@@ -209,6 +209,16 @@ const fileNameEl = document.getElementById('fileName');
 const logoutBtn = document.getElementById('logoutBtn');
 const uploadedPathEl = document.getElementById('uploadedPath');
 
+function uploadedFileLabel(path) {
+  if (!path) return '';
+  const segments = String(path).split(/[\\/]/);
+  return segments[segments.length - 1] || path;
+}
+
+function syncUploadedFileLabel(path) {
+  fileNameEl.textContent = uploadedFileLabel(path);
+}
+
 function selectedCameraMode() {
   try {
     return JSON.parse(camModeEl.value || '{}');
@@ -678,6 +688,7 @@ uploadInput.onchange = function () {
     try {
       const j = JSON.parse(xhr.responseText);
       uploadedPathEl.value = j.video;
+      syncUploadedFileLabel(j.video);
       statusEl.textContent = 'status: upload complete';
       await saveDashboardSettings({ uploaded_path: j.video, source_type: 'file' });
       sourceTypeEl.value = 'file';
@@ -695,6 +706,7 @@ uploadInput.onchange = function () {
 };
 
 window.addEventListener('load', async () => {
+  syncUploadedFileLabel(uploadedPathEl.value);
   syncSourceVisibility();
   if (CAN_CONFIGURE_DASHBOARD) {
     await loadCameras();
