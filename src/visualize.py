@@ -36,6 +36,19 @@ def _format_banner_mode(args, frame_w: int, frame_h: int) -> str:
     return f"{frame_w}x{frame_h} @ {fps}fps"
 
 
+def _format_optional_dimension(value) -> str:
+    try:
+        dimension = int(value)
+    except (TypeError, ValueError):
+        return "N/D"
+    return str(dimension) if dimension >= 32 else "N/D"
+
+def _format_banner_inference_mode(args) -> str:
+    inference_width = _format_optional_dimension(getattr(args, "model_inference_width", None))
+    inference_height = _format_optional_dimension(getattr(args, "model_inference_height", None))
+    return f"{inference_width}x{inference_height}"
+
+
 def _update_cumulative_objects(
     detections: sv.Detections,
     allowed_track_ids: set[int] | None = None,
@@ -108,10 +121,11 @@ def draw_combined_banner(scene: np.ndarray, count: int, s_value: float, analysis
     current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     frame_h, frame_w = scene.shape[:2]
     mode_text = _format_banner_mode(args, frame_w, frame_h)
+    inference_mode_text = _format_banner_inference_mode(args)
     model_text = _format_banner_model_name(args)
     lines = [
         f"{current_time_str} | Objects: {count} | S: {s_value:.1f}",
-        f"Model: {model_text} | Mode: {mode_text}",
+        f"Model: {model_text} | Mode: {mode_text} | Inference: {inference_mode_text}",
         f"{analysis_id}",
     ]
 

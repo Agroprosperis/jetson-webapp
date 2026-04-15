@@ -86,6 +86,22 @@ tr:hover { background: #2a2a2a; }
   font-size: 12px;
   white-space: pre-wrap;
 }
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(90px, 1fr));
+  gap: 8px 10px;
+}
+.setting-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: #bbb;
+}
+.setting-field input {
+  width: 100%;
+  box-sizing: border-box;
+}
 </style>
 </head>
 <body>
@@ -120,6 +136,7 @@ tr:hover { background: #2a2a2a; }
               <th>TensorRT Engine</th>
               <th>Task</th>
               <th>Default Conf</th>
+              <th>Settings</th>
               <th>Action</th>
           </tr>
       </thead>
@@ -265,6 +282,8 @@ async function loadModels() {
 
         models.forEach(model => {
             const tr = document.createElement('tr');
+            tr.setAttribute('data-name', model.name || '');
+            tr.setAttribute('data-type', model.type || '');
             const display = model.display || model.name || '-';
             const sourceFiles = (model.source_paths || []).map(filenameFromPath);
             const sourcesLabel = sourceFiles.length > 0 ? sourceFiles.join(', ') : '-';
@@ -274,13 +293,21 @@ async function loadModels() {
             const defaultConfidenceThreshold = Number.isFinite(model.default_confidence_threshold)
                 ? model.default_confidence_threshold
                 : 0.75;
+            const inferenceWidth = Number.isFinite(model.inference_width) ? model.inference_width : '';
+            const inferenceHeight = Number.isFinite(model.inference_height) ? model.inference_height : '';
 
             let engineHtml = '<span class="tag tag-warn">Not compiled</span>';
-            if (model.compiled && model.engine) {
+            if (model.engine) {
                 engineHtml = `<div class="mono">${model.engine.name}</div>` +
                              `<div class="meta">${model.engine.path || ''}</div>`;
                 if (model.engine.tensorrt_version) {
                     engineHtml += `<div class="meta">Compiled with TensorRT ${model.engine.tensorrt_version}</div>`;
+                }
+                if (model.custom_input_size) {
+                    engineHtml += `<div class="meta"><span class="tag tag-run">Custom input size</span></div>`;
+                }
+                if (model.compiled) {
+                    engineHtml += `<div class="meta"><span class="tag tag-ok">Ready</span></div>`;
                 }
             }
 
@@ -306,15 +333,45 @@ async function loadModels() {
                 />
                 <div class="meta">Used by the dashboard for this model.</div>
             `;
+            const settingsHtml = model.type === 'ul'
+                ? `
+                    <div class="settings-grid">
+                        <label class="setting-field">
+                            <span>Width</span>
+                            <input
+                                class="inference-width-input"
+                                type="number"
+                                min="32"
+                                step="1"
+                                value="${inferenceWidth}"
+                                data-previous="${inferenceWidth}"
+                            />
+                        </label>
+                        <label class="setting-field">
+                            <span>Height</span>
+                            <input
+                                class="inference-height-input"
+                                type="number"
+                                min="32"
+                                step="1"
+                                value="${inferenceHeight}"
+                                data-previous="${inferenceHeight}"
+                            />
+                        </label>
+                    </div>
+                  `
+                : '<span class="meta">N/A</span>';
             const actionParts = [];
             if (isCompiling) {
                 actionParts.push(`<button type="button" class="btn-ghost btn-open-job" data-job-id="${latestJob.id}" data-job-title="Compiling ${model.type.toUpperCase()} / ${model.name}">View Logs</button>`);
-            } else if (model.compiled) {
-                actionParts.push('<span class="tag tag-ok">Compiled</span>');
             } else if (hasPtSource) {
-                actionParts.push(`<button type="button" class="btn-compile" data-name="${model.name}" data-type="${model.type}">Compile</button>`);
+                const compileLabel = model.compiled ? 'Recompile' : 'Compile';
+                actionParts.push(`<button type="button" class="btn-compile" data-name="${model.name}" data-type="${model.type}">${compileLabel}</button>`);
             } else {
                 actionParts.push('<span class="tag tag-warn">No .pt</span>');
+            }
+            if (model.compiled) {
+                actionParts.push('<span class="tag tag-ok">Compiled</span>');
             }
             actionParts.push(`<button type="button" class="btn-danger btn-delete-model" data-name="${model.name}" data-type="${model.type}" ${isCompiling ? 'disabled' : ''}>Delete</button>`);
             const actionHtml = actionParts.join(' ');
@@ -333,6 +390,7 @@ async function loadModels() {
                 <td>${engineHtml}${statusMeta}</td>
                 <td>${taskHtml}</td>
                 <td>${defaultConfidenceHtml}</td>
+                <td>${settingsHtml}</td>
                 <td>${actionHtml}</td>
             `;
 
@@ -357,7 +415,7 @@ async function loadModels() {
             select.addEventListener('change', () => updateModelTask(select));
         });
         tbody.querySelectorAll('.default-confidence-input').forEach(input => {
-            input.addEventListener('change', () => updateModelDefaultConfidence(input));
+            input.addEventListener('change', () => updateModelSettings(input));
         });
         tbody.querySelectorAll('.btn-delete-model').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -429,6 +487,9 @@ uploadModelInput.addEventListener('change', async () => {
         }
 
         uploadModelStatusEl.textContent = `Uploaded ${file.name}`;
+        if (Number.isFinite(data.uploaded && data.uploaded.inference_width) && Number.isFinite(data.uploaded && data.uploaded.inference_height)) {
+            uploadModelStatusEl.textContent = `Uploaded ${file.name} (${data.uploaded.inference_width}x${data.uploaded.inference_height})`;
+        }
         if (data.tensorrt && data.tensorrt.current) {
             tensorrtInfoEl.textContent = `Current TensorRT: ${data.tensorrt.current}`;
         }
@@ -450,10 +511,28 @@ async function startCompile(buttonEl, model) {
     buttonEl.textContent = 'Compiling...';
 
     try {
+        const row = buttonEl.closest('tr');
+        if (row) {
+            await saveModelSettings(row, { reload: false });
+        }
+
+        const payload = { name: model.name, type: model.type };
+        if (row && model.type === 'ul') {
+            const widthInput = row.querySelector('.inference-width-input');
+            const heightInput = row.querySelector('.inference-height-input');
+            const inferenceWidth = parseInt(widthInput && widthInput.value, 10);
+            const inferenceHeight = parseInt(heightInput && heightInput.value, 10);
+            if (!Number.isFinite(inferenceWidth) || !Number.isFinite(inferenceHeight)) {
+                throw new Error('Invalid model inference size.');
+            }
+            payload.inference_width = inferenceWidth;
+            payload.inference_height = inferenceHeight;
+        }
+
         const res = await fetch('/api/model-compile', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: model.name, type: model.type })
+            body: JSON.stringify(payload)
         });
         const data = await res.json();
         if (!res.ok) {
@@ -470,7 +549,7 @@ async function startCompile(buttonEl, model) {
     } catch (err) {
         buttonEl.disabled = false;
         buttonEl.textContent = originalText;
-        alert('Failed to start compilation.');
+        alert(err.message || 'Failed to start compilation.');
     }
 }
 
@@ -504,42 +583,95 @@ async function updateModelTask(selectEl) {
     }
 }
 
-async function updateModelDefaultConfidence(inputEl) {
-    const name = inputEl.getAttribute('data-name');
-    const type = inputEl.getAttribute('data-type');
-    const previous = inputEl.getAttribute('data-previous') || '0.75';
-    const threshold = parseFloat(inputEl.value);
+function restorePreviousModelSettings(row) {
+    row.querySelectorAll('.default-confidence-input').forEach(input => {
+        const previous = input.getAttribute('data-previous');
+        if (previous !== null) {
+            input.value = previous;
+        }
+    });
+}
 
-    if (!name || !type || !Number.isFinite(threshold)) {
-        inputEl.value = previous;
-        return;
+function setModelSettingsDisabled(row, disabled) {
+    row.querySelectorAll('.default-confidence-input').forEach(input => {
+        input.disabled = disabled;
+    });
+}
+
+function applySavedModelSettingsToRow(row, data) {
+    if (!row || !data) return;
+
+    const defaultConfidenceInput = row.querySelector('.default-confidence-input');
+    if (defaultConfidenceInput && Number.isFinite(data.default_confidence_threshold)) {
+        const value = Number(data.default_confidence_threshold).toFixed(2);
+        defaultConfidenceInput.value = value;
+        defaultConfidenceInput.setAttribute('data-previous', value);
+    }
+}
+
+function collectModelSettingsPayload(row) {
+    if (!row) {
+        throw new Error('Missing model row.');
     }
 
-    inputEl.disabled = true;
+    const name = row.getAttribute('data-name');
+    const type = row.getAttribute('data-type');
+    const defaultConfidenceInput = row.querySelector('.default-confidence-input');
+    if (!name || !type || !defaultConfidenceInput) {
+        throw new Error('Missing model settings.');
+    }
+
+    const threshold = parseFloat(defaultConfidenceInput.value);
+    if (!Number.isFinite(threshold)) {
+        throw new Error('Invalid default confidence threshold.');
+    }
+
+    const payload = {
+        name,
+        type,
+        default_confidence_threshold: threshold,
+    };
+
+    return payload;
+}
+
+async function saveModelSettings(row, { reload = true } = {}) {
+    const payload = collectModelSettingsPayload(row);
+    setModelSettingsDisabled(row, true);
     try {
         const res = await fetch('/api/model-metadata', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                name,
-                type,
-                default_confidence_threshold: threshold
-            })
+            body: JSON.stringify(payload)
         });
         const data = await res.json();
         if (!res.ok) {
-            throw new Error(data.error || 'Failed to save default confidence threshold.');
+            throw new Error(data.error || 'Failed to save model settings.');
         }
-        const savedThreshold = Number.isFinite(data.default_confidence_threshold)
-            ? data.default_confidence_threshold
-            : threshold;
-        inputEl.value = savedThreshold.toFixed(2);
-        inputEl.setAttribute('data-previous', savedThreshold.toFixed(2));
+        applySavedModelSettingsToRow(row, data);
+        if (reload) {
+            await loadCompileJobs();
+            await loadModels();
+        }
+        return data;
     } catch (err) {
-        inputEl.value = previous;
-        alert(err.message || 'Failed to save default confidence threshold.');
+        restorePreviousModelSettings(row);
+        throw err;
     } finally {
-        inputEl.disabled = false;
+        if (row.isConnected) {
+            setModelSettingsDisabled(row, false);
+        }
+    }
+}
+
+async function updateModelSettings(controlEl) {
+    const row = controlEl.closest('tr');
+    if (!row) return;
+
+    try {
+        await saveModelSettings(row);
+    } catch (err) {
+        alert(err.message || 'Failed to save model settings.');
     }
 }
 

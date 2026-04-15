@@ -309,10 +309,17 @@ class UltralyticsBackend(BotSortTrackerBackend):
         LOGGER.info(f"Initializing Ultralytics Backend with model: {model_path}")
         self.model_path = model_path
         self.model_task = self._normalize_model_task(getattr(args, "model_task", None))
+        self.inference_width = max(int(getattr(args, "model_inference_width", 640) or 640), 32)
+        self.inference_height = max(int(getattr(args, "model_inference_height", 640) or 640), 32)
         self.model = self._load_model(model_path, self.model_task)
         
         args.class_names = self.model.names
         LOGGER.info(f"Model initialized with class names: {self.model.names}")
+        LOGGER.info(
+            "Ultralytics runtime settings: size=%dx%d",
+            self.inference_width,
+            self.inference_height,
+        )
 
     def _normalize_model_task(self, task):
         if task in ("segment", "detect"):
@@ -327,19 +334,47 @@ class UltralyticsBackend(BotSortTrackerBackend):
             LOGGER.error(f"Failed to load UL model {path}: {e}")
             raise e
 
+    def _predict_frame_boxes(self, frame: np.ndarray, model_conf: float, *, offset_x: int = 0, offset_y: int = 0) -> np.ndarray:
+        results = self.model(
+            frame,
+            conf=model_conf,
+            verbose=False,
+            show=False,
+            save=False,
+            half=True,
+        )
+
+        if results is None or len(results) == 0:
+            return np.zeros((0, 6), dtype=np.float32)
+
+        boxes = getattr(results[0], "boxes", None)
+        if boxes is None or len(boxes) == 0:
+            return np.zeros((0, 6), dtype=np.float32)
+
+        xyxy = boxes.xyxy.cpu().numpy()
+        conf = boxes.conf.cpu().numpy().reshape(-1, 1)
+        cls = boxes.cls.cpu().numpy().reshape(-1, 1)
+        predictions = np.hstack((xyxy, conf, cls)).astype(np.float32, copy=False)
+        if predictions.size == 0:
+            return predictions
+        predictions[:, [0, 2]] += float(offset_x)
+        predictions[:, [1, 3]] += float(offset_y)
+        return predictions
+
     def _detect_objects(self, frame: np.ndarray, args):
         model_conf = getattr(args, "model_conf", 0.1)
 
         start_time = time.perf_counter()
-        results = self.model(frame, conf=model_conf, verbose=False, show=False, save=False, half=True)
+        predictions = self._predict_frame_boxes(frame, model_conf)
         end_time = time.perf_counter()
 
-        if results is None or len(results) == 0:
-            h, w = frame.shape[:2]
+        h, w = frame.shape[:2]
+        if predictions.size == 0:
             empty_boxes = Boxes(torch.zeros((0, 6)), orig_shape=(h, w))
-            return [MockResult(empty_boxes)], end_time - start_time 
-        
-        return results, end_time - start_time
+            return [MockResult(empty_boxes)], end_time - start_time
+
+        boxes_obj = Boxes(torch.from_numpy(predictions), orig_shape=(h, w))
+        return [MockResult(boxes_obj)], end_time - start_time
 
 
 class MockResult:

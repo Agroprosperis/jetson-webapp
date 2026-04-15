@@ -2,12 +2,14 @@ import glob
 import json
 import logging
 import os
+import pickletools
 import re
 import subprocess
 import sys
 import threading
 import time
 import uuid
+import zipfile
 
 from collections import deque
 from datetime import datetime
@@ -36,6 +38,8 @@ class ModelManager:
     MODEL_UPLOAD_EXTENSIONS = (".pt",)
     MODEL_COMPILE_METADATA_SUFFIX = ".compile.json"
     DEFAULT_MODEL_CONFIDENCE_THRESHOLD = 0.75
+    DEFAULT_MODEL_INFERENCE_WIDTH = 640
+    DEFAULT_MODEL_INFERENCE_HEIGHT = 640
     COMPILE_JOB_LOG_LIMIT = 500
 
     def __init__(
@@ -210,6 +214,66 @@ class ModelManager:
             return None
         return threshold
 
+    def _sanitize_inference_dimension(self, value):
+        try:
+            dimension = int(value)
+        except (TypeError, ValueError):
+            return None
+        if dimension < 32 or dimension > 8192:
+            return None
+        return dimension
+
+    def _normalize_imgsz_to_dimensions(self, value):
+        if value is None:
+            return None
+
+        if isinstance(value, str):
+            normalized = value.strip().strip("[]()")
+            if not normalized:
+                return None
+            if "," in normalized:
+                parts = [self._sanitize_inference_dimension(part.strip()) for part in normalized.split(",")]
+                if len(parts) >= 2 and parts[0] is not None and parts[1] is not None:
+                    return {
+                        "inference_width": parts[1],
+                        "inference_height": parts[0],
+                    }
+            dimension = self._sanitize_inference_dimension(normalized)
+            if dimension is not None:
+                return {
+                    "inference_width": dimension,
+                    "inference_height": dimension,
+                }
+            return None
+
+        if isinstance(value, (list, tuple)):
+            parts = [self._sanitize_inference_dimension(part) for part in value]
+            if len(parts) >= 2 and parts[0] is not None and parts[1] is not None:
+                return {
+                    "inference_width": parts[1],
+                    "inference_height": parts[0],
+                }
+            if len(parts) == 1 and parts[0] is not None:
+                return {
+                    "inference_width": parts[0],
+                    "inference_height": parts[0],
+                }
+            return None
+
+        dimension = self._sanitize_inference_dimension(value)
+        if dimension is not None:
+            return {
+                "inference_width": dimension,
+                "inference_height": dimension,
+            }
+        return None
+
+    def _default_model_runtime_settings(self):
+        return dict(
+            inference_width=self.DEFAULT_MODEL_INFERENCE_WIDTH,
+            inference_height=self.DEFAULT_MODEL_INFERENCE_HEIGHT,
+        )
+
     def _sanitize_model_metadata_entry(self, value):
         if not isinstance(value, dict):
             return {}
@@ -364,6 +428,220 @@ class ModelManager:
                 return default_threshold
         return self.DEFAULT_MODEL_CONFIDENCE_THRESHOLD
 
+    def _candidate_source_paths_for_model(self, model_type, model_name):
+        base_dir = self._model_dir_for_type(model_type)
+        candidates = []
+        for candidate_name in self._model_name_candidates(model_name):
+            for ext in self.SOURCE_MODEL_EXTENSIONS:
+                candidate_path = os.path.join(base_dir, f"{candidate_name}{ext}")
+                if os.path.isfile(candidate_path):
+                    candidates.append(candidate_path)
+        return tuple(dict.fromkeys(candidates))
+
+    def _detect_ultralytics_imgsz_with_torch(self, source_path):
+        try:
+            import torch
+        except Exception:
+            return None
+
+        try:
+            checkpoint = torch.load(source_path, map_location="cpu", weights_only=False)
+        except TypeError:
+            checkpoint = torch.load(source_path, map_location="cpu")
+        except Exception as exc:
+            self.logger.warning("Failed to inspect checkpoint metadata for %s: %s", source_path, exc)
+            return None
+
+        candidates = []
+        if isinstance(checkpoint, dict):
+            candidates.extend(
+                [
+                    checkpoint.get("train_args"),
+                    checkpoint.get("args"),
+                    checkpoint.get("cfg"),
+                ]
+            )
+
+        for candidate in candidates:
+            imgsz = None
+            if isinstance(candidate, dict):
+                imgsz = candidate.get("imgsz")
+            else:
+                imgsz = getattr(candidate, "imgsz", None)
+            dimensions = self._normalize_imgsz_to_dimensions(imgsz)
+            if dimensions is not None:
+                return dimensions
+        return None
+
+    def _detect_ultralytics_imgsz_from_zip(self, source_path):
+        if not zipfile.is_zipfile(source_path):
+            return None
+
+        try:
+            with zipfile.ZipFile(source_path) as archive:
+                data_name = next((name for name in archive.namelist() if name.endswith("data.pkl")), None)
+                if not data_name:
+                    return None
+                data = archive.read(data_name)
+        except Exception as exc:
+            self.logger.warning("Failed to inspect checkpoint archive for %s: %s", source_path, exc)
+            return None
+
+        try:
+            recent_string = None
+            for opcode, argument, _ in pickletools.genops(data):
+                if opcode.name in {"SHORT_BINUNICODE", "BINUNICODE", "UNICODE"}:
+                    recent_string = argument
+                    continue
+
+                if recent_string != "imgsz":
+                    continue
+
+                if opcode.name in {"BININT", "BININT1", "BININT2"}:
+                    return self._normalize_imgsz_to_dimensions(argument)
+                if opcode.name == "NONE":
+                    return None
+        except Exception as exc:
+            self.logger.warning("Failed to parse checkpoint pickle for %s: %s", source_path, exc)
+        return None
+
+    def _detect_model_inference_size_from_source_path(self, model_type, source_path):
+        if model_type != "ul" or not source_path:
+            return None
+
+        dimensions = self._detect_ultralytics_imgsz_with_torch(source_path)
+        if dimensions is not None:
+            return dimensions
+        return self._detect_ultralytics_imgsz_from_zip(source_path)
+
+    def _resolve_source_inference_size(self, model_type, model_name, *, source_paths=None):
+        if model_type != "ul":
+            return dict(
+                inference_width=self.DEFAULT_MODEL_INFERENCE_WIDTH,
+                inference_height=self.DEFAULT_MODEL_INFERENCE_HEIGHT,
+            )
+
+        source_candidates = tuple(source_paths or ()) or self._candidate_source_paths_for_model(model_type, model_name)
+        for source_path in source_candidates:
+            detected_dimensions = self._detect_model_inference_size_from_source_path(model_type, source_path)
+            if detected_dimensions is not None:
+                return detected_dimensions
+
+        return dict(
+            inference_width=self.DEFAULT_MODEL_INFERENCE_WIDTH,
+            inference_height=self.DEFAULT_MODEL_INFERENCE_HEIGHT,
+        )
+
+    def _extract_inference_size_from_command(self, command):
+        if not isinstance(command, (list, tuple)):
+            return None
+
+        imgsz_arg = next(
+            (
+                str(item).split("=", 1)[1]
+                for item in command
+                if isinstance(item, str) and item.startswith("imgsz=")
+            ),
+            None,
+        )
+        return self._normalize_imgsz_to_dimensions(imgsz_arg)
+
+    def _inspect_engine_inference_size(self, engine_path):
+        if not engine_path or not os.path.isfile(engine_path):
+            return None
+
+        try:
+            import tensorrt as trt
+        except Exception:
+            return None
+
+        try:
+            logger = trt.Logger(trt.Logger.ERROR)
+            runtime = trt.Runtime(logger)
+            with open(engine_path, "rb") as engine_input:
+                engine = runtime.deserialize_cuda_engine(engine_input.read())
+        except Exception as exc:
+            self.logger.warning("Failed to inspect TensorRT engine %s: %s", engine_path, exc)
+            return None
+
+        if engine is None:
+            return None
+
+        try:
+            for tensor_index in range(getattr(engine, "num_io_tensors", 0)):
+                tensor_name = engine.get_tensor_name(tensor_index)
+                if engine.get_tensor_mode(tensor_name) != trt.TensorIOMode.INPUT:
+                    continue
+
+                shape = tuple(engine.get_tensor_shape(tensor_name))
+                dimensions = self._normalize_imgsz_to_dimensions(shape[-2:] if len(shape) >= 2 else None)
+                if dimensions is not None:
+                    return dimensions
+
+                if -1 in shape and getattr(engine, "num_optimization_profiles", 0) > 0 and hasattr(engine, "get_tensor_profile_shape"):
+                    min_shape, opt_shape, max_shape = engine.get_tensor_profile_shape(tensor_name, 0)
+                    for candidate_shape in (opt_shape, max_shape, min_shape):
+                        dimensions = self._normalize_imgsz_to_dimensions(
+                            tuple(candidate_shape)[-2:] if len(candidate_shape) >= 2 else None
+                        )
+                        if dimensions is not None:
+                            return dimensions
+        except Exception as exc:
+            self.logger.warning("Failed to read input tensor shape from %s: %s", engine_path, exc)
+            return None
+
+        return None
+
+    def _resolve_engine_inference_size(self, engine_path):
+        engine_dimensions = self._inspect_engine_inference_size(engine_path)
+        if engine_dimensions is not None:
+            return engine_dimensions
+
+        metadata = self._read_compile_metadata(engine_path)
+        direct_dimensions = self._normalize_imgsz_to_dimensions(
+            [
+                metadata.get("inference_height"),
+                metadata.get("inference_width"),
+            ]
+            if metadata.get("inference_height") and metadata.get("inference_width")
+            else None
+        )
+        if direct_dimensions is not None:
+            return direct_dimensions
+
+        command_dimensions = self._extract_inference_size_from_command(metadata.get("command"))
+        if command_dimensions is not None:
+            return command_dimensions
+
+        return dict(
+            inference_width=self.DEFAULT_MODEL_INFERENCE_WIDTH,
+            inference_height=self.DEFAULT_MODEL_INFERENCE_HEIGHT,
+        )
+
+    def get_catalog_model_runtime_settings(self, model_type, model_name, *, source_paths=None, engine_path=None):
+        settings = dict(
+            inference_width=None,
+            inference_height=None,
+        )
+        settings["default_confidence_threshold"] = self.get_catalog_model_default_confidence_threshold(
+            model_type,
+            model_name,
+        )
+
+        dimensions = None
+        if engine_path and model_type == "ul":
+            dimensions = self._resolve_engine_inference_size(engine_path)
+        if dimensions is None:
+            dimensions = self._resolve_source_inference_size(
+                model_type,
+                model_name,
+                source_paths=source_paths,
+            )
+
+        settings["inference_width"] = self._sanitize_inference_dimension(dimensions.get("inference_width")) or self.DEFAULT_MODEL_INFERENCE_WIDTH
+        settings["inference_height"] = self._sanitize_inference_dimension(dimensions.get("inference_height")) or self.DEFAULT_MODEL_INFERENCE_HEIGHT
+        return settings
+
     def set_model_default_confidence_threshold(self, model_type, model_name, value):
         self._require_catalog_entry(model_type, model_name)
 
@@ -391,6 +669,47 @@ class ModelManager:
             type=model_type,
             name=model_name,
             default_confidence_threshold=normalized_threshold,
+        )
+
+    def set_model_metadata(self, model_type, model_name, payload):
+        entry = self._require_catalog_entry(model_type, model_name)
+        payload = payload or {}
+
+        with self.model_metadata_lock:
+            metadata = self._read_model_metadata_unlocked()
+            key = self._model_task_key(model_type, model_name)
+            stored_entry = dict(metadata.get(key) or {})
+
+            if "default_confidence_threshold" in payload:
+                normalized_threshold = self._sanitize_default_confidence_threshold(
+                    payload.get("default_confidence_threshold")
+                )
+                if normalized_threshold is None:
+                    raise ModelValidationError("Invalid default confidence threshold.")
+                if normalized_threshold == self.DEFAULT_MODEL_CONFIDENCE_THRESHOLD:
+                    stored_entry.pop("default_confidence_threshold", None)
+                else:
+                    stored_entry["default_confidence_threshold"] = normalized_threshold
+
+            stored_entry = self._sanitize_model_metadata_entry(stored_entry)
+            if stored_entry:
+                metadata[key] = stored_entry
+            else:
+                metadata.pop(key, None)
+            self._write_model_metadata_unlocked(metadata)
+
+        saved_settings = self.get_catalog_model_runtime_settings(
+            model_type,
+            model_name,
+            source_paths=entry.get("source_paths") or [],
+            engine_path=(entry.get("engine") or {}).get("path"),
+        )
+        return dict(
+            type=model_type,
+            name=model_name,
+            default_confidence_threshold=saved_settings["default_confidence_threshold"],
+            inference_width=saved_settings["inference_width"],
+            inference_height=saved_settings["inference_height"],
         )
 
     def clear_catalog_model_metadata(self, model_type, model_name):
@@ -457,6 +776,32 @@ class ModelManager:
         base_name = os.path.splitext(parts[-1])[0]
         return self.get_catalog_model_default_confidence_threshold(model_type, base_name)
 
+    def resolve_model_runtime_settings_for_path(self, model_path):
+        defaults = self._default_model_runtime_settings()
+
+        if not model_path:
+            return defaults
+
+        normalized = os.path.normpath(model_path)
+        try:
+            relative = os.path.relpath(normalized, self.model_dir)
+        except ValueError:
+            return defaults
+
+        parts = relative.split(os.sep)
+        if len(parts) < 2:
+            return defaults
+
+        model_type = parts[0]
+        base_name = os.path.splitext(parts[-1])[0]
+        source_candidates = self._candidate_source_paths_for_model(model_type, base_name)
+        return self.get_catalog_model_runtime_settings(
+            model_type,
+            base_name,
+            source_paths=source_candidates,
+            engine_path=normalized if os.path.splitext(normalized)[1].lower() == ".engine" else None,
+        )
+
     def get_current_tensorrt_version(self):
         try:
             import tensorrt as trt
@@ -491,8 +836,11 @@ class ModelManager:
         engine_path,
         *,
         model_type=None,
+        model_name=None,
         source_path=None,
         command=None,
+        inference_width=None,
+        inference_height=None,
     ):
         metadata_path = self._compile_metadata_path(engine_path)
         if not metadata_path:
@@ -504,10 +852,16 @@ class ModelManager:
         )
         if model_type:
             payload["model_type"] = model_type
+        if model_name:
+            payload["model_name"] = model_name
         if source_path:
             payload["source_path"] = source_path
         if command:
             payload["command"] = list(command)
+        if inference_width is not None:
+            payload["inference_width"] = int(inference_width)
+        if inference_height is not None:
+            payload["inference_height"] = int(inference_height)
 
         try:
             with open(metadata_path, "w", encoding="utf-8") as fp:
@@ -552,6 +906,7 @@ class ModelManager:
             model = job.get("model") or {}
             source_path = model.get("source")
             model_type = model.get("type")
+            model_name = model.get("name")
             command = job.get("command")
 
         engine_path = self._resolve_compiled_engine_path(model_type, source_path)
@@ -561,6 +916,7 @@ class ModelManager:
         self._write_compile_metadata(
             engine_path,
             model_type=model_type,
+            model_name=model_name,
             source_path=source_path,
             command=command,
         )
@@ -638,7 +994,10 @@ class ModelManager:
             if not os.path.exists(candidate_path):
                 continue
             engine = self._new_engine_info(candidate_path)
+            engine_dimensions = self._resolve_engine_inference_size(candidate_path)
             metadata = self._read_compile_metadata(candidate_path)
+            if engine_dimensions is not None:
+                engine.update(engine_dimensions)
             if metadata:
                 engine.update(
                     dict(
@@ -649,14 +1008,27 @@ class ModelManager:
             return engine
         return None
 
-    def _build_compile_command(self, model_type, source_path):
+    def _build_compile_command(self, model_type, source_path, *, inference_width=None, inference_height=None):
         if model_type == "ul":
+            model_name = os.path.splitext(os.path.basename(source_path))[0]
+            dimensions = self._normalize_imgsz_to_dimensions(
+                [
+                    inference_height,
+                    inference_width,
+                ]
+                if inference_width is not None and inference_height is not None
+                else None
+            ) or self._resolve_source_inference_size(
+                model_type,
+                model_name,
+                source_paths=(source_path,),
+            )
             return [
                 "yolo",
                 "export",
                 "format=engine",
                 f"model={source_path}",
-                "imgsz=640",
+                f"imgsz={dimensions['inference_height']},{dimensions['inference_width']}",
                 "half",
             ]
         return [sys.executable, self.convert_script, "--model", source_path]
@@ -805,26 +1177,20 @@ class ModelManager:
 
     def list_engine_models(self):
         models = []
-        for model_type in self.SUPPORTED_MODEL_TYPES:
-            pattern = os.path.join(self._model_dir_for_type(model_type), "*.engine")
-            for path in sorted(glob.glob(pattern)):
-                name = os.path.basename(path)
-                models.append(
-                    dict(
-                        path=path,
-                        name=name,
-                        type=model_type,
-                        display=f"[{model_type.upper()}] {name}",
-                        default_confidence_threshold=self.get_catalog_model_default_confidence_threshold(
-                            model_type,
-                            os.path.splitext(name)[0],
-                        ),
-                        owner_username=self.auth.get_model_owner_username(
-                            model_type,
-                            os.path.splitext(name)[0],
-                        ),
-                    )
+        for entry in self.build_model_catalog():
+            engine = entry.get("engine")
+            if not entry.get("compiled") or not engine:
+                continue
+            models.append(
+                dict(
+                    path=engine.get("path"),
+                    name=engine.get("name"),
+                    type=entry.get("type"),
+                    display=f"[{(entry.get('type') or '').upper()}] {engine.get('name')}",
+                    default_confidence_threshold=entry.get("default_confidence_threshold", self.DEFAULT_MODEL_CONFIDENCE_THRESHOLD),
+                    owner_username=entry.get("owner_username"),
                 )
+            )
         return models
 
     def build_model_catalog(self):
@@ -854,14 +1220,31 @@ class ModelManager:
         models = []
         for (model_type, base_name), entry in sorted(model_map.items(), key=lambda item: item[0]):
             engine = self._find_catalog_engine(model_type, base_name)
+            source_settings = self.get_catalog_model_runtime_settings(
+                model_type,
+                base_name,
+                source_paths=entry.get("source_paths") or [],
+                engine_path=None,
+            )
+            runtime_settings = self.get_catalog_model_runtime_settings(
+                model_type,
+                base_name,
+                source_paths=entry.get("source_paths") or [],
+                engine_path=(engine or {}).get("path"),
+            )
             entry["engine"] = engine
+            entry["custom_input_size"] = False
+            if model_type == "ul" and engine is not None:
+                entry["custom_input_size"] = (
+                    runtime_settings["inference_width"] != source_settings["inference_width"]
+                    or runtime_settings["inference_height"] != source_settings["inference_height"]
+                )
             entry["compiled"] = engine is not None
             entry["display"] = f"[{model_type.upper()}] {base_name}"
             entry["task"] = self.get_catalog_model_task(model_type, base_name)
-            entry["default_confidence_threshold"] = self.get_catalog_model_default_confidence_threshold(
-                model_type,
-                base_name,
-            )
+            entry["default_confidence_threshold"] = runtime_settings["default_confidence_threshold"]
+            entry["inference_width"] = runtime_settings["inference_width"] if model_type == "ul" else None
+            entry["inference_height"] = runtime_settings["inference_height"] if model_type == "ul" else None
             entry["owner_username"] = self.auth.get_model_owner_username(model_type, base_name)
             models.append(entry)
 
@@ -897,12 +1280,26 @@ class ModelManager:
 
         model_name = os.path.splitext(filename)[0]
         self.auth.store_model_owner(normalized_type, model_name, owner_user_id)
-        return dict(type=normalized_type, name=model_name, path=target_path)
+        detected_width = None
+        detected_height = None
+        if normalized_type == "ul":
+            detected_dimensions = self._detect_model_inference_size_from_source_path(
+                normalized_type,
+                target_path,
+            )
+            detected_width = (detected_dimensions or {}).get("inference_width")
+            detected_height = (detected_dimensions or {}).get("inference_height")
 
-    def start_compile(self, model_type, model_name):
+        return dict(
+            type=normalized_type,
+            name=model_name,
+            path=target_path,
+            inference_width=detected_width,
+            inference_height=detected_height,
+        )
+
+    def start_compile(self, model_type, model_name, *, inference_width=None, inference_height=None):
         entry = self._require_catalog_entry(model_type, model_name)
-        if entry.get("compiled"):
-            raise ModelValidationError("Model already compiled.")
 
         with self.compile_jobs_lock:
             existing_job = self._find_active_job_for_model(model_type, model_name)
@@ -913,7 +1310,12 @@ class ModelManager:
         if not source_path:
             raise ModelValidationError("No .pt source found for compilation.")
 
-        command = self._build_compile_command(model_type, source_path)
+        command = self._build_compile_command(
+            model_type,
+            source_path,
+            inference_width=inference_width,
+            inference_height=inference_height,
+        )
         job_id = uuid.uuid4().hex
 
         with self.compile_jobs_lock:

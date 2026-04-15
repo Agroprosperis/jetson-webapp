@@ -1346,6 +1346,14 @@ def api_model_compile():
               enum: ['ul', 'rf']
             name:
               type: string
+            inference_width:
+              type: integer
+              minimum: 32
+              description: Optional compile width for Ultralytics engine export.
+            inference_height:
+              type: integer
+              minimum: 32
+              description: Optional compile height for Ultralytics engine export.
     responses:
       200:
         description: Compile job queued
@@ -1368,6 +1376,8 @@ def api_model_compile():
             model_manager.start_compile(
                 payload.get("type"),
                 payload.get("name"),
+                inference_width=payload.get("inference_width"),
+                inference_height=payload.get("inference_height"),
             )
         )
     except ModelValidationError as exc:
@@ -1461,7 +1471,6 @@ def api_model_metadata():
           required:
             - type
             - name
-            - default_confidence_threshold
           properties:
             type:
               type: string
@@ -1484,13 +1493,7 @@ def api_model_metadata():
     payload = flask.request.get_json(silent=True) or {}
 
     try:
-        return flask.jsonify(
-            model_manager.set_model_default_confidence_threshold(
-                payload.get("type"),
-                payload.get("name"),
-                payload.get("default_confidence_threshold"),
-            )
-        )
+        return flask.jsonify(model_manager.set_model_metadata(payload.get("type"), payload.get("name"), payload))
     except ModelValidationError as exc:
         return flask.jsonify({"error": str(exc)}), 400
     except ModelNotFoundError as exc:
@@ -2465,6 +2468,7 @@ def api_start():
 
         requested_model_task = model_manager.sanitize_ul_model_task(data.get("model_task"))
         resolved_model_task = requested_model_task or model_manager.resolve_model_task_for_path(model_path)
+        runtime_model_settings = model_manager.resolve_model_runtime_settings_for_path(model_path)
 
         if "vis_conf" in raw_data:
             requested_conf = float(raw_data.get("vis_conf"))
@@ -2489,6 +2493,8 @@ def api_start():
             output_stream='WebRTC',
             model_path=model_path,
             model_task=resolved_model_task,
+            model_inference_width=runtime_model_settings.get("inference_width"),
+            model_inference_height=runtime_model_settings.get("inference_height"),
         ))
 
         if source_type == "camera":
@@ -2565,6 +2571,8 @@ def api_start():
             "video_description": video_desc,
             "model_path": model_path,
             "model_task": resolved_model_task,
+            "model_inference_width": runtime_model_settings.get("inference_width"),
+            "model_inference_height": runtime_model_settings.get("inference_height"),
         }
         auth.store_result_owner(pipeline_id, flask.g.current_user["id"])
 
