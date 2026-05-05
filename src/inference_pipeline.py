@@ -717,7 +717,7 @@ def _grid_count_enabled(args) -> bool:
             return bool(getter())
         except Exception:
             LOGGER.exception("Failed to read grid counting toggle")
-    return bool(getattr(args, "grid_count_enabled", True))
+    return bool(getattr(args, "grid_count_enabled", False))
 
 
 def _grid_score_threshold(args) -> float:

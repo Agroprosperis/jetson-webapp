@@ -60,7 +60,7 @@ DEFAULT_DASHBOARD_SETTINGS = {
     "uploaded_path": "",
     "model_path": "",
     "vis_conf": 0.75,
-    "grid_count_enabled": True,
+    "grid_count_enabled": False,
     "grid_debug_enabled": False,
     "grid_score_threshold": 0.30,
 }
@@ -416,7 +416,7 @@ def init_auth_storage():
                     uploaded_path TEXT NOT NULL DEFAULT '',
                     model_path TEXT NOT NULL DEFAULT '',
                     vis_conf REAL NOT NULL DEFAULT 0.75,
-                    grid_count_enabled INTEGER NOT NULL DEFAULT 1,
+                    grid_count_enabled INTEGER NOT NULL DEFAULT 0,
                     grid_debug_enabled INTEGER NOT NULL DEFAULT 0,
                     grid_score_threshold REAL NOT NULL DEFAULT 0.30,
                     updated_at TEXT NOT NULL
@@ -655,7 +655,7 @@ def resolve_dashboard_start_payload(raw_payload, user):
         "model_path": raw_payload.get("model_path", settings.get("model_path", "")),
         "model_task": raw_payload.get("model_task"),
         "vis_conf": raw_payload.get("vis_conf", settings.get("vis_conf", 0.75)),
-        "grid_count_enabled": raw_payload.get("grid_count_enabled", settings.get("grid_count_enabled", True)),
+        "grid_count_enabled": raw_payload.get("grid_count_enabled", settings.get("grid_count_enabled", False)),
         "grid_debug_enabled": raw_payload.get("grid_debug_enabled", settings.get("grid_debug_enabled", False)),
         "grid_score_threshold": raw_payload.get("grid_score_threshold", settings.get("grid_score_threshold", 0.30)),
     }

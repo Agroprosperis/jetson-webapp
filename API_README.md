@@ -119,8 +119,8 @@ curl -X GET "http://localhost:8000/api/dashboard-settings" \
     "height": 0,
     "width": 0
   },
-  "grid_count_enabled": true,
-  "grid_debug_enabled": true,
+  "grid_count_enabled": false,
+  "grid_debug_enabled": false,
   "grid_score_threshold": 0.0,
   "model_path": "string",
   "source_type": "camera",
@@ -144,7 +144,7 @@ curl -X PUT "http://localhost:8000/api/dashboard-settings" \
   -H "accept: application/json" \
   -H "Authorization: Bearer <access_token>" \
   -H "Content-Type: application/json" \
-  -d '{"analysis_number": "string", "camera_device": "string", "camera_mode": {"format": "string", "fps": 0, "height": 0, "width": 0}, "grid_count_enabled": true, "grid_debug_enabled": true, "grid_score_threshold": 0.0, "model_path": "string", "source_type": "camera", "uploaded_path": "string", "vis_conf": 0.0}'
+  -d '{"analysis_number": "string", "camera_device": "string", "camera_mode": {"format": "string", "fps": 0, "height": 0, "width": 0}, "grid_count_enabled": false, "grid_debug_enabled": false, "grid_score_threshold": 0.0, "model_path": "string", "source_type": "camera", "uploaded_path": "string", "vis_conf": 0.0}'
 ```
 
 ### Response
@@ -697,7 +697,7 @@ curl -X POST "http://localhost:8000/api/start" \
   -H "accept: application/json" \
   -H "Authorization: Bearer <access_token>" \
   -H "Content-Type: application/json" \
-  -d '{"analysis_number": "string", "device": "string", "format": "string", "fps": 0, "grid_count_enabled": true, "grid_debug_enabled": true, "grid_score_threshold": 0.0, "height": 0, "model_path": "string", "model_task": "segment", "source_type": "camera", "video": "string", "vis_conf": 0.0, "vis_strategy": "string", "width": 0}'
+  -d '{"analysis_number": "string", "device": "string", "format": "string", "fps": 0, "grid_count_enabled": false, "grid_debug_enabled": false, "grid_score_threshold": 0.0, "height": 0, "model_path": "string", "model_task": "segment", "source_type": "camera", "video": "string", "vis_conf": 0.0, "vis_strategy": "string", "width": 0}'
 ```
 
 ### Response
@@ -741,8 +741,8 @@ curl -X GET "http://localhost:8000/api/status" \
   },
   "pipeline_id": "string",
   "runtime": {
-    "grid_auto_disabled": true,
-    "grid_count_enabled": true,
+    "grid_auto_disabled": false,
+    "grid_count_enabled": false,
     "grid_score": 0.0,
     "grid_score_threshold": 0.0
   },

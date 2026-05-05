@@ -78,7 +78,7 @@ current_config = {}
 last_error = None  # type: str | None
 pipeline_id = None  # type: str | None
 runtime_options = {
-    "grid_count_enabled": True,
+    "grid_count_enabled": False,
     "grid_debug_enabled": False,
     "grid_score": None,
     "grid_score_threshold": 0.30,
@@ -119,7 +119,7 @@ def _coerce_threshold(value):
 
 def get_grid_count_enabled():
     with runtime_options_lock:
-        return bool(runtime_options.get("grid_count_enabled", True))
+        return bool(runtime_options.get("grid_count_enabled", False))
 
 
 def get_grid_score():
@@ -169,7 +169,7 @@ def set_grid_score_threshold(value):
 def get_runtime_options():
     with runtime_options_lock:
         return {
-            "grid_count_enabled": bool(runtime_options.get("grid_count_enabled", True)),
+            "grid_count_enabled": bool(runtime_options.get("grid_count_enabled", False)),
             "grid_debug_enabled": bool(runtime_options.get("grid_debug_enabled", False)),
             "grid_score": runtime_options.get("grid_score"),
             "grid_score_threshold": float(runtime_options.get("grid_score_threshold", 0.30)),
