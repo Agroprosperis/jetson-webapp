@@ -673,7 +673,7 @@ def dump_screenshot(result, vis, hq_output_dir, pipeline_id, saved_track_ids, fr
         saved_track_ids.add(track_id)
 
 
-def dump_manual_snapshot(vis, run_dir, pipeline_id, frame_count, fps, request_id) -> str:
+def dump_manual_snapshot(frame, run_dir, pipeline_id, frame_count, fps, request_id) -> str:
     if fps and fps > 0:
         frame_ts_ms = int(round((frame_count - 1) * 1000.0 / fps))
     else:
@@ -685,7 +685,7 @@ def dump_manual_snapshot(vis, run_dir, pipeline_id, frame_count, fps, request_id
     )
     saved = cv2.imwrite(
         os.path.join(run_dir, filename),
-        vis,
+        frame,
         [cv2.IMWRITE_JPEG_QUALITY, 100],
     )
     if not saved:
@@ -989,7 +989,7 @@ def output_loop(
                 for request_id in snapshot_controller.consume_snapshot_requests():
                     try:
                         filename = dump_manual_snapshot(
-                            vis,
+                            frame,
                             run_dir,
                             pipeline_id,
                             frame_count,
