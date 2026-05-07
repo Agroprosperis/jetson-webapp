@@ -1,0 +1,14 @@
+[Unit]
+Description=Watch host timezone changes for Tilletia App
+
+[Path]
+PathChanged=/etc
+PathModified=/etc
+PathChanged=/etc/localtime
+PathModified=/etc/localtime
+PathChanged=/etc/timezone
+PathModified=/etc/timezone
+Unit=tilletia-app-timezone-sync.service
+
+[Install]
+WantedBy=multi-user.target

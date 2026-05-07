@@ -4,8 +4,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+LOCAL_DATA_ROOT="$APP_DIR/data"
+LOCAL_CONFIG_ROOT="$LOCAL_DATA_ROOT/config"
 
-export TILLETIA_DATA_ROOT="${TILLETIA_DATA_ROOT:-$APP_DIR/data}"
+if [[ -f "/etc/tilletia-app/mediamtx.yml" ]]; then
+  export TILLETIA_DATA_ROOT="${TILLETIA_DATA_ROOT:-/var/lib/tilletia-app}"
+  export TILLETIA_CONFIG_ROOT="${TILLETIA_CONFIG_ROOT:-/etc/tilletia-app}"
+else
+  export TILLETIA_DATA_ROOT="${TILLETIA_DATA_ROOT:-$LOCAL_DATA_ROOT}"
+  export TILLETIA_CONFIG_ROOT="${TILLETIA_CONFIG_ROOT:-$LOCAL_CONFIG_ROOT}"
+fi
+
 mkdir -p \
   "$TILLETIA_DATA_ROOT/model/ul" \
   "$TILLETIA_DATA_ROOT/model/rf" \

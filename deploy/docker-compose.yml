@@ -6,6 +6,8 @@ services:
     restart: unless-stopped
     volumes:
       - ${MEDIAMTX_CONFIG_PATH:-/etc/tilletia-app/mediamtx.yml}:/mediamtx.yml:ro
+      - ${TILLETIA_CONFIG_ROOT:-/etc/tilletia-app}/localtime:/etc/localtime:ro
+      - ${TILLETIA_CONFIG_ROOT:-/etc/tilletia-app}/timezone:/etc/timezone:ro
 
   tilletia-app:
     image: tilletia-app:latest
@@ -26,3 +28,5 @@ services:
       - ${TILLETIA_DATA_ROOT:-/var/lib/tilletia-app}/model:/app/model
       - ${TILLETIA_DATA_ROOT:-/var/lib/tilletia-app}/output_hq:/app/output_hq
       - ${TILLETIA_DATA_ROOT:-/var/lib/tilletia-app}/runs:/app/runs
+      - ${TILLETIA_CONFIG_ROOT:-/etc/tilletia-app}/localtime:/etc/localtime:ro
+      - ${TILLETIA_CONFIG_ROOT:-/etc/tilletia-app}/timezone:/etc/timezone:ro

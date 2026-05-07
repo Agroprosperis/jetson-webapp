@@ -1,0 +1,6 @@
+[Unit]
+Description=Sync host timezone files for Tilletia App
+
+[Service]
+Type=oneshot
+ExecStart=__DEPLOY_DIR__/tilletia-app-timezone-sync.sh --config-root /etc/tilletia-app

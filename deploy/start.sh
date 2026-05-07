@@ -7,6 +7,8 @@ COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 MEDIAMTX_CONFIG="/etc/tilletia-app/mediamtx.yml"
 LOCAL_MEDIAMTX_CONFIG="$APP_DIR/config/mediamtx.yml"
 LOCAL_DATA_ROOT="$APP_DIR/data"
+LOCAL_CONFIG_ROOT="$LOCAL_DATA_ROOT/config"
+TIMEZONE_SYNC_SCRIPT="$SCRIPT_DIR/tilletia-app-timezone-sync.sh"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "docker is not installed or not in PATH"
@@ -16,10 +18,12 @@ fi
 if [[ -f "$MEDIAMTX_CONFIG" ]]; then
   export MEDIAMTX_CONFIG_PATH="$MEDIAMTX_CONFIG"
   export TILLETIA_DATA_ROOT="/var/lib/tilletia-app"
+  export TILLETIA_CONFIG_ROOT="/etc/tilletia-app"
 else
   echo "No system config found at $MEDIAMTX_CONFIG. Starting in standalone mode."
   export MEDIAMTX_CONFIG_PATH="$LOCAL_MEDIAMTX_CONFIG"
   export TILLETIA_DATA_ROOT="$LOCAL_DATA_ROOT"
+  export TILLETIA_CONFIG_ROOT="$LOCAL_CONFIG_ROOT"
 fi
 
 if [[ ! -f "$MEDIAMTX_CONFIG_PATH" ]]; then
@@ -32,6 +36,8 @@ mkdir -p \
   "$TILLETIA_DATA_ROOT/model/rf" \
   "$TILLETIA_DATA_ROOT/output_hq" \
   "$TILLETIA_DATA_ROOT/runs"
+
+"$TIMEZONE_SYNC_SCRIPT" --config-root "$TILLETIA_CONFIG_ROOT" --force
 
 docker compose -f "$COMPOSE_FILE" up --build --remove-orphans -d
 
