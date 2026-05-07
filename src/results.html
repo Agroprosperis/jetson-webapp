@@ -10,6 +10,7 @@
 body { margin:0; background:#111; color:#eee; font-family:system-ui, Segoe UI, Roboto, Arial; padding: 20px; }
 h1 { margin-bottom: 20px; font-weight: 300; }
 table { width: 100%; border-collapse: collapse; background: #222; border-radius: 8px; overflow: hidden; }
+table { min-width: 980px; }
 th, td { text-align: left; padding: 12px 16px; border-bottom: 1px solid #333; }
 th { background: #1b1b1b; font-weight: 600; color: #aaa; text-transform: uppercase; font-size: 12px; }
 tr:last-child td { border-bottom: none; }
@@ -56,6 +57,8 @@ a:hover { text-decoration: underline; }
 .toolbar button { cursor:pointer; }
 .toolbar button:hover { background:#2a2a2a; }
 .file-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.metric-cell { white-space: nowrap; color: #ddd; }
+.table-wrap { overflow-x: auto; }
 </style>
 </head>
 <body>
@@ -75,24 +78,39 @@ a:hover { text-decoration: underline; }
 
 <div id="loading">Loading...</div>
 
-<table id="resultsTable" style="display:none;">
-    <thead>
-        <tr>
-            <th>Folder / File</th>
-            {% if can_view_result_owners %}<th>Owner</th>{% endif %}
-            <th>Type</th>
-            <th>Size</th>
-            <th>Actions</th>
-        </tr>
-    </thead>
-    <tbody id="resultsBody"></tbody>
-</table>
+<div class="table-wrap">
+    <table id="resultsTable" style="display:none;">
+        <thead>
+            <tr>
+                <th>Folder / File</th>
+                {% if can_view_result_owners %}<th>Owner</th>{% endif %}
+                <th>Duration</th>
+                <th>Detected Objects</th>
+                <th>S-value</th>
+                <th>Type</th>
+                <th>Size</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody id="resultsBody"></tbody>
+    </table>
+</div>
 
 <script src="/auth-client.js"></script>
 <script>
 const CAN_DELETE_RESULTS = {{ 'true' if can_delete_results else 'false' }};
 const CAN_CONFIGURE_DASHBOARD = {{ 'true' if can_configure_dashboard else 'false' }};
 const SHOW_OWNER_COLUMN = {{ 'true' if can_view_result_owners else 'false' }};
+
+function formatIntegerMetric(value) {
+    return value === null || value === undefined || value === '' ? '-' : value;
+}
+
+function formatDecimalMetric(value, decimals = 1) {
+    if (value === null || value === undefined || value === '') return '-';
+    const numberValue = Number(value);
+    return Number.isFinite(numberValue) ? numberValue.toFixed(decimals) : '-';
+}
 
 function buildResultsUrl() {
     const params = new URLSearchParams();
@@ -150,6 +168,9 @@ async function loadResults() {
                     </div>
                 </td>
                 ${ownerCell}
+                <td class="metric-cell">${item.duration || '-'}</td>
+                <td class="metric-cell">${formatIntegerMetric(item.detected_objects)}</td>
+                <td class="metric-cell">${formatDecimalMetric(item.s_value)}</td>
                 <td class="file-type">folder</td>
                 <td>-</td>
                 <td>
@@ -172,7 +193,7 @@ async function loadResults() {
                     const fileUrl = `/download/${encodeURI(file.path)}`;
                     return `<a class="gallery-link" href="${fileUrl}" data-gallery="run-${item.id}"><img src="${fileUrl}" loading="lazy" alt="${file.name}" /></a>`;
                 }).join('');
-            galleryRow.innerHTML = `<td colspan="${SHOW_OWNER_COLUMN ? 5 : 4}"><div class="gallery">${galleryItems}</div></td>`;
+            galleryRow.innerHTML = `<td colspan="${SHOW_OWNER_COLUMN ? 8 : 7}"><div class="gallery">${galleryItems}</div></td>`;
             tbody.appendChild(galleryRow);
 
             (item.files || []).forEach(file => {
@@ -193,6 +214,9 @@ async function loadResults() {
                 tr.innerHTML = `
                     <td>${file.name}</td>
                     ${fileOwnerCell}
+                    <td></td>
+                    <td></td>
+                    <td></td>
                     <td class="file-type">${typeLabel}</td>
                     <td>${file.size || '-'}</td>
                     <td>

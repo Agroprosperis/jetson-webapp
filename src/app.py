@@ -12,6 +12,7 @@ import re
 import requests
 import shutil
 import socket
+import struct
 import threading
 import time
 import tokens
@@ -39,6 +40,7 @@ CONFIG_FILEPATH = "/app/config.json"
 HQ_OUTPUT_DIR = "/app/output_hq"
 VENDOR_DIR = "/opt/web/vendor"
 RESULT_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")
+RESULT_VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".mov")
 
 app = flask.Flask(__name__, template_folder=".")
 
@@ -272,6 +274,169 @@ def _result_matches_date(timestamp_value, selected_date=None):
     return selected_date is None or result_date == selected_date
 
 
+def _get_video_duration_seconds(video_path):
+    if os.path.splitext(video_path)[1].lower() != ".mkv":
+        return None
+
+    return _get_mkv_duration_seconds(video_path)
+
+
+def _read_ebml_vint(data, offset, *, strip_marker):
+    if offset >= len(data):
+        return None, offset
+
+    first = data[offset]
+    mask = 0x80
+    length = 1
+    while length <= 8 and not (first & mask):
+        mask >>= 1
+        length += 1
+
+    if length > 8 or offset + length > len(data):
+        return None, offset
+
+    value = first & (mask - 1) if strip_marker else first
+    for byte in data[offset + 1:offset + length]:
+        value = (value << 8) | byte
+
+    return value, offset + length
+
+
+def _parse_ebml_float(payload):
+    if len(payload) == 4:
+        return float(struct.unpack(">f", payload)[0])
+    if len(payload) == 8:
+        return float(struct.unpack(">d", payload)[0])
+    return None
+
+
+def _parse_ebml_uint(payload):
+    value = 0
+    for byte in payload:
+        value = (value << 8) | byte
+    return value
+
+
+def _get_mkv_duration_seconds(video_path, *, max_header_bytes=2_000_000):
+    try:
+        with open(video_path, "rb") as video_input:
+            data = video_input.read(max_header_bytes)
+    except OSError:
+        LOGGER.warning("Failed to read MKV header: %s", video_path, exc_info=True)
+        return None
+
+    duration_marker = bytes.fromhex("4489")
+    duration_index = data.find(duration_marker)
+    if duration_index < 0:
+        return None
+
+    duration_id, value_offset = _read_ebml_vint(data, duration_index, strip_marker=False)
+    if duration_id != 0x4489:
+        return None
+
+    duration_size, payload_offset = _read_ebml_vint(data, value_offset, strip_marker=True)
+    if duration_size is None or duration_size <= 0:
+        return None
+
+    duration_end = payload_offset + duration_size
+    if duration_end > len(data):
+        return None
+
+    duration_value = _parse_ebml_float(data[payload_offset:duration_end])
+    if duration_value is None or duration_value <= 0:
+        return None
+
+    timecode_scale = 1_000_000
+    scale_marker = bytes.fromhex("2AD7B1")
+    scale_index = data.rfind(scale_marker, 0, duration_index)
+    if scale_index >= 0:
+        scale_id, scale_value_offset = _read_ebml_vint(data, scale_index, strip_marker=False)
+        if scale_id == 0x2AD7B1:
+            scale_size, scale_payload_offset = _read_ebml_vint(data, scale_value_offset, strip_marker=True)
+            scale_end = scale_payload_offset + scale_size if scale_size is not None else len(data) + 1
+            if scale_size is not None and scale_size > 0 and scale_end <= len(data):
+                parsed_scale = _parse_ebml_uint(data[scale_payload_offset:scale_end])
+                if parsed_scale > 0:
+                    timecode_scale = parsed_scale
+
+    return duration_value * timecode_scale / 1_000_000_000
+
+
+def _read_last_nonempty_line(path, *, chunk_size=8192):
+    with open(path, "rb") as input_file:
+        input_file.seek(0, os.SEEK_END)
+        position = input_file.tell()
+        buffer = b""
+
+        while position > 0:
+            read_size = min(chunk_size, position)
+            position -= read_size
+            input_file.seek(position)
+            buffer = input_file.read(read_size) + buffer
+            lines = buffer.splitlines()
+            candidates = lines[1:] if position > 0 else lines
+
+            for line in reversed(candidates):
+                if line.strip():
+                    return line.decode("utf-8")
+
+    return None
+
+
+def _read_last_csv_row_fast(csv_path):
+    last_line = _read_last_nonempty_line(csv_path)
+    if not last_line:
+        return None
+
+    with open(csv_path, "r", newline="", encoding="utf-8") as csv_input:
+        header_line = csv_input.readline()
+    if not header_line:
+        return None
+
+    reader = csv.DictReader(io.StringIO(header_line + last_line + "\n"))
+    return next(reader, None)
+
+
+def _format_duration(seconds):
+    if seconds is None:
+        return "-"
+
+    total_seconds = max(0, int(round(seconds)))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes}:{seconds:02d}"
+
+
+def _read_result_csv_summary(csv_path):
+    if not os.path.isfile(csv_path):
+        return {
+            "detected_objects": None,
+            "s_value": None,
+        }
+
+    try:
+        row = _coerce_csv_row(_read_last_csv_row_fast(csv_path))
+    except Exception:
+        LOGGER.exception("Failed to read result CSV summary: %s", csv_path)
+        return {
+            "detected_objects": None,
+            "s_value": None,
+        }
+
+    if not row:
+        return {
+            "detected_objects": None,
+            "s_value": None,
+        }
+
+    return {
+        "detected_objects": row.get("total_unique_objects"),
+        "s_value": row.get("s_value"),
+    }
+
+
 def _build_result_metadata(run_id):
     run_path = os.path.join(HQ_OUTPUT_DIR, run_id)
     if not os.path.isdir(run_path):
@@ -279,6 +444,7 @@ def _build_result_metadata(run_id):
 
     files = []
     latest_mtime = 0
+    longest_duration_seconds = None
     for filename in sorted(os.listdir(run_path)):
         full_path = os.path.join(run_path, filename)
         if not os.path.isfile(full_path):
@@ -292,15 +458,27 @@ def _build_result_metadata(run_id):
             "path": f"{run_id}/{filename}",
             "size": f"{size_mb} MB",
         })
+        if os.path.splitext(filename)[1].lower() in RESULT_VIDEO_EXTENSIONS:
+            duration_seconds = _get_video_duration_seconds(full_path)
+            if duration_seconds is not None and (
+                longest_duration_seconds is None
+                or duration_seconds > longest_duration_seconds
+            ):
+                longest_duration_seconds = duration_seconds
 
     timestamp = datetime.fromtimestamp(latest_mtime).strftime('%Y-%m-%d %H:%M:%S') if latest_mtime else "-"
     csv_path = os.path.join(run_path, f"{run_id}.csv")
     video_path = os.path.join(run_path, f"{run_id}.mkv")
+    csv_summary = _read_result_csv_summary(csv_path)
 
     return {
         "id": run_id,
         "run_path": run_path,
         "timestamp": timestamp,
+        "duration": _format_duration(longest_duration_seconds),
+        "duration_seconds": longest_duration_seconds,
+        "detected_objects": csv_summary["detected_objects"],
+        "s_value": csv_summary["s_value"],
         "files": files,
         "_mtime": latest_mtime,
         "csv_path": csv_path if os.path.isfile(csv_path) else None,
@@ -324,7 +502,7 @@ def _resolve_result_video_path(run_id, requested_relative_path=""):
     else:
         candidate_path = os.path.abspath(os.path.join(run_dir, f"{run_id}.mkv"))
 
-    if os.path.splitext(candidate_path)[1].lower() not in {".mkv", ".mp4", ".avi", ".mov"}:
+    if os.path.splitext(candidate_path)[1].lower() not in RESULT_VIDEO_EXTENSIONS:
         raise ValueError("Selected result file is not a video.")
     if not os.path.isfile(candidate_path):
         raise FileNotFoundError("Result video not found.")
@@ -1832,6 +2010,14 @@ def api_list_results():
                     type: string
                   timestamp:
                     type: string
+                  duration:
+                    type: string
+                  duration_seconds:
+                    type: number
+                  detected_objects:
+                    type: integer
+                  s_value:
+                    type: number
                   files:
                     type: array
                     items:
