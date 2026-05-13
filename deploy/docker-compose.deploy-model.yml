@@ -1,0 +1,9 @@
+services:
+  deploy-model:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.deploy-model
+    image: tilletia-deploy-model:latest
+    network_mode: host
+    volumes:
+      - ${PWD:-.}/deployment-model-package:/output

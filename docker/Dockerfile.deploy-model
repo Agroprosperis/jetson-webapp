@@ -1,0 +1,20 @@
+FROM python:3.10-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    MODEL_CACHE_DIR=/tmp/cache \
+    TENSORRT_CACHE_PATH=/tmp/cache \
+    ONNXRUNTIME_EXECUTION_PROVIDERS="[CPUExecutionProvider]" \
+    DEPLOY_MODEL_OUTPUT_DIR=/output
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir inference onnxruntime pillow
+
+COPY src/prepare_deployment_package.py /app/prepare_deployment_package.py
+
+ENTRYPOINT ["python", "/app/prepare_deployment_package.py"]
