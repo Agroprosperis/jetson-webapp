@@ -5,16 +5,7 @@ import sys
 import shutil
 import argparse
 
-# 1. Ensure rfdetr is installed
-try:
-    import rfdetr
-    print("rfdetr package found.")
-except ImportError:
-    print("rfdetr package not found. Installing via pip (runtime)...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "rfdetr"])
-    import rfdetr
-
-# 2. Ensure tensorrt is importable
+# 1. Ensure tensorrt is importable
 # Roboflow Runtime images often lack the python bindings, even if the libs are there.
 try:
     import tensorrt as trt
@@ -32,7 +23,17 @@ except ImportError:
         print(f"Error details: {e}")
         sys.exit(1)
 
-from rfdetr import RFDETRBase, RFDETRNano, RFDETRSmall, RFDETRMedium, RFDETRLarge, RFDETRSegPreview
+def ensure_rfdetr():
+    try:
+        import rfdetr
+        print("rfdetr package found.")
+    except ImportError:
+        print("rfdetr package not found. Installing via pip (runtime)...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "rfdetr"])
+        import rfdetr
+
+    from rfdetr import RFDETRBase, RFDETRNano, RFDETRSmall, RFDETRMedium, RFDETRLarge, RFDETRSegPreview
+    return RFDETRBase, RFDETRNano, RFDETRSmall, RFDETRMedium, RFDETRLarge, RFDETRSegPreview
 
 def build_engine_python(onnx_path, engine_path, fp16=True):
     """
@@ -88,6 +89,7 @@ def build_engine_python(onnx_path, engine_path, fp16=True):
 def load_and_export(pt_file, output_path):
     print(f"\n---------------------------------------------------")
     print(f"Processing: {pt_file}")
+    RFDETRBase, RFDETRNano, RFDETRSmall, RFDETRMedium, RFDETRLarge, RFDETRSegPreview = ensure_rfdetr()
     
     model_name = os.path.basename(pt_file).lower()
     onnx_export_path = None
@@ -164,7 +166,7 @@ def load_and_export(pt_file, output_path):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", help="Path to a single .pt model to compile")
+    parser.add_argument("--model", help="Path to a single .pt or .onnx model to compile")
     args = parser.parse_args()
 
     model_dir = "/app/model/rf"
@@ -191,15 +193,26 @@ def main():
 
     print(f"Found {len(files)} models.")
 
-    for pt_file in files:
-        base = os.path.splitext(os.path.basename(pt_file))[0]
-        out_name = os.path.join(os.path.dirname(pt_file), f"{base}-fp16.engine")
+    for source_file in files:
+        base = os.path.splitext(os.path.basename(source_file))[0]
+        extension = os.path.splitext(source_file)[1].lower()
+        out_name = os.path.join(os.path.dirname(source_file), f"{base}-fp16.engine")
 
         if os.path.exists(out_name):
             print(f"Skipping {out_name} (already exists)")
             continue
 
-        load_and_export(pt_file, out_name)
+        if extension == ".onnx":
+            success = build_engine_python(source_file, out_name, fp16=True)
+            if success:
+                print(f"SUCCESS: Exported {source_file} -> {out_name}")
+            else:
+                print(f"FAILED to build engine for {source_file}")
+                sys.exit(1)
+        elif extension == ".pt":
+            load_and_export(source_file, out_name)
+        else:
+            print(f"Skipping unsupported model file: {source_file}")
 
 if __name__ == "__main__":
     main()

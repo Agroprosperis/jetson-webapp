@@ -118,7 +118,7 @@ tr:hover { background: #2a2a2a; }
         <option value="rf">RF</option>
       </select>
       <button id="uploadModelBtn" type="button" class="btn-ghost">Upload Weights (.pt)</button>
-      <input id="uploadModelInput" type="file" accept=".pt" style="display:none;" />
+      <input id="uploadModelInput" type="file" accept=".pt,.zip" style="display:none;" />
       <span id="uploadModelStatus" class="meta"></span>
     </div>
     <button id="openCompileLogs" type="button" class="btn-ghost" style="display:none;">Open Compile Logs</button>
@@ -173,6 +173,17 @@ const uploadModelBtn = document.getElementById('uploadModelBtn');
 const uploadModelInput = document.getElementById('uploadModelInput');
 const uploadModelStatusEl = document.getElementById('uploadModelStatus');
 const tensorrtInfoEl = document.getElementById('tensorrtInfo');
+
+function updateUploadUiForType() {
+    const type = uploadModelTypeEl.value;
+    if (type === 'rf') {
+        uploadModelBtn.textContent = 'Upload Weights (.pt/.zip)';
+        uploadModelInput.setAttribute('accept', '.pt,.zip');
+    } else {
+        uploadModelBtn.textContent = 'Upload Weights (.pt)';
+        uploadModelInput.setAttribute('accept', '.pt');
+    }
+}
 
 function filenameFromPath(path) {
     if (!path) return '';
@@ -311,7 +322,20 @@ async function loadModels() {
                 }
             }
 
-            const hasPtSource = (model.sources || []).includes('pt');
+            const sources = model.sources || [];
+            const hasCompilableSource = sources.includes('pt') || (model.type === 'rf' && sources.includes('onnx'));
+            const packageMetadata = model.package_metadata || {};
+            const packagePreprocessing = packageMetadata.preprocessing || {};
+            const packageSizeLabel = Number.isFinite(packageMetadata.inference_width) && Number.isFinite(packageMetadata.inference_height)
+                ? `${packageMetadata.inference_width}x${packageMetadata.inference_height}`
+                : '';
+            const normalization = packagePreprocessing.normalization || null;
+            let normalizationLabel = '';
+            if (Array.isArray(normalization) && normalization.length >= 2) {
+                normalizationLabel = `mean [${normalization[0].join(', ')}], std [${normalization[1].join(', ')}]`;
+            } else if (normalization && normalization.mean && normalization.std) {
+                normalizationLabel = `mean [${normalization.mean.join(', ')}], std [${normalization.std.join(', ')}]`;
+            }
             const taskHtml = model.type === 'ul'
                 ? `<select class="task-select" data-name="${model.name}" data-type="${model.type}" data-previous="${selectedTask}">
                     ${taskOptionsHtml(selectedTask)}
@@ -360,15 +384,22 @@ async function loadModels() {
                         </label>
                     </div>
                   `
-                : '<span class="meta">N/A</span>';
+                : (
+                    packageSizeLabel
+                        ? `<div class="mono">${packageSizeLabel}</div>
+                           <div class="meta">${packagePreprocessing.color_mode || '-'} / ${packagePreprocessing.resize_mode || '-'}</div>
+                           ${Number.isFinite(packagePreprocessing.scaling_factor) ? `<div class="meta">scale ${packagePreprocessing.scaling_factor}</div>` : ''}
+                           ${normalizationLabel ? `<div class="meta">${normalizationLabel}</div>` : ''}`
+                        : '<span class="meta">N/A</span>'
+                );
             const actionParts = [];
             if (isCompiling) {
                 actionParts.push(`<button type="button" class="btn-ghost btn-open-job" data-job-id="${latestJob.id}" data-job-title="Compiling ${model.type.toUpperCase()} / ${model.name}">View Logs</button>`);
-            } else if (hasPtSource) {
+            } else if (hasCompilableSource) {
                 const compileLabel = model.compiled ? 'Recompile' : 'Compile';
                 actionParts.push(`<button type="button" class="btn-compile" data-name="${model.name}" data-type="${model.type}">${compileLabel}</button>`);
             } else {
-                actionParts.push('<span class="tag tag-warn">No .pt</span>');
+                actionParts.push('<span class="tag tag-warn">No source</span>');
             }
             if (model.compiled) {
                 actionParts.push('<span class="tag tag-ok">Compiled</span>');
@@ -459,13 +490,19 @@ uploadModelBtn.addEventListener('click', () => {
     uploadModelInput.click();
 });
 
+uploadModelTypeEl.addEventListener('change', updateUploadUiForType);
+updateUploadUiForType();
+
 uploadModelInput.addEventListener('change', async () => {
     const file = uploadModelInput.files && uploadModelInput.files[0];
     if (!file) return;
 
-    if (!file.name.toLowerCase().endsWith('.pt')) {
+    const selectedType = uploadModelTypeEl.value;
+    const lowerName = file.name.toLowerCase();
+    const isValidUpload = lowerName.endsWith('.pt') || (selectedType === 'rf' && lowerName.endsWith('.zip'));
+    if (!isValidUpload) {
         uploadModelInput.value = '';
-        alert('Only .pt model weights are supported.');
+        alert(selectedType === 'rf' ? 'RF uploads support .pt weights or .zip packages.' : 'Only .pt model weights are supported.');
         return;
     }
 
@@ -489,6 +526,13 @@ uploadModelInput.addEventListener('change', async () => {
         uploadModelStatusEl.textContent = `Uploaded ${file.name}`;
         if (Number.isFinite(data.uploaded && data.uploaded.inference_width) && Number.isFinite(data.uploaded && data.uploaded.inference_height)) {
             uploadModelStatusEl.textContent = `Uploaded ${file.name} (${data.uploaded.inference_width}x${data.uploaded.inference_height})`;
+        } else if (
+            data.uploaded &&
+            data.uploaded.package_metadata &&
+            Number.isFinite(data.uploaded.package_metadata.inference_width) &&
+            Number.isFinite(data.uploaded.package_metadata.inference_height)
+        ) {
+            uploadModelStatusEl.textContent = `Uploaded ${file.name} (${data.uploaded.package_metadata.inference_width}x${data.uploaded.package_metadata.inference_height})`;
         }
         if (data.tensorrt && data.tensorrt.current) {
             tensorrtInfoEl.textContent = `Current TensorRT: ${data.tensorrt.current}`;

@@ -1433,7 +1433,7 @@ def api_model_catalog():
 @auth.require_permission("models:manage")
 def api_model_upload():
     """
-    Upload a model weights file into the catalog.
+    Upload a model weights file or RF deployment package into the catalog.
     ---
     tags:
       - Configuration
@@ -1450,7 +1450,7 @@ def api_model_upload():
         in: formData
         type: file
         required: true
-        description: Ultralytics or RF-DETR weights file in `.pt` format.
+        description: Ultralytics/RF-DETR `.pt` weights, or an RF deployment package `.zip`.
     responses:
       200:
         description: Model uploaded successfully

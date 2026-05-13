@@ -4,6 +4,7 @@ import logging
 import os
 import pickletools
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -35,7 +36,15 @@ class ModelManager:
     SUPPORTED_MODEL_TYPES = ("ul", "rf")
     SOURCE_MODEL_EXTENSIONS = (".onnx", ".pt")
     VALID_UL_MODEL_TASKS = ("segment", "detect", "auto")
-    MODEL_UPLOAD_EXTENSIONS = (".pt",)
+    MODEL_UPLOAD_EXTENSIONS = (".pt", ".zip")
+    RF_PACKAGE_REQUIRED_SUFFIXES = (".onnx", ".inference_config.json")
+    RF_PACKAGE_OPTIONAL_SUFFIXES = (".model_config.json", ".class_names.txt", ".manifest.json")
+    RF_PACKAGE_SIDECAR_SUFFIXES = (
+        ".inference_config.json",
+        ".model_config.json",
+        ".class_names.txt",
+        ".manifest.json",
+    )
     MODEL_COMPILE_METADATA_SUFFIX = ".compile.json"
     DEFAULT_MODEL_CONFIDENCE_THRESHOLD = 0.75
     DEFAULT_MODEL_INFERENCE_WIDTH = 640
@@ -514,6 +523,82 @@ class ModelManager:
             return dimensions
         return self._detect_ultralytics_imgsz_from_zip(source_path)
 
+    def _rf_inference_config_path_for_source_path(self, source_path):
+        base, ext = os.path.splitext(source_path or "")
+        if ext.lower() != ".onnx":
+            return None
+        return f"{base}.inference_config.json"
+
+    def _extract_rf_package_metadata_from_config(self, config):
+        if not isinstance(config, dict):
+            raise ModelValidationError("RF inference config must be a JSON object.")
+
+        network_input = config.get("network_input")
+        if not isinstance(network_input, dict):
+            raise ModelValidationError("RF inference config is missing network_input.")
+
+        size = network_input.get("training_input_size")
+        if not isinstance(size, dict):
+            raise ModelValidationError("RF inference config is missing network_input.training_input_size.")
+
+        try:
+            width = int(size["width"])
+            height = int(size["height"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ModelValidationError(
+                "RF inference config must include numeric training_input_size width and height."
+            ) from exc
+
+        if (
+            self._sanitize_inference_dimension(width) is None
+            or self._sanitize_inference_dimension(height) is None
+        ):
+            raise ModelValidationError("RF inference config training input size is out of range.")
+
+        preprocessing = {
+            "training_input_size": {
+                "width": width,
+                "height": height,
+            },
+        }
+        for key in (
+            "color_mode",
+            "resize_mode",
+            "padding_value",
+            "input_channels",
+            "scaling_factor",
+            "normalization",
+            "dynamic_spatial_size_supported",
+            "dynamic_spatial_size_mode",
+        ):
+            if key in network_input:
+                preprocessing[key] = network_input[key]
+
+        return {
+            "inference_width": width,
+            "inference_height": height,
+            "preprocessing": preprocessing,
+        }
+
+    def _detect_rf_package_metadata_from_source_path(self, source_path):
+        config_path = self._rf_inference_config_path_for_source_path(source_path)
+        if not config_path or not os.path.isfile(config_path):
+            return {}
+
+        try:
+            with open(config_path, "r", encoding="utf-8") as config_input:
+                config = json.load(config_input)
+        except json.JSONDecodeError as exc:
+            self.logger.warning("Failed to read RF inference config %s: %s", config_path, exc)
+            raise ModelValidationError(f"RF inference config is not valid JSON: {config_path}") from exc
+        except OSError as exc:
+            self.logger.warning("Failed to read RF inference config %s: %s", config_path, exc)
+            raise ModelValidationError(f"Failed to read RF inference config: {config_path}") from exc
+
+        metadata = self._extract_rf_package_metadata_from_config(config)
+        metadata["inference_config_path"] = config_path
+        return metadata
+
     def _resolve_source_inference_size(self, model_type, model_name, *, source_paths=None):
         if model_type != "ul":
             return dict(
@@ -984,6 +1069,73 @@ class ModelManager:
                 exc,
             )
 
+    def _copy_zip_member(self, archive, member_name, target_path):
+        with archive.open(member_name) as source, open(target_path, "wb") as target:
+            shutil.copyfileobj(source, target)
+
+    def _store_rf_package_upload(self, uploaded_file, target_dir, filename):
+        package_name = os.path.splitext(filename)[0]
+        temp_path = os.path.join(target_dir, f".{filename}.{uuid.uuid4().hex}.tmp")
+        staged_paths = []
+
+        try:
+            uploaded_file.save(temp_path)
+        except Exception as exc:
+            self.logger.error("Failed to save uploaded RF package %s: %s", temp_path, exc)
+            self._cleanup_partial_upload(temp_path)
+            raise ModelManagerError("Failed to store uploaded model package.") from exc
+
+        try:
+            if not zipfile.is_zipfile(temp_path):
+                raise ModelValidationError("RF model package must be a zip archive.")
+
+            with zipfile.ZipFile(temp_path) as archive:
+                member_names = set(archive.namelist())
+                required_members = [f"{package_name}{suffix}" for suffix in self.RF_PACKAGE_REQUIRED_SUFFIXES]
+                missing_members = [member for member in required_members if member not in member_names]
+                if missing_members:
+                    raise ModelValidationError(
+                        "RF model package is missing required files: "
+                        + ", ".join(missing_members)
+                    )
+
+                package_members = required_members + [
+                    f"{package_name}{suffix}"
+                    for suffix in self.RF_PACKAGE_OPTIONAL_SUFFIXES
+                    if f"{package_name}{suffix}" in member_names
+                ]
+                target_paths = [
+                    os.path.join(target_dir, member_name)
+                    for member_name in package_members
+                ]
+                existing_targets = [path for path in target_paths if os.path.exists(path)]
+                if existing_targets:
+                    raise ModelConflictError("A model package with this name already exists.")
+
+                for member_name, target_path in zip(package_members, target_paths):
+                    self._copy_zip_member(archive, member_name, target_path)
+                    staged_paths.append(target_path)
+        except (ModelValidationError, ModelConflictError):
+            for path in staged_paths:
+                self._cleanup_partial_upload(path)
+            raise
+        except Exception as exc:
+            self.logger.error("Failed to extract RF package %s: %s", temp_path, exc)
+            for path in staged_paths:
+                self._cleanup_partial_upload(path)
+            raise ModelManagerError("Failed to extract uploaded model package.") from exc
+        finally:
+            self._cleanup_partial_upload(temp_path)
+
+        source_path = os.path.join(target_dir, f"{package_name}.onnx")
+        try:
+            metadata = self._detect_rf_package_metadata_from_source_path(source_path)
+        except Exception:
+            for path in staged_paths:
+                self._cleanup_partial_upload(path)
+            raise
+        return package_name, source_path, metadata
+
     def _find_catalog_engine(self, model_type, model_name):
         base_dir = self._model_dir_for_type(model_type)
         candidate_paths = [os.path.join(base_dir, f"{model_name}.engine")]
@@ -1034,14 +1186,19 @@ class ModelManager:
         return [sys.executable, self.convert_script, "--model", source_path]
 
     def _find_compile_source_path(self, entry):
-        return next(
-            (
-                path
-                for path in (entry.get("source_paths") or [])
-                if path.endswith(".pt")
-            ),
-            None,
-        )
+        source_paths = tuple(entry.get("source_paths") or [])
+        if entry.get("type") == "ul":
+            extensions = (".pt",)
+        elif entry.get("type") == "rf":
+            extensions = (".pt", ".onnx")
+        else:
+            extensions = (".pt", ".onnx")
+
+        for extension in extensions:
+            source_path = next((path for path in source_paths if path.endswith(extension)), None)
+            if source_path:
+                return source_path
+        return None
 
     def collect_model_artifact_paths(self, entry):
         if not entry:
@@ -1057,7 +1214,12 @@ class ModelManager:
 
         artifacts.update(
             os.path.join(base_dir, f"{base_name}{suffix}")
-            for suffix in (".pt", ".onnx", ".engine")
+            for suffix in (
+                ".pt",
+                ".onnx",
+                ".engine",
+                *self.RF_PACKAGE_SIDECAR_SUFFIXES,
+            )
         )
         if not base_name.endswith("-fp16"):
             artifacts.add(os.path.join(base_dir, f"{base_name}-fp16.engine"))
@@ -1093,6 +1255,28 @@ class ModelManager:
         source_dir = os.path.dirname(source_path)
         source_base = os.path.splitext(os.path.basename(source_path))[0]
         expected_engine = os.path.join(source_dir, f"{source_base}.engine")
+        self._append_compile_log(
+            job_id,
+            f"Compile finished, but expected engine artifact was not found: {expected_engine}",
+        )
+        return False
+
+    def _ensure_rf_engine_output(self, job_id):
+        with self.compile_jobs_lock:
+            job = self.compile_jobs.get(job_id)
+            if job is None:
+                return False
+            model = job.get("model") or {}
+            source_path = model.get("source")
+
+        expected_engine = self._resolve_compiled_engine_path("rf", source_path)
+        if expected_engine and os.path.exists(expected_engine):
+            self._append_compile_log(job_id, f"Engine ready: {expected_engine}")
+            return True
+
+        source_dir = os.path.dirname(source_path or "")
+        source_base = os.path.splitext(os.path.basename(source_path or ""))[0]
+        expected_engine = os.path.join(source_dir, f"{source_base}-fp16.engine")
         self._append_compile_log(
             job_id,
             f"Compile finished, but expected engine artifact was not found: {expected_engine}",
@@ -1165,6 +1349,8 @@ class ModelManager:
                 compile_artifacts_ready = self._ensure_ul_engine_output(job_id)
                 if compile_artifacts_ready:
                     self._cleanup_ul_compile_intermediates(job_id)
+            elif model_type == "rf":
+                compile_artifacts_ready = self._ensure_rf_engine_output(job_id)
             if compile_artifacts_ready:
                 self._record_compile_metadata(job_id)
 
@@ -1215,7 +1401,13 @@ class ModelManager:
 
             for path in sorted(glob.glob(os.path.join(base_dir, "*.engine"))):
                 base_name = os.path.splitext(os.path.basename(path))[0]
-                self._get_or_create_catalog_entry(model_map, model_type, base_name)
+                catalog_base_name = base_name
+                if base_name.endswith("-fp16"):
+                    source_base_name = base_name[:-5]
+                    source_entry = model_map.get((model_type, source_base_name))
+                    if source_entry and source_entry.get("source_paths"):
+                        catalog_base_name = source_base_name
+                self._get_or_create_catalog_entry(model_map, model_type, catalog_base_name)
 
         models = []
         for (model_type, base_name), entry in sorted(model_map.items(), key=lambda item: item[0]):
@@ -1245,6 +1437,14 @@ class ModelManager:
             entry["default_confidence_threshold"] = runtime_settings["default_confidence_threshold"]
             entry["inference_width"] = runtime_settings["inference_width"] if model_type == "ul" else None
             entry["inference_height"] = runtime_settings["inference_height"] if model_type == "ul" else None
+            if model_type == "rf":
+                package_metadata = {}
+                for source_path in entry.get("source_paths") or []:
+                    package_metadata = self._detect_rf_package_metadata_from_source_path(source_path)
+                    if package_metadata:
+                        break
+                if package_metadata:
+                    entry["package_metadata"] = package_metadata
             entry["owner_username"] = self.auth.get_model_owner_username(model_type, base_name)
             models.append(entry)
 
@@ -1263,10 +1463,29 @@ class ModelManager:
 
         ext = os.path.splitext(filename)[1].lower()
         if ext not in self.MODEL_UPLOAD_EXTENSIONS:
-            raise ModelValidationError("Only .pt model weights are supported.")
+            raise ModelValidationError("Only .pt weights or RF .zip model packages are supported.")
+        if ext == ".zip" and normalized_type != "rf":
+            raise ModelValidationError("Zip model packages are only supported for RF models.")
 
         target_dir = self._model_dir_for_type(normalized_type)
         os.makedirs(target_dir, exist_ok=True)
+
+        if ext == ".zip":
+            model_name, target_path, package_metadata = self._store_rf_package_upload(
+                uploaded_file,
+                target_dir,
+                filename,
+            )
+            self.auth.store_model_owner(normalized_type, model_name, owner_user_id)
+            return dict(
+                type=normalized_type,
+                name=model_name,
+                path=target_path,
+                inference_width=None,
+                inference_height=None,
+                package_metadata=package_metadata,
+            )
+
         target_path = os.path.join(target_dir, filename)
         if os.path.exists(target_path):
             raise ModelConflictError("A model with this filename already exists.")
@@ -1308,7 +1527,7 @@ class ModelManager:
 
         source_path = self._find_compile_source_path(entry)
         if not source_path:
-            raise ModelValidationError("No .pt source found for compilation.")
+            raise ModelValidationError("No compilable source found for compilation.")
 
         command = self._build_compile_command(
             model_type,

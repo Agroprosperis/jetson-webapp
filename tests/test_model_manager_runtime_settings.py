@@ -1,7 +1,9 @@
 import json
+import io
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 
@@ -61,6 +63,34 @@ class ModelManagerRuntimeSettingsTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"weights")
         return path
+
+    def make_rf_package_zip(self, package_name):
+        buffer = io.BytesIO()
+        inference_config = {
+            "network_input": {
+                "training_input_size": {
+                    "width": 960,
+                    "height": 960,
+                },
+                "color_mode": "rgb",
+                "resize_mode": "stretch",
+                "input_channels": 3,
+                "scaling_factor": 255,
+                "normalization": [
+                    [0.485, 0.456, 0.406],
+                    [0.229, 0.224, 0.225],
+                ],
+            }
+        }
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr(f"{package_name}.onnx", b"onnx")
+            archive.writestr(
+                f"{package_name}.inference_config.json",
+                json.dumps(inference_config),
+            )
+            archive.writestr(f"{package_name}.model_config.json", "{}")
+            archive.writestr(f"{package_name}.class_names.txt", "tilletia\n")
+        return buffer.getvalue()
 
     def test_upload_model_returns_autodetected_source_size_without_persisting_dimensions(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -158,6 +188,71 @@ class ModelManagerRuntimeSettingsTests(unittest.TestCase):
             self.assertEqual(runtime["inference_width"], 1024)
             self.assertEqual(runtime["inference_height"], 768)
             self.assertNotIn("sliding_window", runtime)
+
+    def test_upload_rf_zip_package_extracts_artifacts_and_package_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = self.make_manager(temp_dir)
+            uploaded = manager.upload_model(
+                "rf",
+                FakeUpload("sample-rf.zip", self.make_rf_package_zip("sample-rf")),
+                owner_user_id=7,
+            )
+
+            model_dir = Path(temp_dir, "rf")
+            self.assertEqual(uploaded["name"], "sample-rf")
+            self.assertEqual(uploaded["path"], str(model_dir / "sample-rf.onnx"))
+            self.assertTrue((model_dir / "sample-rf.onnx").is_file())
+            self.assertTrue((model_dir / "sample-rf.inference_config.json").is_file())
+            self.assertTrue((model_dir / "sample-rf.model_config.json").is_file())
+            self.assertTrue((model_dir / "sample-rf.class_names.txt").is_file())
+            self.assertFalse((model_dir / "sample-rf.zip").exists())
+
+            metadata = uploaded["package_metadata"]
+            self.assertEqual(metadata["inference_width"], 960)
+            self.assertEqual(metadata["inference_height"], 960)
+            self.assertEqual(metadata["preprocessing"]["color_mode"], "rgb")
+            self.assertEqual(metadata["preprocessing"]["resize_mode"], "stretch")
+            self.assertEqual(metadata["preprocessing"]["scaling_factor"], 255)
+            self.assertEqual(
+                metadata["preprocessing"]["normalization"],
+                [
+                    [0.485, 0.456, 0.406],
+                    [0.229, 0.224, 0.225],
+                ],
+            )
+
+            catalog = manager.build_model_catalog()
+            self.assertEqual(len(catalog), 1)
+            self.assertEqual(catalog[0]["type"], "rf")
+            self.assertEqual(catalog[0]["sources"], ["onnx"])
+            self.assertEqual(catalog[0]["inference_width"], None)
+            self.assertEqual(catalog[0]["inference_height"], None)
+            self.assertEqual(catalog[0]["package_metadata"]["inference_width"], 960)
+
+    def test_rf_onnx_package_is_compilable_without_changing_ul_pt_selection(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = self.make_manager(temp_dir)
+            rf_source = self.touch_model_source(temp_dir, "rf/sample.onnx")
+            rf_engine = self.touch_model_source(temp_dir, "rf/sample-fp16.engine")
+            Path(temp_dir, "rf/sample.inference_config.json").write_text(
+                json.dumps({"network_input": {"training_input_size": {"width": 960, "height": 960}}}),
+                encoding="utf-8",
+            )
+            ul_source = self.touch_model_source(temp_dir, "ul/sample.pt")
+
+            catalog = manager.build_model_catalog()
+            rf_entry = next(item for item in catalog if item["type"] == "rf")
+            ul_entry = next(item for item in catalog if item["type"] == "ul")
+
+            self.assertEqual(manager._find_compile_source_path(rf_entry), str(rf_source))
+            self.assertEqual(manager._find_compile_source_path(ul_entry), str(ul_source))
+            self.assertTrue(rf_entry["compiled"])
+            self.assertEqual(rf_entry["engine"]["path"], str(rf_engine))
+            self.assertEqual(len([item for item in catalog if item["type"] == "rf"]), 1)
+            self.assertEqual(
+                manager._build_compile_command("rf", str(rf_source)),
+                [sys.executable, str(Path(temp_dir) / "convert.py"), "--model", str(rf_source)],
+            )
 
 
 if __name__ == "__main__":
