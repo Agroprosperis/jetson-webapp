@@ -58,6 +58,13 @@ cd ${REPO_DIR}/deploy
 This mode builds the `tilletia-app:latest` image from the current tree, mounts models from `${REPO_DIR}/data/model`, and uses `${REPO_DIR}/data/output_hq` and `${REPO_DIR}/data/runs` for outputs.
 Missing runtime folders under `data/` are created automatically by deploy scripts.
 
+# Roboflow NAS model deployment
+From `deploy` folder run:
+```
+sudo docker compose -f docker-compose.deploy-model.yml run --rm --build deploy-model <modelid> <ROBOFLOWAPI_KEY>
+```
+It creates <modelid>.zip archive which could be directly uploaded to the app
+
 # Development tips&tricks
 
 Build the runtime image from the single Dockerfile:
