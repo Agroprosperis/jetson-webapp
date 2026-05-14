@@ -211,7 +211,10 @@ def build_labels_from_tracks(detections: sv.Detections, args) -> list[str]:
     for i in range(len(detections)):
         cls_id = int(detections.class_id[i]) if detections.class_id is not None else 0
         conf = float(detections.confidence[i]) if detections.confidence is not None else 1.0
-        name = names[cls_id] if names is not None and cls_id < len(names) else str(cls_id)
+        if isinstance(names, dict):
+            name = names.get(cls_id, names.get(str(cls_id), str(cls_id)))
+        else:
+            name = names[cls_id] if names is not None and 0 <= cls_id < len(names) else str(cls_id)
         if tracker_ids is not None:
             track_id = int(tracker_ids[i])
             labels.append(f"{name} {conf:.2f} id:{track_id}")

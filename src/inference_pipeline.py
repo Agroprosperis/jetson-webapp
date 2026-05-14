@@ -484,6 +484,10 @@ class ModelManager:
         self.current_model_path = None
 
     def _get_backend_type(self, path: str):
+        if os.path.isfile(f"{path}.json"):
+            from backends.roboflow_package_backend import RoboflowPackageBackend
+
+            return RoboflowPackageBackend
         if "/rf/" in path or "rfdetr" in path.lower():
             return RoboflowBackend
         return UltralyticsBackend

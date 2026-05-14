@@ -38,6 +38,7 @@ LOGGER = logging.getLogger("app")
 SRC_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILEPATH = "/app/config.json"
 HQ_OUTPUT_DIR = "/app/output_hq"
+UPLOAD_DIR = "/upload"
 VENDOR_DIR = "/opt/web/vendor"
 RESULT_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")
 RESULT_VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".mov")
@@ -78,6 +79,13 @@ def apply_pending_auth_cookies(response):
 pipeline = None  # type: StreamPipeline | None
 current_config = {}
 last_error = None  # type: str | None
+
+
+def _resolve_video_input_path(video):
+    if not video or os.path.isabs(video):
+        return video
+
+    return os.path.join(UPLOAD_DIR, os.path.basename(video))
 pipeline_id = None  # type: str | None
 runtime_options = {
     "grid_count_enabled": False,
@@ -2716,16 +2724,17 @@ def api_start():
             video = data.get("video")
             if not video:
                 raise ValueError("No file provided")
-                
-            if not os.path.isfile(video):
-                raise ValueError("File not found: %s" % video)
+
+            video_path = _resolve_video_input_path(video)
+            if not os.path.isfile(video_path):
+                raise ValueError("File not found: %s (resolved: %s)" % (video, video_path))
                 
             args_dict["mode"] = "file"
-            video_desc = os.path.basename(video)
+            video_desc = os.path.basename(video_path)
             args_dict["fps"] = 30 
             
             args = argparse.Namespace(**args_dict)
-            reader = FileReader(video, args.fps)
+            reader = FileReader(video_path, args.fps)
             
             with reader:
                 cap = reader.cap
@@ -2876,8 +2885,8 @@ def api_upload():
     if not filename:
         return flask.jsonify({"error": "invalid filename"}), 400
 
-    os.makedirs("uploads", exist_ok=True)
-    path = os.path.join("uploads", filename)
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    path = os.path.join(UPLOAD_DIR, filename)
     file.save(path)
     try:
         auth.update_dashboard_settings({"uploaded_path": path})

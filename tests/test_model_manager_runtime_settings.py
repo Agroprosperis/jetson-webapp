@@ -225,8 +225,8 @@ class ModelManagerRuntimeSettingsTests(unittest.TestCase):
             self.assertEqual(len(catalog), 1)
             self.assertEqual(catalog[0]["type"], "rf")
             self.assertEqual(catalog[0]["sources"], ["onnx"])
-            self.assertEqual(catalog[0]["inference_width"], None)
-            self.assertEqual(catalog[0]["inference_height"], None)
+            self.assertEqual(catalog[0]["inference_width"], 960)
+            self.assertEqual(catalog[0]["inference_height"], 960)
             self.assertEqual(catalog[0]["package_metadata"]["inference_width"], 960)
 
     def test_rf_onnx_package_is_compilable_without_changing_ul_pt_selection(self):
@@ -238,6 +238,7 @@ class ModelManagerRuntimeSettingsTests(unittest.TestCase):
                 json.dumps({"network_input": {"training_input_size": {"width": 960, "height": 960}}}),
                 encoding="utf-8",
             )
+            Path(temp_dir, "rf/sample.class_names.txt").write_text("tilletia\n", encoding="utf-8")
             ul_source = self.touch_model_source(temp_dir, "ul/sample.pt")
 
             catalog = manager.build_model_catalog()
@@ -253,6 +254,49 @@ class ModelManagerRuntimeSettingsTests(unittest.TestCase):
                 manager._build_compile_command("rf", str(rf_source)),
                 [sys.executable, str(Path(temp_dir) / "convert.py"), "--model", str(rf_source)],
             )
+
+            job_id = "rf-job"
+            manager.compile_jobs[job_id] = manager._new_compile_job(
+                job_id,
+                "rf",
+                "sample",
+                str(rf_source),
+            )
+            manager.compile_jobs[job_id]["command"] = ["convert", "--model", str(rf_source)]
+            manager._record_compile_metadata(job_id)
+            self.assertEqual(
+                json.loads(Path(f"{rf_engine}.json").read_text(encoding="utf-8")),
+                {"network_input": {"training_input_size": {"width": 960, "height": 960}}},
+            )
+            self.assertEqual(
+                Path(f"{rf_engine}.class_names.txt").read_text(encoding="utf-8"),
+                "tilletia\n",
+            )
+
+    def test_rf_engine_runtime_settings_use_engine_sidecar_config(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = self.make_manager(temp_dir)
+            rf_source = self.touch_model_source(temp_dir, "rf/sample.onnx")
+            rf_engine = self.touch_model_source(temp_dir, "rf/sample-fp16.engine")
+            Path(temp_dir, "rf/sample.inference_config.json").write_text(
+                json.dumps({"network_input": {"training_input_size": {"width": 800, "height": 800}}}),
+                encoding="utf-8",
+            )
+            Path(f"{rf_engine}.json").write_text(
+                json.dumps({"network_input": {"training_input_size": {"width": 800, "height": 800}}}),
+                encoding="utf-8",
+            )
+
+            runtime = manager.resolve_model_runtime_settings_for_path(str(rf_engine))
+            self.assertEqual(runtime["inference_width"], 800)
+            self.assertEqual(runtime["inference_height"], 800)
+
+            catalog = manager.build_model_catalog()
+            rf_entry = next(item for item in catalog if item["type"] == "rf")
+            self.assertEqual(manager._find_compile_source_path(rf_entry), str(rf_source))
+            self.assertEqual(rf_entry["engine"]["path"], str(rf_engine))
+            self.assertEqual(rf_entry["inference_width"], 800)
+            self.assertEqual(rf_entry["inference_height"], 800)
 
 
 if __name__ == "__main__":

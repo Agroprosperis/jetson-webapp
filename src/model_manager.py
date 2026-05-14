@@ -37,8 +37,8 @@ class ModelManager:
     SOURCE_MODEL_EXTENSIONS = (".onnx", ".pt")
     VALID_UL_MODEL_TASKS = ("segment", "detect", "auto")
     MODEL_UPLOAD_EXTENSIONS = (".pt", ".zip")
-    RF_PACKAGE_REQUIRED_SUFFIXES = (".onnx", ".inference_config.json")
-    RF_PACKAGE_OPTIONAL_SUFFIXES = (".model_config.json", ".class_names.txt", ".manifest.json")
+    RF_PACKAGE_REQUIRED_SUFFIXES = (".onnx", ".inference_config.json", ".class_names.txt")
+    RF_PACKAGE_OPTIONAL_SUFFIXES = (".model_config.json", ".manifest.json")
     RF_PACKAGE_SIDECAR_SUFFIXES = (
         ".inference_config.json",
         ".model_config.json",
@@ -517,43 +517,26 @@ class ModelManager:
     def _detect_model_inference_size_from_source_path(self, model_type, source_path):
         if model_type != "ul" or not source_path:
             return None
+        if os.path.splitext(source_path)[1].lower() != ".pt":
+            return None
 
         dimensions = self._detect_ultralytics_imgsz_with_torch(source_path)
         if dimensions is not None:
             return dimensions
         return self._detect_ultralytics_imgsz_from_zip(source_path)
 
-    def _rf_inference_config_path_for_source_path(self, source_path):
-        base, ext = os.path.splitext(source_path or "")
-        if ext.lower() != ".onnx":
-            return None
-        return f"{base}.inference_config.json"
-
     def _extract_rf_package_metadata_from_config(self, config):
-        if not isinstance(config, dict):
-            raise ModelValidationError("RF inference config must be a JSON object.")
+        network_input = config["network_input"]
+        assert isinstance(network_input, dict)
 
-        network_input = config.get("network_input")
-        if not isinstance(network_input, dict):
-            raise ModelValidationError("RF inference config is missing network_input.")
-
-        size = network_input.get("training_input_size")
-        if not isinstance(size, dict):
-            raise ModelValidationError("RF inference config is missing network_input.training_input_size.")
-
-        try:
-            width = int(size["width"])
-            height = int(size["height"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ModelValidationError(
-                "RF inference config must include numeric training_input_size width and height."
-            ) from exc
-
-        if (
+        size = network_input["training_input_size"]
+        assert isinstance(size, dict)
+        width = int(size["width"])
+        height = int(size["height"])
+        assert not (
             self._sanitize_inference_dimension(width) is None
             or self._sanitize_inference_dimension(height) is None
-        ):
-            raise ModelValidationError("RF inference config training input size is out of range.")
+        ), "RF inference config training input size is out of range."
 
         preprocessing = {
             "training_input_size": {
@@ -580,26 +563,48 @@ class ModelManager:
             "preprocessing": preprocessing,
         }
 
-    def _detect_rf_package_metadata_from_source_path(self, source_path):
-        config_path = self._rf_inference_config_path_for_source_path(source_path)
-        if not config_path or not os.path.isfile(config_path):
+    def _detect_rf_package_metadata_from_config_path(self, config_path):
+        if not os.path.isfile(config_path):
             return {}
 
-        try:
-            with open(config_path, "r", encoding="utf-8") as config_input:
-                config = json.load(config_input)
-        except json.JSONDecodeError as exc:
-            self.logger.warning("Failed to read RF inference config %s: %s", config_path, exc)
-            raise ModelValidationError(f"RF inference config is not valid JSON: {config_path}") from exc
-        except OSError as exc:
-            self.logger.warning("Failed to read RF inference config %s: %s", config_path, exc)
-            raise ModelValidationError(f"Failed to read RF inference config: {config_path}") from exc
+        with open(config_path, "r", encoding="utf-8") as config_input:
+            config = json.load(config_input)
 
         metadata = self._extract_rf_package_metadata_from_config(config)
         metadata["inference_config_path"] = config_path
         return metadata
 
+    def _detect_rf_package_metadata_from_source_path(self, source_path):
+        base, ext = os.path.splitext(source_path or "")
+        if ext.lower() != ".onnx":
+            return {}
+
+        config_path = f"{base}.inference_config.json"
+        assert os.path.isfile(config_path), f"Missing RF package config: {config_path}"
+        return self._detect_rf_package_metadata_from_config_path(config_path)
+
+    def _detect_rf_package_metadata_from_engine_path(self, engine_path):
+        if os.path.splitext(engine_path or "")[1].lower() != ".engine":
+            return {}
+
+        return self._detect_rf_package_metadata_from_config_path(f"{engine_path}.json")
+
     def _resolve_source_inference_size(self, model_type, model_name, *, source_paths=None):
+        if model_type == "rf":
+            source_candidates = tuple(source_paths or ()) or self._candidate_source_paths_for_model(model_type, model_name)
+            for source_path in source_candidates:
+                metadata = self._detect_rf_package_metadata_from_source_path(source_path)
+                if metadata:
+                    return {
+                        "inference_width": metadata["inference_width"],
+                        "inference_height": metadata["inference_height"],
+                    }
+
+            return dict(
+                inference_width=self.DEFAULT_MODEL_INFERENCE_WIDTH,
+                inference_height=self.DEFAULT_MODEL_INFERENCE_HEIGHT,
+            )
+
         if model_type != "ul":
             return dict(
                 inference_width=self.DEFAULT_MODEL_INFERENCE_WIDTH,
@@ -677,12 +682,18 @@ class ModelManager:
 
         return None
 
-    def _resolve_engine_inference_size(self, engine_path):
-        engine_dimensions = self._inspect_engine_inference_size(engine_path)
-        if engine_dimensions is not None:
-            return engine_dimensions
+    def _should_inspect_engine_inference_size(self, metadata):
+        if not metadata:
+            return False
+        return metadata.get("tensorrt_version") == self.get_current_tensorrt_version()
 
+    def _resolve_engine_inference_size(self, engine_path):
         metadata = self._read_compile_metadata(engine_path)
+        if self._should_inspect_engine_inference_size(metadata):
+            engine_dimensions = self._inspect_engine_inference_size(engine_path)
+            if engine_dimensions is not None:
+                return engine_dimensions
+
         direct_dimensions = self._normalize_imgsz_to_dimensions(
             [
                 metadata.get("inference_height"),
@@ -714,7 +725,14 @@ class ModelManager:
         )
 
         dimensions = None
-        if engine_path and model_type == "ul":
+        if engine_path and model_type == "rf":
+            package_metadata = self._detect_rf_package_metadata_from_engine_path(engine_path)
+            if package_metadata:
+                dimensions = {
+                    "inference_width": package_metadata["inference_width"],
+                    "inference_height": package_metadata["inference_height"],
+                }
+        elif engine_path and model_type == "ul":
             dimensions = self._resolve_engine_inference_size(engine_path)
         if dimensions is None:
             dimensions = self._resolve_source_inference_size(
@@ -998,6 +1016,13 @@ class ModelManager:
         if not engine_path:
             return
 
+        if model_type == "rf":
+            source_base_path = os.path.splitext(source_path)[0]
+            shutil.copy2(f"{source_base_path}.inference_config.json", f"{engine_path}.json")
+            shutil.copy2(f"{source_base_path}.class_names.txt", f"{engine_path}.class_names.txt")
+            self._append_compile_log(job_id, f"Saved RF runtime config: {engine_path}.json")
+            self._append_compile_log(job_id, f"Saved RF class names: {engine_path}.class_names.txt")
+
         self._write_compile_metadata(
             engine_path,
             model_type=model_type,
@@ -1233,6 +1258,15 @@ class ModelManager:
             )
             if metadata_path
         )
+        artifacts.update(
+            runtime_path
+            for runtime_path in (
+                f"{path}{suffix}"
+                for path in list(artifacts)
+                if path.endswith(".engine")
+                for suffix in (".json", ".class_names.txt")
+            )
+        )
 
         return sorted(path for path in artifacts if os.path.isfile(path))
 
@@ -1352,7 +1386,11 @@ class ModelManager:
             elif model_type == "rf":
                 compile_artifacts_ready = self._ensure_rf_engine_output(job_id)
             if compile_artifacts_ready:
-                self._record_compile_metadata(job_id)
+                try:
+                    self._record_compile_metadata(job_id)
+                except Exception as exc:
+                    compile_artifacts_ready = False
+                    self._append_compile_log(job_id, f"Failed to save compile metadata: {exc}")
 
         with self.compile_jobs_lock:
             job = self.compile_jobs.get(job_id)
@@ -1435,8 +1473,8 @@ class ModelManager:
             entry["display"] = f"[{model_type.upper()}] {base_name}"
             entry["task"] = self.get_catalog_model_task(model_type, base_name)
             entry["default_confidence_threshold"] = runtime_settings["default_confidence_threshold"]
-            entry["inference_width"] = runtime_settings["inference_width"] if model_type == "ul" else None
-            entry["inference_height"] = runtime_settings["inference_height"] if model_type == "ul" else None
+            entry["inference_width"] = runtime_settings["inference_width"]
+            entry["inference_height"] = runtime_settings["inference_height"]
             if model_type == "rf":
                 package_metadata = {}
                 for source_path in entry.get("source_paths") or []:
