@@ -106,6 +106,12 @@ function formatIntegerMetric(value) {
     return value === null || value === undefined || value === '' ? '-' : value;
 }
 
+function formatClassCounts(classCounts) {
+    if (!classCounts || typeof classCounts !== 'object') return '-';
+    const parts = Object.entries(classCounts).map(([name, count]) => `${name}: ${count}`);
+    return parts.length ? parts.join(' | ') : '-';
+}
+
 function formatDecimalMetric(value, decimals = 1) {
     if (value === null || value === undefined || value === '') return '-';
     const numberValue = Number(value);
@@ -169,7 +175,7 @@ async function loadResults() {
                 </td>
                 ${ownerCell}
                 <td class="metric-cell">${item.duration || '-'}</td>
-                <td class="metric-cell">${formatIntegerMetric(item.detected_objects)}</td>
+                <td class="metric-cell">${formatClassCounts(item.class_counts)}</td>
                 <td class="metric-cell">${formatDecimalMetric(item.s_value)}</td>
                 <td class="file-type">folder</td>
                 <td>-</td>

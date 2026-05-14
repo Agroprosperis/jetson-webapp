@@ -421,6 +421,7 @@ def _read_result_csv_summary(csv_path):
     if not os.path.isfile(csv_path):
         return {
             "detected_objects": None,
+            "class_counts": None,
             "s_value": None,
         }
 
@@ -430,17 +431,20 @@ def _read_result_csv_summary(csv_path):
         LOGGER.exception("Failed to read result CSV summary: %s", csv_path)
         return {
             "detected_objects": None,
+            "class_counts": None,
             "s_value": None,
         }
 
     if not row:
         return {
             "detected_objects": None,
+            "class_counts": None,
             "s_value": None,
         }
 
     return {
-        "detected_objects": row.get("total_unique_objects"),
+        "detected_objects": row.get("tilletia_objects"),
+        "class_counts": row.get("class_counts"),
         "s_value": row.get("s_value"),
     }
 
@@ -486,6 +490,7 @@ def _build_result_metadata(run_id):
         "duration": _format_duration(longest_duration_seconds),
         "duration_seconds": longest_duration_seconds,
         "detected_objects": csv_summary["detected_objects"],
+        "class_counts": csv_summary.get("class_counts"),
         "s_value": csv_summary["s_value"],
         "files": files,
         "_mtime": latest_mtime,
@@ -564,39 +569,35 @@ def _parse_csv_detections(value):
     if not value or not value.strip():
         return []
 
-    detections = []
-    for chunk in value.split("|"):
-        chunk = chunk.strip()
-        if not chunk:
-            continue
+    try:
+        detections = json.loads(value)
+    except json.JSONDecodeError:
+        LOGGER.warning("Skipping malformed CSV detections JSON: %s", value)
+        return []
 
-        parts = {}
-        for item in chunk.split("_"):
-            if "=" not in item:
-                continue
-            key, raw_value = item.split("=", 1)
-            parts[key] = raw_value
+    return detections if isinstance(detections, list) else []
 
+
+def _parse_csv_class_counts(value):
+    if not value or not value.strip():
+        return {}
+
+    try:
+        class_counts = json.loads(value)
+    except json.JSONDecodeError:
+        LOGGER.warning("Skipping malformed CSV class_counts JSON: %s", value)
+        return {}
+
+    if not isinstance(class_counts, dict):
+        return {}
+
+    parsed = {}
+    for class_name, count in class_counts.items():
         try:
-            bbox = [
-                int(parts["x0"]),
-                int(parts["y0"]),
-                int(parts["x1"]),
-                int(parts["y1"]),
-            ]
-            class_id = int(parts["class"])
-            confidence = float(parts["conf"])
-        except (KeyError, TypeError, ValueError):
-            LOGGER.warning("Skipping malformed CSV detection chunk: %s", chunk)
+            parsed[str(class_name)] = int(count)
+        except (TypeError, ValueError):
             continue
-
-        detections.append({
-            "bbox": bbox,
-            "class_id": class_id,
-            "confidence": confidence,
-        })
-
-    return detections
+    return parsed
 
 
 def _coerce_csv_row(row):
@@ -604,7 +605,7 @@ def _coerce_csv_row(row):
         return None
 
     coerced = dict(row)
-    for key in ("frame", "total_unique_objects"):
+    for key in ("frame", "tilletia_objects"):
         value = coerced.get(key)
         try:
             coerced[key] = int(value)
@@ -618,6 +619,7 @@ def _coerce_csv_row(row):
         pass
 
     coerced["detections"] = _parse_csv_detections(coerced.get("detections"))
+    coerced["class_counts"] = _parse_csv_class_counts(coerced.get("class_counts"))
 
     return coerced
 
@@ -2024,6 +2026,8 @@ def api_list_results():
                     type: number
                   detected_objects:
                     type: integer
+                  class_counts:
+                    type: object
                   s_value:
                     type: number
                   files:
@@ -2212,8 +2216,10 @@ def api_result_last_csv_row(pid):
                   type: string
                 s_value:
                   type: number
-                total_unique_objects:
+                tilletia_objects:
                   type: integer
+                class_counts:
+                  type: object
                 detections:
                   type: array
                   items:
@@ -2225,6 +2231,8 @@ def api_result_last_csv_row(pid):
                           type: integer
                       class_id:
                         type: integer
+                      class_name:
+                        type: string
                       confidence:
                         type: number
       400:

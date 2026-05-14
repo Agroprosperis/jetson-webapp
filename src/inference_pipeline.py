@@ -7,6 +7,7 @@ import logging
 import numpy as np
 import os
 import csv
+import json
 import torch
 import tensorrt as trt
 import ultralytics.trackers.bot_sort as bot_sort_mod
@@ -22,7 +23,12 @@ from ultralytics.trackers.utils.gmc import GMC
 from profiler import Profiler
 from s_value_model import calculate_s_value
 from stream_readers import StreamReader, FileReader
-from visualize import visualize_frame_with_supervision, reset_object_counter
+from visualize import (
+    class_name_for_id,
+    tilletia_count_from_counts,
+    visualize_frame_with_supervision,
+    reset_object_counter,
+)
 from grid_runtime import GridProcessor, GridOverlay
 
 
@@ -697,21 +703,36 @@ def dump_manual_snapshot(frame, run_dir, pipeline_id, frame_count, fps, request_
     return filename
 
 
-def dump_csv_line(csv_writer, frame_count, pipeline_id, total_unique_objects, result) -> None:
+def dump_csv_line(csv_writer, frame_count, pipeline_id, class_counts, result, args) -> None:
     if csv_writer is None:
         return
 
-    detections_serialized = ""
-    det_parts = []
+    detections = []
     for row in result:
         x0, y0, x1, y1 = row[:4]
         conf_val = float(row[5])
         cls_id = int(row[6])
-        det_parts.append(f"x0={int(x0)}_y0={int(y0)}_x1={int(x1)}_y1={int(y1)}_class={cls_id}_conf={conf_val:.3f}")
-    detections_serialized = "|".join(det_parts)
+        detections.append(
+            {
+                "bbox": [int(x0), int(y0), int(x1), int(y1)],
+                "class_id": cls_id,
+                "class_name": class_name_for_id(args, cls_id),
+                "confidence": round(conf_val, 3),
+            }
+        )
 
-    s_value = calculate_s_value(total_unique_objects)
-    csv_writer.writerow([frame_count, pipeline_id, s_value, total_unique_objects, detections_serialized])
+    tilletia_objects = tilletia_count_from_counts(class_counts)
+    s_value = calculate_s_value(tilletia_objects)
+    csv_writer.writerow(
+        [
+            frame_count,
+            pipeline_id,
+            s_value,
+            tilletia_objects,
+            json.dumps(class_counts, ensure_ascii=False, sort_keys=True),
+            json.dumps(detections, ensure_ascii=False),
+        ]
+    )
 
 
 def _grid_count_enabled(args) -> bool:
@@ -939,7 +960,7 @@ def output_loop(
                 count_track_ids = None
 
             start_vis = time.time()
-            vis, total_unique_objects = visualize_frame_with_supervision(
+            vis, class_counts = visualize_frame_with_supervision(
                 frame,
                 result,
                 args,
@@ -968,7 +989,7 @@ def output_loop(
                 hq_csv_path = os.path.join(run_dir, f"{pipeline_id}.csv")
                 csv_file = open(hq_csv_path, "w", newline="", encoding="utf-8")
                 csv_writer = csv.writer(csv_file)
-                csv_writer.writerow(["frame", "analysis_number", "s_value", "total_unique_objects", "detections"])
+                csv_writer.writerow(["frame", "analysis_number", "s_value", "tilletia_objects", "class_counts", "detections"])
             
             safe_result = result if result is not None else []
             if (
@@ -1009,7 +1030,7 @@ def output_loop(
                         )
                     except Exception as exc:
                         snapshot_controller.fail_snapshot_request(request_id, str(exc))
-            dump_csv_line(csv_writer, frame_count, pipeline_id, total_unique_objects, reactive_result)
+            dump_csv_line(csv_writer, frame_count, pipeline_id, class_counts, reactive_result, args)
             
             if output_writer is not None:
                 output_writer.write(vis)

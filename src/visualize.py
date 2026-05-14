@@ -14,8 +14,8 @@ LABEL_ANNOTATOR = sv.LabelAnnotator(
     text_padding = 8,
 )
 
-SEEN_TRACK_IDS: set[int] = set()
-CUMULATIVE_OBJECTS: int = 0
+TILLETIA_CLASS_NAME = "Tilletia"
+SEEN_TRACK_IDS_BY_CLASS: dict[str, set[int]] = {}
 
 LOGGER = logging.getLogger("visualization")
 
@@ -49,48 +49,82 @@ def _format_banner_inference_mode(args) -> str:
     return f"{inference_width}x{inference_height}"
 
 
-def _update_cumulative_objects(
-    detections: sv.Detections,
-    allowed_track_ids: set[int] | None = None,
-) -> int:
-    """
-    Cumulative unique objects over the whole run.
-    Uses tracker IDs if available (preferred), otherwise falls back to
-    summing detections across frames.
-    """
-    global SEEN_TRACK_IDS, CUMULATIVE_OBJECTS
+def class_name_for_id(args, cls_id: int) -> str:
+    names = getattr(args, "class_names", None)
+    if isinstance(names, dict):
+        return str(names.get(cls_id, names.get(str(cls_id), str(cls_id))))
+    return str(names[cls_id]) if names is not None and 0 <= cls_id < len(names) else str(cls_id)
 
-    if len(detections) == 0:
-        return CUMULATIVE_OBJECTS
+
+def tilletia_count_from_counts(class_counts: dict[str, int]) -> int:
+    for class_name, count in class_counts.items():
+        if class_name.lower() == TILLETIA_CLASS_NAME.lower():
+            return int(count)
+    return 0
+
+
+def _display_class_names(args, class_counts: dict[str, int]) -> list[str]:
+    names = getattr(args, "class_names", None)
+    if isinstance(names, dict):
+        ordered_names = [str(names[key]) for key in sorted(names, key=str)]
+    elif names is not None:
+        ordered_names = [str(name) for name in names]
+    else:
+        ordered_names = []
+
+    display_names = [
+        name
+        for name in ordered_names
+        if name and not name.lower().startswith("background")
+    ]
+    for name in class_counts:
+        if name not in display_names:
+            display_names.append(name)
+    return display_names
+
+
+def _format_class_counts(args, class_counts: dict[str, int]) -> str:
+    parts = [
+        f"{name}: {int(class_counts.get(name, 0))}"
+        for name in _display_class_names(args, class_counts)
+    ]
+    return "Objects: " + (" | ".join(parts) if parts else "none")
+
+
+def _update_cumulative_class_counts(
+    detections: sv.Detections,
+    args,
+    allowed_track_ids: set[int] | None = None,
+) -> dict[str, int]:
+    """
+    Cumulative unique objects by class name over the whole run.
+    Uses tracker IDs and counts each track once per class name.
+    """
+    global SEEN_TRACK_IDS_BY_CLASS
 
     tracker_ids = detections.tracker_id
+    if len(detections) == 0 or tracker_ids is None or detections.class_id is None:
+        return {class_name: len(track_ids) for class_name, track_ids in SEEN_TRACK_IDS_BY_CLASS.items()}
 
-    # Preferred path: tracker IDs present
-    if tracker_ids is not None:
-        ids = np.asarray(tracker_ids)
-        ids = ids[ids >= 0]
-        if allowed_track_ids is not None:
-            ids = np.asarray([track_id for track_id in ids.tolist() if int(track_id) in allowed_track_ids])
-        if ids.size == 0:
-            return CUMULATIVE_OBJECTS
+    for track_id, cls_id in zip(tracker_ids, detections.class_id):
+        track_id = int(track_id)
+        if track_id < 0:
+            continue
+        if allowed_track_ids is not None and track_id not in allowed_track_ids:
+            continue
 
-        new_ids = set(ids.tolist()) - SEEN_TRACK_IDS
-        if new_ids:
-            SEEN_TRACK_IDS.update(new_ids)
-            CUMULATIVE_OBJECTS = len(SEEN_TRACK_IDS)
-        return CUMULATIVE_OBJECTS
+        class_name = class_name_for_id(args, int(cls_id))
+        SEEN_TRACK_IDS_BY_CLASS.setdefault(class_name, set()).add(track_id)
 
-    # Fallback: no tracker IDs – just accumulate per-frame detections
-    return CUMULATIVE_OBJECTS
+    return {class_name: len(track_ids) for class_name, track_ids in SEEN_TRACK_IDS_BY_CLASS.items()}
 
 
 def reset_object_counter() -> None:
     """
     Reset cumulative counter for a new pipeline run.
     """
-    global SEEN_TRACK_IDS, CUMULATIVE_OBJECTS
-    SEEN_TRACK_IDS = set()
-    CUMULATIVE_OBJECTS = 0
+    global SEEN_TRACK_IDS_BY_CLASS
+    SEEN_TRACK_IDS_BY_CLASS = {}
 
 
 def tracks_to_sv_detections(tracks: np.ndarray) -> sv.Detections:
@@ -114,7 +148,7 @@ def tracks_to_sv_detections(tracks: np.ndarray) -> sv.Detections:
     )
 
 
-def draw_combined_banner(scene: np.ndarray, count: int, s_value: float, analysis_id: str, args) -> np.ndarray:
+def draw_combined_banner(scene: np.ndarray, class_counts: dict[str, int], s_value: float, analysis_id: str, args) -> np.ndarray:
     """
     Draws the run metadata banner for all rendered outputs.
     """
@@ -124,7 +158,7 @@ def draw_combined_banner(scene: np.ndarray, count: int, s_value: float, analysis
     inference_mode_text = _format_banner_inference_mode(args)
     model_text = _format_banner_model_name(args)
     lines = [
-        f"{current_time_str} | Objects: {count} | S: {s_value:.1f}",
+        f"{current_time_str} | {_format_class_counts(args, class_counts)} | S: {s_value:.1f}",
         f"Model: {model_text} | Mode: {mode_text} | Inference: {inference_mode_text}",
         f"{analysis_id}",
     ]
@@ -193,28 +227,24 @@ def visualize_frame_with_supervision(
         vis = BOX_ANNOTATOR.annotate(vis, detections)
         vis = LABEL_ANNOTATOR.annotate(vis, detections, labels=labels)
 
-    cumulative_count = _update_cumulative_objects(all_detections, allowed_track_ids=count_track_ids)
-    s_metric = calculate_s_value(cumulative_count)
+    class_counts = _update_cumulative_class_counts(all_detections, args, allowed_track_ids=count_track_ids)
+    s_metric = calculate_s_value(tilletia_count_from_counts(class_counts))
     
     p_id = getattr(args, "pipeline_id", "unknown")
-    vis = draw_combined_banner(vis, cumulative_count, s_metric, f"{p_id}", args)
+    vis = draw_combined_banner(vis, class_counts, s_metric, f"{p_id}", args)
 
-    return vis, cumulative_count
+    return vis, class_counts
 
 
 
 def build_labels_from_tracks(detections: sv.Detections, args) -> list[str]:
-    names = getattr(args, "class_names", None)
     labels = []
     tracker_ids = detections.tracker_id
 
     for i in range(len(detections)):
         cls_id = int(detections.class_id[i]) if detections.class_id is not None else 0
         conf = float(detections.confidence[i]) if detections.confidence is not None else 1.0
-        if isinstance(names, dict):
-            name = names.get(cls_id, names.get(str(cls_id), str(cls_id)))
-        else:
-            name = names[cls_id] if names is not None and 0 <= cls_id < len(names) else str(cls_id)
+        name = class_name_for_id(args, cls_id)
         if tracker_ids is not None:
             track_id = int(tracker_ids[i])
             labels.append(f"{name} {conf:.2f} id:{track_id}")
