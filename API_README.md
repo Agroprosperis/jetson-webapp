@@ -119,8 +119,8 @@ curl -X GET "http://localhost:8000/api/dashboard-settings" \
     "height": 0,
     "width": 0
   },
-  "grid_count_enabled": false,
-  "grid_debug_enabled": false,
+  "grid_count_enabled": true,
+  "grid_debug_enabled": true,
   "grid_score_threshold": 0.0,
   "model_path": "string",
   "source_type": "camera",
@@ -144,7 +144,7 @@ curl -X PUT "http://localhost:8000/api/dashboard-settings" \
   -H "accept: application/json" \
   -H "Authorization: Bearer <access_token>" \
   -H "Content-Type: application/json" \
-  -d '{"analysis_number": "string", "camera_device": "string", "camera_mode": {"format": "string", "fps": 0, "height": 0, "width": 0}, "grid_count_enabled": false, "grid_debug_enabled": false, "grid_score_threshold": 0.0, "model_path": "string", "source_type": "camera", "uploaded_path": "string", "vis_conf": 0.0}'
+  -d '{"analysis_number": "string", "camera_device": "string", "camera_mode": {"format": "string", "fps": 0, "height": 0, "width": 0}, "grid_count_enabled": true, "grid_debug_enabled": true, "grid_score_threshold": 0.0, "model_path": "string", "source_type": "camera", "uploaded_path": "string", "vis_conf": 0.0}'
 ```
 
 ### Response
@@ -230,6 +230,7 @@ curl -X GET "http://localhost:8000/api/model-catalog" \
   "models": [
     {
       "compiled": true,
+      "default_confidence_threshold": 0.0,
       "engine": {
         "name": "string",
         "path": "string"
@@ -267,7 +268,7 @@ curl -X POST "http://localhost:8000/api/model-compile" \
   -H "accept: application/json" \
   -H "Authorization: Bearer <access_token>" \
   -H "Content-Type: application/json" \
-  -d '{"name": "string", "type": "ul"}'
+  -d '{"inference_height": 0, "inference_width": 0, "name": "string", "type": "ul"}'
 ```
 
 ### Response
@@ -388,6 +389,26 @@ curl -X POST "http://localhost:8000/api/model-delete" \
 
 ---
 
+## Save editable metadata for a catalog model.
+**POST** `/api/model-metadata`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X POST "http://localhost:8000/api/model-metadata" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"default_confidence_threshold": 0.0, "name": "string", "type": "ul"}'
+```
+
+### Response
+**200 OK**: Saved model metadata
+---
+
 ## Save the Ultralytics task override for a catalog model.
 **POST** `/api/model-task`
 
@@ -416,7 +437,7 @@ curl -X POST "http://localhost:8000/api/model-task" \
 
 ---
 
-## Upload a model weights file into the catalog.
+## Upload a model weights file or RF deployment package into the catalog.
 **POST** `/api/model-upload`
 
 
@@ -425,7 +446,7 @@ curl -X POST "http://localhost:8000/api/model-task" \
 
 ### Parameters
 - `type` (formData, string, required): allowed values `ul, rf` - Target model family for the uploaded weights file.
-- `file` (formData, file, required) - Ultralytics or RF-DETR weights file in `.pt` format.
+- `file` (formData, file, required) - Ultralytics/RF-DETR `.pt` weights, or an RF deployment package `.zip`.
 
 ### Request Sample
 ```shell
@@ -471,6 +492,7 @@ curl -X GET "http://localhost:8000/api/models" \
 {
   "models": [
     {
+      "default_confidence_threshold": 0.0,
       "display": "string",
       "name": "string",
       "owner_username": "string",
@@ -506,6 +528,10 @@ curl -X GET "http://localhost:8000/api/results?date=string" \
 {
   "results": [
     {
+      "class_counts": {},
+      "detected_objects": 0,
+      "duration": "string",
+      "duration_seconds": 0.0,
       "files": [
         {
           "name": "string",
@@ -515,6 +541,7 @@ curl -X GET "http://localhost:8000/api/results?date=string" \
       ],
       "id": "string",
       "owner_username": "string",
+      "s_value": 0.0,
       "timestamp": "string"
     }
   ]
@@ -639,19 +666,47 @@ curl -X GET "http://localhost:8000/api/results/string/last-row" \
   "analysis_id": "string",
   "row": {
     "analysis_number": "string",
+    "class_counts": {},
     "detections": [
       {
         "bbox": [
           0
         ],
         "class_id": 0,
+        "class_name": "string",
         "confidence": 0.0
       }
     ],
     "frame": 0,
     "s_value": 0.0,
-    "total_unique_objects": 0
+    "tilletia_objects": 0
   }
+}
+```
+
+---
+
+## Reuse a processed result video as the current dashboard file source.
+**POST** `/api/results/{pid}/process-source`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X POST "http://localhost:8000/api/results/{pid}/process-source" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: Result video prepared as the dashboard file source.
+```json
+{
+  "file_name": "string",
+  "success": true,
+  "video": "string"
 }
 ```
 
@@ -697,7 +752,7 @@ curl -X POST "http://localhost:8000/api/start" \
   -H "accept: application/json" \
   -H "Authorization: Bearer <access_token>" \
   -H "Content-Type: application/json" \
-  -d '{"analysis_number": "string", "device": "string", "format": "string", "fps": 0, "grid_count_enabled": false, "grid_debug_enabled": false, "grid_score_threshold": 0.0, "height": 0, "model_path": "string", "model_task": "segment", "source_type": "camera", "video": "string", "vis_conf": 0.0, "vis_strategy": "string", "width": 0}'
+  -d '{"analysis_number": "string", "device": "string", "format": "string", "fps": 0, "grid_count_enabled": true, "grid_debug_enabled": true, "grid_score_threshold": 0.0, "height": 0, "model_path": "string", "model_task": "segment", "source_type": "camera", "video": "string", "vis_conf": 0.0, "vis_strategy": "string", "width": 0}'
 ```
 
 ### Response
@@ -741,8 +796,8 @@ curl -X GET "http://localhost:8000/api/status" \
   },
   "pipeline_id": "string",
   "runtime": {
-    "grid_auto_disabled": false,
-    "grid_count_enabled": false,
+    "grid_auto_disabled": true,
+    "grid_count_enabled": true,
     "grid_score": 0.0,
     "grid_score_threshold": 0.0
   },
