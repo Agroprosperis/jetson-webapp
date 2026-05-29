@@ -782,6 +782,12 @@ snapshotBtn.onclick = async () => {
   }
 };
 
+document.addEventListener('keydown', (ev) => {
+  if (ev.key !== 'F4' || snapshotBtn.disabled) return;
+  ev.preventDefault();
+  snapshotBtn.click();
+});
+
 uploadBtn.onclick = () => { uploadInput.click(); };
 
 uploadInput.onchange = function () {
