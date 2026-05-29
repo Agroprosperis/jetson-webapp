@@ -1,3 +1,6 @@
+# Application overview
+The dashboard is the main screen for selecting a camera or uploaded video, choosing a model, starting/stopping analysis, and taking snapshots. Use `Run` to start processing, `Stop` to stop it, `Take Snapshot` or `F4` to save a manual evidence frame, `See Results` to review saved analyses, and `Model Catalog` to upload, compile, select, or delete models. The results screen lists analysis folders, evidence images, videos, CSV files, per-class object counts, and S values.
+
 # Setup step
 REPO_DIR is the directory where the github repository is cloned
 ```
@@ -58,12 +61,18 @@ cd ${REPO_DIR}/deploy
 This mode builds the `tilletia-app:latest` image from the current tree, mounts models from `${REPO_DIR}/data/model`, and uses `${REPO_DIR}/data/output_hq` and `${REPO_DIR}/data/runs` for outputs.
 Missing runtime folders under `data/` are created automatically by deploy scripts.
 
+# YOLO model deployment
+YOLO model weights must be downloaded from the Roboflow site. Upload the downloaded `.pt` weights in the app from `Model Catalog`, then compile the uploaded model as TensorRT from the UI according to [Compile model as TensorRT from UI](#compile-model-as-tensorrt-from-ui). After compilation, select the generated engine on the dashboard and run analysis.
+
 # Roboflow NAS model deployment
 From `deploy` folder run:
 ```
 sudo docker compose -f docker-compose.deploy-model.yml run --rm --build deploy-model <modelid> <ROBOFLOWAPI_KEY>
 ```
 It creates <modelid>.zip archive which could be directly uploaded to the app
+
+# Compile model as TensorRT from UI
+Open `Model Catalog` from the dashboard, upload the model file if it is not already listed, then click the model's compile action to create a TensorRT engine. Wait for the compile job to finish, then return to the dashboard and select the compiled engine from the model dropdown.
 
 # Development tips&tricks
 
