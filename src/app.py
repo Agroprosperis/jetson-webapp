@@ -31,6 +31,7 @@ from model_manager import (
     ModelValidationError,
 )
 from result_ids import generate_unique_result_run_id
+from s_value_model import calculate_s_value
 from stream_readers import FileReader, V4L2StreamReader
 from urllib.parse import quote
 
@@ -420,8 +421,8 @@ def _format_duration(seconds):
 def _read_result_csv_summary(csv_path):
     if not os.path.isfile(csv_path):
         return {
-            "class_counts": None,
-            "s_values": None,
+            "detected_objects_per_class": None,
+            "s_value_per_class": None,
         }
 
     try:
@@ -429,19 +430,19 @@ def _read_result_csv_summary(csv_path):
     except Exception:
         LOGGER.exception("Failed to read result CSV summary: %s", csv_path)
         return {
-            "class_counts": None,
-            "s_values": None,
+            "detected_objects_per_class": None,
+            "s_value_per_class": None,
         }
 
     if not row:
         return {
-            "class_counts": None,
-            "s_values": None,
+            "detected_objects_per_class": None,
+            "s_value_per_class": None,
         }
 
     return {
-        "class_counts": row.get("class_counts"),
-        "s_values": row.get("s_values"),
+        "detected_objects_per_class": row.get("detected_objects_per_class"),
+        "s_value_per_class": row.get("s_value_per_class"),
     }
 
 
@@ -485,13 +486,77 @@ def _build_result_metadata(run_id):
         "timestamp": timestamp,
         "duration": _format_duration(longest_duration_seconds),
         "duration_seconds": longest_duration_seconds,
-        "class_counts": csv_summary.get("class_counts"),
-        "s_values": csv_summary.get("s_values"),
+        "detected_objects_per_class": csv_summary.get("detected_objects_per_class"),
+        "s_value_per_class": csv_summary.get("s_value_per_class"),
         "files": files,
         "_mtime": latest_mtime,
         "csv_path": csv_path if os.path.isfile(csv_path) else None,
         "video_path": video_path if os.path.isfile(video_path) else None,
     }
+
+
+def _legacy_result_metrics(detected_objects_per_class, s_value_per_class):
+    counts = detected_objects_per_class or {}
+    s_values = s_value_per_class or {}
+    detected_objects = sum(counts.values()) if counts else None
+
+    if detected_objects is not None:
+        if len(counts) == 1 and len(s_values) == 1:
+            s_value = next(iter(s_values.values()))
+        else:
+            s_value = calculate_s_value(detected_objects)
+    elif len(s_values) == 1:
+        s_value = next(iter(s_values.values()))
+    else:
+        s_value = None
+
+    return detected_objects, s_value
+
+
+def _legacy_detection(detection):
+    if not isinstance(detection, dict):
+        return detection
+    legacy = {}
+    for key in ("bbox", "class_id", "confidence"):
+        if key in detection:
+            legacy[key] = detection[key]
+    return legacy
+
+
+def _to_legacy_result_metadata(item):
+    video_path = item.get("video_path")
+    size_mb = (
+        round(os.path.getsize(video_path) / (1024 * 1024), 2)
+        if video_path
+        else None
+    )
+    return {
+        "id": item.get("id"),
+        "timestamp": item.get("timestamp"),
+        "video_size": f"{size_mb} MB" if size_mb is not None else None,
+    }
+
+
+def _to_legacy_csv_row(row):
+    legacy = dict(row)
+    detected_objects, s_value = _legacy_result_metrics(
+        legacy.pop("detected_objects_per_class", None),
+        legacy.pop("s_value_per_class", None),
+    )
+    legacy["s_value"] = s_value
+    legacy["total_unique_objects"] = detected_objects
+    legacy["detections"] = [
+        _legacy_detection(detection)
+        for detection in legacy.get("detections", [])
+    ]
+    return legacy
+
+
+def _json_response(payload, *, deprecated=False):
+    response = flask.jsonify(payload)
+    if deprecated:
+        response.headers["Deprecation"] = "true"
+    return response
 
 
 def _build_download_url(host_url, relative_path):
@@ -567,27 +632,52 @@ def _parse_csv_detections(value):
     try:
         detections = json.loads(value)
     except json.JSONDecodeError:
-        LOGGER.warning("Skipping malformed CSV detections JSON: %s", value)
-        return []
+        detections = []
+        for chunk in value.split("|"):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+
+            parts = {}
+            for item in chunk.split("_"):
+                if "=" not in item:
+                    continue
+                key, raw_value = item.split("=", 1)
+                parts[key] = raw_value
+
+            try:
+                detections.append({
+                    "bbox": [
+                        int(parts["x0"]),
+                        int(parts["y0"]),
+                        int(parts["x1"]),
+                        int(parts["y1"]),
+                    ],
+                    "class_id": int(parts["class"]),
+                    "confidence": float(parts["conf"]),
+                })
+            except (KeyError, TypeError, ValueError):
+                LOGGER.warning("Skipping malformed CSV detection chunk: %s", chunk)
+        return detections
 
     return detections if isinstance(detections, list) else []
 
 
-def _parse_csv_class_counts(value):
+def _parse_csv_detected_objects_per_class(value):
     if not value or not value.strip():
         return {}
 
     try:
-        class_counts = json.loads(value)
+        detected_objects_per_class = json.loads(value)
     except json.JSONDecodeError:
-        LOGGER.warning("Skipping malformed CSV class_counts JSON: %s", value)
+        LOGGER.warning("Skipping malformed CSV detected_objects_per_class JSON: %s", value)
         return {}
 
-    if not isinstance(class_counts, dict):
+    if not isinstance(detected_objects_per_class, dict):
         return {}
 
     parsed = {}
-    for class_name, count in class_counts.items():
+    for class_name, count in detected_objects_per_class.items():
         try:
             parsed[str(class_name)] = int(count)
         except (TypeError, ValueError):
@@ -595,26 +685,87 @@ def _parse_csv_class_counts(value):
     return parsed
 
 
-def _parse_csv_s_values(value):
+def _parse_csv_s_value_per_class(value):
     if not value or not isinstance(value, str) or not value.strip():
         return {}
 
     try:
-        s_values = json.loads(value)
+        s_value_per_class = json.loads(value)
     except json.JSONDecodeError:
-        LOGGER.warning("Skipping malformed CSV s_values JSON: %s", value)
+        LOGGER.warning("Skipping malformed CSV s_value_per_class JSON: %s", value)
         return {}
 
-    if not isinstance(s_values, dict):
+    if not isinstance(s_value_per_class, dict):
         return {}
 
     parsed = {}
-    for metric_name, metric_value in s_values.items():
+    for class_name, metric_value in s_value_per_class.items():
         try:
-            parsed[str(metric_name)] = float(metric_value)
+            parsed[str(class_name)] = float(metric_value)
         except (TypeError, ValueError):
             continue
     return parsed
+
+
+def _coerce_optional_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_optional_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_legacy_result_metrics(row, detected_objects_per_class, s_value_per_class):
+    """
+    Normalize CSV rows into the current REST shape.
+
+    Old-style single-class runs wrote scalar CSV count columns such as
+    `total_unique_objects` or `tilletia_objects` plus `s_value`. V2 REST does
+    not expose those legacy field names. Those historical runs were
+    Tilletia-only, so the CSV reader folds them into the per-class maps under
+    `Tilletia`, making old rows return:
+    `detected_objects_per_class: {"Tilletia": count}` and
+    `s_value_per_class: {"Tilletia": s_value}`.
+    """
+    if detected_objects_per_class and not s_value_per_class:
+        return (
+            detected_objects_per_class,
+            {
+                class_name: calculate_s_value(count)
+                for class_name, count in detected_objects_per_class.items()
+            },
+        )
+
+    if detected_objects_per_class and s_value_per_class:
+        return detected_objects_per_class, s_value_per_class
+
+    object_count = _coerce_optional_int(
+        row.get("total_unique_objects") or row.get("tilletia_objects")
+    )
+    if object_count is None:
+        return detected_objects_per_class, s_value_per_class
+
+    legacy_bucket = "Tilletia"
+    if not detected_objects_per_class:
+        detected_objects_per_class = {legacy_bucket: object_count}
+
+    if not s_value_per_class:
+        scalar_s_value = _coerce_optional_float(row.get("s_value"))
+        s_value_per_class = {
+            legacy_bucket: (
+                scalar_s_value
+                if scalar_s_value is not None
+                else calculate_s_value(object_count)
+            )
+        }
+
+    return detected_objects_per_class, s_value_per_class
 
 
 def _coerce_csv_row(row):
@@ -630,8 +781,24 @@ def _coerce_csv_row(row):
             pass
 
     coerced["detections"] = _parse_csv_detections(coerced.get("detections"))
-    coerced["class_counts"] = _parse_csv_class_counts(coerced.get("class_counts"))
-    coerced["s_values"] = _parse_csv_s_values(coerced.get("s_values"))
+    detected_objects_per_class = _parse_csv_detected_objects_per_class(
+        coerced.get("detected_objects_per_class") or coerced.get("class_counts")
+    )
+    s_value_per_class = _parse_csv_s_value_per_class(
+        coerced.get("s_value_per_class") or coerced.get("s_values")
+    )
+    detected_objects_per_class, s_value_per_class = _normalize_legacy_result_metrics(
+        coerced,
+        detected_objects_per_class,
+        s_value_per_class,
+    )
+    coerced["detected_objects_per_class"] = detected_objects_per_class
+    coerced["s_value_per_class"] = s_value_per_class
+    coerced.pop("class_counts", None)
+    coerced.pop("s_values", None)
+    coerced.pop("total_unique_objects", None)
+    coerced.pop("tilletia_objects", None)
+    coerced.pop("s_value", None)
 
     return coerced
 
@@ -2007,10 +2174,60 @@ def api_status():
 @auth.require_permission("results:view")
 def api_list_results():
     """
-    List all results.
+    List all results using the deprecated March 22 v1 shape.
     ---
     tags:
       - Results
+    deprecated: true
+    description: >
+      Deprecated compatibility endpoint matching the March 22 API. The result
+      list only exposes id, timestamp, and video_size. Use /api/v2/results for
+      duration, files, owner_username, and per-class metrics.
+    parameters:
+      - name: date
+        in: query
+        type: string
+        required: false
+        description: Optional exact date in YYYY-MM-DD format.
+    responses:
+      200:
+        description: List of processed videos
+        schema:
+          type: object
+          properties:
+            results:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  timestamp:
+                    type: string
+                  video_size:
+                    type: string
+      400:
+        description: Invalid date filter.
+      500:
+        description: Result listing failed.
+    """
+    return _api_list_results(version=1)
+
+
+@app.route("/api/v2/results")
+@auth.require_permission("results:view")
+def api_v2_list_results():
+    """
+    List all results using the v2 per-class metric shape.
+    ---
+    tags:
+      - Results
+    description: >
+      Result metrics are returned as per-class maps:
+      detected_objects_per_class contains detected object counts and
+      s_value_per_class contains S values, both keyed by the resolved model
+      class name. Old-style single-class CSV rows with total_unique_objects and
+      scalar s_value are Tilletia-only and are returned under the Tilletia key.
     parameters:
       - name: date
         in: query
@@ -2036,9 +2253,10 @@ def api_list_results():
                     type: string
                   duration_seconds:
                     type: number
-                  class_counts:
+                  detected_objects_per_class:
                     type: object
-                  s_values:
+                    description: Per-class detected object counts keyed by class name.
+                  s_value_per_class:
                     type: object
                     description: Per-class S metrics keyed by class name.
                   files:
@@ -2059,6 +2277,10 @@ def api_list_results():
       500:
         description: Result listing failed.
     """
+    return _api_list_results(version=2)
+
+
+def _api_list_results(*, version):
     try:
         selected_date = _parse_results_date_filter()
         results_list = auth.filter_results_for_user(
@@ -2066,7 +2288,11 @@ def api_list_results():
             HQ_OUTPUT_DIR,
             _collect_results_metadata(selected_date=selected_date),
         )
-        for item in results_list:
+        for index, item in enumerate(results_list):
+            if version == 1:
+                results_list[index] = _to_legacy_result_metadata(item)
+                continue
+
             item.pop("_mtime", None)
             item.pop("run_path", None)
             item.pop("csv_path", None)
@@ -2074,7 +2300,7 @@ def api_list_results():
             if auth.is_admin(flask.g.current_user):
                 item["owner_username"] = auth.get_result_owner_username(HQ_OUTPUT_DIR, item["id"])
 
-        return flask.jsonify({"results": results_list})
+        return _json_response({"results": results_list}, deprecated=version == 1)
 
     except ValueError as exc:
         return flask.jsonify({"error": str(exc)}), 400
@@ -2200,10 +2426,17 @@ def api_search_results():
 @auth.require_permission("results:inspect")
 def api_result_last_csv_row(pid):
     """
-    Return the last non-empty row from the result CSV as JSON.
+    Return the last non-empty row from the result CSV using the deprecated v1 metric shape.
     ---
     tags:
       - Results
+    deprecated: true
+    description: >
+      Deprecated compatibility endpoint. The CSV row is normalized into the old
+      scalar fields: total_unique_objects and s_value. Current per-class CSV
+      rows are collapsed by summing detected_objects_per_class and calculating
+      the legacy all-object S value. Use /api/v2/results/{pid}/last-row for
+      per-class metrics.
     parameters:
       - name: pid
         in: path
@@ -2225,11 +2458,76 @@ def api_result_last_csv_row(pid):
                   type: integer
                 analysis_number:
                   type: string
-                s_values:
+                s_value:
+                  type: number
+                total_unique_objects:
+                  type: integer
+                detections:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      bbox:
+                        type: array
+                        items:
+                          type: integer
+                      class_id:
+                        type: integer
+                      confidence:
+                        type: number
+      400:
+        description: Invalid analysis ID
+      403:
+        description: Authenticated user cannot inspect this result.
+      404:
+        description: CSV file or row not found
+      500:
+        description: Failed to read the CSV row.
+    """
+    return _api_result_last_csv_row(pid, version=1)
+
+
+@app.route("/api/v2/results/<pid>/last-row")
+@auth.require_permission("results:inspect")
+def api_v2_result_last_csv_row(pid):
+    """
+    Return the last non-empty row from the result CSV using the v2 per-class metric shape.
+    ---
+    tags:
+      - Results
+    description: >
+      The CSV row is normalized before it is returned. Current CSV rows expose
+      detected_objects_per_class and s_value_per_class as per-class maps keyed
+      by the resolved model class name. Old-style single-class CSV rows with
+      total_unique_objects and scalar s_value are Tilletia-only and are returned
+      under the Tilletia key.
+    parameters:
+      - name: pid
+        in: path
+        type: string
+        required: true
+        description: The Analysis ID to inspect
+    responses:
+      200:
+        description: Last CSV row
+        schema:
+          type: object
+          properties:
+            analysis_id:
+              type: string
+            row:
+              type: object
+              properties:
+                frame:
+                  type: integer
+                analysis_number:
+                  type: string
+                s_value_per_class:
                   type: object
                   description: Per-class S metrics keyed by class name.
-                class_counts:
+                detected_objects_per_class:
                   type: object
+                  description: Per-class detected object counts keyed by class name.
                 detections:
                   type: array
                   items:
@@ -2254,6 +2552,10 @@ def api_result_last_csv_row(pid):
       500:
         description: Failed to read the CSV row.
     """
+    return _api_result_last_csv_row(pid, version=2)
+
+
+def _api_result_last_csv_row(pid, *, version):
     try:
         if not pid or ".." in pid or "/" in pid:
             return flask.jsonify({"error": "Invalid ID"}), 400
@@ -2268,10 +2570,11 @@ def api_result_last_csv_row(pid):
         if row is None:
             return flask.jsonify({"error": "CSV is empty"}), 404
 
-        return flask.jsonify({
+        coerced_row = _coerce_csv_row(row)
+        return _json_response({
             "analysis_id": pid,
-            "row": _coerce_csv_row(row),
-        })
+            "row": _to_legacy_csv_row(coerced_row) if version == 1 else coerced_row,
+        }, deprecated=version == 1)
 
     except Exception as exc:
         LOGGER.error("Failed to read last CSV row for %s: %s", pid, exc)

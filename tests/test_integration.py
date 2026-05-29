@@ -747,8 +747,8 @@ class UserResultsVisibilityTests(unittest.TestCase):
             run_dir.mkdir(parents=True, exist_ok=True)
             (run_dir / "metadata.json").write_text(json.dumps({"owner": owner}), encoding="utf-8")
             (run_dir / f"{run_id}.csv").write_text(
-                'frame,analysis_number,class_counts,s_values,detections\n'
-                '1,test,{},"{}",[]\n',
+                'frame,analysis_number,detected_objects_per_class,s_value_per_class,detections\n'
+                '1,test,"{""Tilletia"": 2}","{""Tilletia"": 5.6}",[]\n',
                 encoding="utf-8",
             )
             (run_dir / f"{run_id}.mkv").write_bytes(b"0")
@@ -764,6 +764,19 @@ class UserResultsVisibilityTests(unittest.TestCase):
         result_ids = [item["id"] for item in json.loads(body)["results"]]
         self.assertIn(self.user_run, result_ids)
         self.assertNotIn(self.admin_run, result_ids)
+        own_result = next(item for item in json.loads(body)["results"] if item["id"] == self.user_run)
+        self.assertEqual(own_result["video_size"], "0.0 MB")
+        self.assertNotIn("detected_objects", own_result)
+        self.assertNotIn("s_value", own_result)
+        self.assertNotIn("detected_objects_per_class", own_result)
+
+    def test_user_sees_v2_per_class_results(self):
+        status, _, body = request("GET", "/api/v2/results", token=self.token)
+        self.assertEqual(status, 200)
+        own_result = next(item for item in json.loads(body)["results"] if item["id"] == self.user_run)
+        self.assertEqual(own_result["detected_objects_per_class"], {"Tilletia": 2})
+        self.assertEqual(own_result["s_value_per_class"], {"Tilletia": 5.6})
+        self.assertNotIn("detected_objects", own_result)
 
     def test_user_search_sees_only_own_results(self):
         status, _, body = request("GET", f"/api/results/search?analysis_id=run-", token=self.token)
@@ -778,6 +791,18 @@ class UserResultsVisibilityTests(unittest.TestCase):
         data = json.loads(body)
         self.assertEqual(data["analysis_id"], self.user_run)
         self.assertEqual(data["row"]["analysis_number"], "test")
+        self.assertEqual(data["row"]["total_unique_objects"], 2)
+        self.assertEqual(data["row"]["s_value"], 5.6)
+        self.assertNotIn("detected_objects_per_class", data["row"])
+
+    def test_user_can_read_v2_last_row_for_own_result(self):
+        status, _, body = request("GET", f"/api/v2/results/{self.user_run}/last-row", token=self.token)
+        self.assertEqual(status, 200)
+        data = json.loads(body)
+        self.assertEqual(data["analysis_id"], self.user_run)
+        self.assertEqual(data["row"]["detected_objects_per_class"], {"Tilletia": 2})
+        self.assertEqual(data["row"]["s_value_per_class"], {"Tilletia": 5.6})
+        self.assertNotIn("total_unique_objects", data["row"])
 
     def test_user_cannot_read_last_row_for_foreign_result(self):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
@@ -811,8 +836,8 @@ class UserResultsVisibilityTests(unittest.TestCase):
             request("GET", f"/api/results/{self.admin_run}/download", token=self.token)
         self.assertEqual(ctx.exception.code, 403)
 
-    def test_admin_results_api_exposes_owner_username(self):
-        status, _, body = request("GET", "/api/results", token=self.admin_token)
+    def test_admin_v2_results_api_exposes_owner_username(self):
+        status, _, body = request("GET", "/api/v2/results", token=self.admin_token)
         self.assertEqual(status, 200)
         results = {item["id"]: item for item in json.loads(body)["results"]}
         self.assertEqual(results[self.user_run]["owner_username"], self.username)

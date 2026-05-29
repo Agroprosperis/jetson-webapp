@@ -724,8 +724,8 @@ def dump_csv_line(csv_writer, frame_count, pipeline_id, class_counts, result, ar
     row = {
         "frame": frame_count,
         "analysis_number": pipeline_id,
-        "class_counts": json.dumps(class_counts, ensure_ascii=False, sort_keys=True),
-        "s_values": json.dumps(s_values, ensure_ascii=False, sort_keys=True),
+        "detected_objects_per_class": json.dumps(class_counts, ensure_ascii=False, sort_keys=True),
+        "s_value_per_class": json.dumps(s_values, ensure_ascii=False, sort_keys=True),
         "detections": json.dumps(detections, ensure_ascii=False),
     }
     csv_writer.writerow(row)
@@ -989,8 +989,8 @@ def output_loop(
                     fieldnames=[
                         "frame",
                         "analysis_number",
-                        "class_counts",
-                        "s_values",
+                        "detected_objects_per_class",
+                        "s_value_per_class",
                         "detections",
                     ],
                 )

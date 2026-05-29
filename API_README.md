@@ -505,9 +505,10 @@ curl -X GET "http://localhost:8000/api/models" \
 
 ---
 
-## List all results.
+## List all results using the deprecated March 22 v1 shape.
 **GET** `/api/results`
 
+Deprecated compatibility endpoint matching the March 22 API. The result list only exposes id, timestamp, and video_size. Use /api/v2/results for duration, files, owner_username, and per-class metrics.
 
 
 **Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
@@ -528,21 +529,9 @@ curl -X GET "http://localhost:8000/api/results?date=string" \
 {
   "results": [
     {
-      "class_counts": {},
-      "detected_objects": 0,
-      "duration": "string",
-      "duration_seconds": 0.0,
-      "files": [
-        {
-          "name": "string",
-          "path": "string",
-          "size": "string"
-        }
-      ],
       "id": "string",
-      "owner_username": "string",
-      "s_value": 0.0,
-      "timestamp": "string"
+      "timestamp": "string",
+      "video_size": "string"
     }
   ]
 }
@@ -642,9 +631,10 @@ curl -X GET "http://localhost:8000/api/results/string/download" \
 **200 OK**: ZIP archive of the result folder
 ---
 
-## Return the last non-empty row from the result CSV as JSON.
+## Return the last non-empty row from the result CSV using the deprecated v1 metric shape.
 **GET** `/api/results/{pid}/last-row`
 
+Deprecated compatibility endpoint. The CSV row is normalized into the old scalar fields: total_unique_objects and s_value. Current per-class CSV rows are collapsed by summing detected_objects_per_class and calculating the legacy all-object S value. Use /api/v2/results/{pid}/last-row for per-class metrics.
 
 
 **Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
@@ -666,20 +656,18 @@ curl -X GET "http://localhost:8000/api/results/string/last-row" \
   "analysis_id": "string",
   "row": {
     "analysis_number": "string",
-    "class_counts": {},
     "detections": [
       {
         "bbox": [
           0
         ],
         "class_id": 0,
-        "class_name": "string",
         "confidence": 0.0
       }
     ],
     "frame": 0,
     "s_value": 0.0,
-    "tilletia_objects": 0
+    "total_unique_objects": 0
   }
 }
 ```
@@ -856,6 +844,95 @@ curl -X POST "http://localhost:8000/api/upload" \
 ```json
 {
   "video": "string"
+}
+```
+
+---
+
+## List all results using the v2 per-class metric shape.
+**GET** `/api/v2/results`
+
+Result metrics are returned as per-class maps: detected_objects_per_class contains detected object counts and s_value_per_class contains S values, both keyed by the resolved model class name. Old-style single-class CSV rows with total_unique_objects and scalar s_value are Tilletia-only and are returned under the Tilletia key.
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Parameters
+- `date` (query, string, optional) - Optional exact date in YYYY-MM-DD format.
+
+### Request Sample
+```shell
+curl -X GET "http://localhost:8000/api/v2/results?date=string" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: List of processed videos
+```json
+{
+  "results": [
+    {
+      "detected_objects_per_class": {},
+      "duration": "string",
+      "duration_seconds": 0.0,
+      "files": [
+        {
+          "name": "string",
+          "path": "string",
+          "size": "string"
+        }
+      ],
+      "id": "string",
+      "owner_username": "string",
+      "s_value_per_class": {},
+      "timestamp": "string"
+    }
+  ]
+}
+```
+
+---
+
+## Return the last non-empty row from the result CSV using the v2 per-class metric shape.
+**GET** `/api/v2/results/{pid}/last-row`
+
+The CSV row is normalized before it is returned. Current CSV rows expose detected_objects_per_class and s_value_per_class as per-class maps keyed by the resolved model class name. Old-style single-class CSV rows with total_unique_objects and scalar s_value are Tilletia-only and are returned under the Tilletia key.
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Parameters
+- `pid` (path, string, required) - The Analysis ID to inspect
+
+### Request Sample
+```shell
+curl -X GET "http://localhost:8000/api/v2/results/string/last-row" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: Last CSV row
+```json
+{
+  "analysis_id": "string",
+  "row": {
+    "analysis_number": "string",
+    "detected_objects_per_class": {},
+    "detections": [
+      {
+        "bbox": [
+          0
+        ],
+        "class_id": 0,
+        "class_name": "string",
+        "confidence": 0.0
+      }
+    ],
+    "frame": 0,
+    "s_value_per_class": {}
+  }
 }
 ```
 

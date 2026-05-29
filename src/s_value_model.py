@@ -9,13 +9,13 @@ class SValueModel:
     denominator: float = 400.0
     decimals: int = 1
 
-    def calculate(self, total_unique_objects: int | float) -> float:
-        value = (float(total_unique_objects) * self.numerator) / self.denominator
+    def calculate(self, object_count: int | float) -> float:
+        value = (float(object_count) * self.numerator) / self.denominator
         return round(value, self.decimals)
 
 
 DEFAULT_S_VALUE_MODEL = SValueModel()
 
 
-def calculate_s_value(total_unique_objects: int | float) -> float:
-    return DEFAULT_S_VALUE_MODEL.calculate(total_unique_objects)
+def calculate_s_value(object_count: int | float) -> float:
+    return DEFAULT_S_VALUE_MODEL.calculate(object_count)

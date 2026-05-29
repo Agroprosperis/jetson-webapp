@@ -106,9 +106,9 @@ function formatIntegerMetric(value) {
     return value === null || value === undefined || value === '' ? '-' : value;
 }
 
-function formatClassCounts(classCounts) {
-    if (!classCounts || typeof classCounts !== 'object') return '-';
-    const parts = Object.entries(classCounts).map(([name, count]) => `${name}: ${count}`);
+function formatDetectedObjectsPerClass(detectedObjectsPerClass) {
+    if (!detectedObjectsPerClass || typeof detectedObjectsPerClass !== 'object') return '-';
+    const parts = Object.entries(detectedObjectsPerClass).map(([name, count]) => `${name}: ${count}`);
     return parts.length ? parts.join(' | ') : '-';
 }
 
@@ -118,9 +118,9 @@ function formatDecimalMetric(value, decimals = 1) {
     return Number.isFinite(numberValue) ? numberValue.toFixed(decimals) : '-';
 }
 
-function formatSValues(sValues) {
-    if (sValues && typeof sValues === 'object') {
-        const parts = Object.entries(sValues).map(([name, value]) => `${name}: ${formatDecimalMetric(value)}`);
+function formatSValuePerClass(sValuePerClass) {
+    if (sValuePerClass && typeof sValuePerClass === 'object') {
+        const parts = Object.entries(sValuePerClass).map(([name, value]) => `${name}: ${formatDecimalMetric(value)}`);
         if (parts.length) return parts.join(' | ');
     }
     return '-';
@@ -131,7 +131,7 @@ function buildResultsUrl() {
     const selectedDate = document.getElementById('dateFilter').value;
     if (selectedDate) params.set('date', selectedDate);
     const query = params.toString();
-    return query ? `/api/results?${query}` : '/api/results';
+    return query ? `/api/v2/results?${query}` : '/api/v2/results';
 }
 
 async function loadResults() {
@@ -183,8 +183,8 @@ async function loadResults() {
                 </td>
                 ${ownerCell}
                 <td class="metric-cell">${item.duration || '-'}</td>
-                <td class="metric-cell">${formatClassCounts(item.class_counts)}</td>
-                <td class="metric-cell">${formatSValues(item.s_values)}</td>
+                <td class="metric-cell">${formatDetectedObjectsPerClass(item.detected_objects_per_class)}</td>
+                <td class="metric-cell">${formatSValuePerClass(item.s_value_per_class)}</td>
                 <td class="file-type">folder</td>
                 <td>-</td>
                 <td>
