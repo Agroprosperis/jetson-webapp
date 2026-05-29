@@ -420,9 +420,8 @@ def _format_duration(seconds):
 def _read_result_csv_summary(csv_path):
     if not os.path.isfile(csv_path):
         return {
-            "detected_objects": None,
             "class_counts": None,
-            "s_value": None,
+            "s_values": None,
         }
 
     try:
@@ -430,22 +429,19 @@ def _read_result_csv_summary(csv_path):
     except Exception:
         LOGGER.exception("Failed to read result CSV summary: %s", csv_path)
         return {
-            "detected_objects": None,
             "class_counts": None,
-            "s_value": None,
+            "s_values": None,
         }
 
     if not row:
         return {
-            "detected_objects": None,
             "class_counts": None,
-            "s_value": None,
+            "s_values": None,
         }
 
     return {
-        "detected_objects": row.get("tilletia_objects"),
         "class_counts": row.get("class_counts"),
-        "s_value": row.get("s_value"),
+        "s_values": row.get("s_values"),
     }
 
 
@@ -489,9 +485,8 @@ def _build_result_metadata(run_id):
         "timestamp": timestamp,
         "duration": _format_duration(longest_duration_seconds),
         "duration_seconds": longest_duration_seconds,
-        "detected_objects": csv_summary["detected_objects"],
         "class_counts": csv_summary.get("class_counts"),
-        "s_value": csv_summary["s_value"],
+        "s_values": csv_summary.get("s_values"),
         "files": files,
         "_mtime": latest_mtime,
         "csv_path": csv_path if os.path.isfile(csv_path) else None,
@@ -600,26 +595,43 @@ def _parse_csv_class_counts(value):
     return parsed
 
 
+def _parse_csv_s_values(value):
+    if not value or not isinstance(value, str) or not value.strip():
+        return {}
+
+    try:
+        s_values = json.loads(value)
+    except json.JSONDecodeError:
+        LOGGER.warning("Skipping malformed CSV s_values JSON: %s", value)
+        return {}
+
+    if not isinstance(s_values, dict):
+        return {}
+
+    parsed = {}
+    for metric_name, metric_value in s_values.items():
+        try:
+            parsed[str(metric_name)] = float(metric_value)
+        except (TypeError, ValueError):
+            continue
+    return parsed
+
+
 def _coerce_csv_row(row):
     if not row:
         return None
 
     coerced = dict(row)
-    for key in ("frame", "tilletia_objects"):
+    for key in ("frame",):
         value = coerced.get(key)
         try:
             coerced[key] = int(value)
         except (TypeError, ValueError):
             pass
 
-    value = coerced.get("s_value")
-    try:
-        coerced["s_value"] = float(value)
-    except (TypeError, ValueError):
-        pass
-
     coerced["detections"] = _parse_csv_detections(coerced.get("detections"))
     coerced["class_counts"] = _parse_csv_class_counts(coerced.get("class_counts"))
+    coerced["s_values"] = _parse_csv_s_values(coerced.get("s_values"))
 
     return coerced
 
@@ -2024,12 +2036,11 @@ def api_list_results():
                     type: string
                   duration_seconds:
                     type: number
-                  detected_objects:
-                    type: integer
                   class_counts:
                     type: object
-                  s_value:
-                    type: number
+                  s_values:
+                    type: object
+                    description: Per-class S metrics keyed by class name.
                   files:
                     type: array
                     items:
@@ -2214,10 +2225,9 @@ def api_result_last_csv_row(pid):
                   type: integer
                 analysis_number:
                   type: string
-                s_value:
-                  type: number
-                tilletia_objects:
-                  type: integer
+                s_values:
+                  type: object
+                  description: Per-class S metrics keyed by class name.
                 class_counts:
                   type: object
                 detections:

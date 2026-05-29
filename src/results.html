@@ -86,7 +86,7 @@ a:hover { text-decoration: underline; }
                 {% if can_view_result_owners %}<th>Owner</th>{% endif %}
                 <th>Duration</th>
                 <th>Detected Objects</th>
-                <th>S-value</th>
+                <th>S-values</th>
                 <th>Type</th>
                 <th>Size</th>
                 <th>Actions</th>
@@ -116,6 +116,14 @@ function formatDecimalMetric(value, decimals = 1) {
     if (value === null || value === undefined || value === '') return '-';
     const numberValue = Number(value);
     return Number.isFinite(numberValue) ? numberValue.toFixed(decimals) : '-';
+}
+
+function formatSValues(sValues) {
+    if (sValues && typeof sValues === 'object') {
+        const parts = Object.entries(sValues).map(([name, value]) => `${name}: ${formatDecimalMetric(value)}`);
+        if (parts.length) return parts.join(' | ');
+    }
+    return '-';
 }
 
 function buildResultsUrl() {
@@ -176,7 +184,7 @@ async function loadResults() {
                 ${ownerCell}
                 <td class="metric-cell">${item.duration || '-'}</td>
                 <td class="metric-cell">${formatClassCounts(item.class_counts)}</td>
-                <td class="metric-cell">${formatDecimalMetric(item.s_value)}</td>
+                <td class="metric-cell">${formatSValues(item.s_values)}</td>
                 <td class="file-type">folder</td>
                 <td>-</td>
                 <td>

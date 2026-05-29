@@ -21,11 +21,10 @@ from ultralytics.trackers.bot_sort import BOTSORT, BOTrack
 from ultralytics.trackers.utils.gmc import GMC
 
 from profiler import Profiler
-from s_value_model import calculate_s_value
 from stream_readers import StreamReader, FileReader
 from visualize import (
+    class_s_values_from_counts,
     class_name_for_id,
-    tilletia_count_from_counts,
     visualize_frame_with_supervision,
     reset_object_counter,
 )
@@ -721,18 +720,15 @@ def dump_csv_line(csv_writer, frame_count, pipeline_id, class_counts, result, ar
             }
         )
 
-    tilletia_objects = tilletia_count_from_counts(class_counts)
-    s_value = calculate_s_value(tilletia_objects)
-    csv_writer.writerow(
-        [
-            frame_count,
-            pipeline_id,
-            s_value,
-            tilletia_objects,
-            json.dumps(class_counts, ensure_ascii=False, sort_keys=True),
-            json.dumps(detections, ensure_ascii=False),
-        ]
-    )
+    s_values = class_s_values_from_counts(args, class_counts)
+    row = {
+        "frame": frame_count,
+        "analysis_number": pipeline_id,
+        "class_counts": json.dumps(class_counts, ensure_ascii=False, sort_keys=True),
+        "s_values": json.dumps(s_values, ensure_ascii=False, sort_keys=True),
+        "detections": json.dumps(detections, ensure_ascii=False),
+    }
+    csv_writer.writerow(row)
 
 
 def _grid_count_enabled(args) -> bool:
@@ -988,8 +984,17 @@ def output_loop(
                 raw_output_writer = cv2.VideoWriter(raw_out_pipeline, cv2.CAP_GSTREAMER, 0, args.fps, (w, h), True)
                 hq_csv_path = os.path.join(run_dir, f"{pipeline_id}.csv")
                 csv_file = open(hq_csv_path, "w", newline="", encoding="utf-8")
-                csv_writer = csv.writer(csv_file)
-                csv_writer.writerow(["frame", "analysis_number", "s_value", "tilletia_objects", "class_counts", "detections"])
+                csv_writer = csv.DictWriter(
+                    csv_file,
+                    fieldnames=[
+                        "frame",
+                        "analysis_number",
+                        "class_counts",
+                        "s_values",
+                        "detections",
+                    ],
+                )
+                csv_writer.writeheader()
             
             safe_result = result if result is not None else []
             if (

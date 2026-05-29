@@ -747,7 +747,8 @@ class UserResultsVisibilityTests(unittest.TestCase):
             run_dir.mkdir(parents=True, exist_ok=True)
             (run_dir / "metadata.json").write_text(json.dumps({"owner": owner}), encoding="utf-8")
             (run_dir / f"{run_id}.csv").write_text(
-                'frame,analysis_number,s_value,tilletia_objects,class_counts,detections\n1,test,0.0,0,{},[]\n',
+                'frame,analysis_number,class_counts,s_values,detections\n'
+                '1,test,{},"{}",[]\n',
                 encoding="utf-8",
             )
             (run_dir / f"{run_id}.mkv").write_bytes(b"0")

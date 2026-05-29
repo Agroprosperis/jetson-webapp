@@ -14,7 +14,6 @@ LABEL_ANNOTATOR = sv.LabelAnnotator(
     text_padding = 8,
 )
 
-TILLETIA_CLASS_NAME = "Tilletia"
 SEEN_TRACK_IDS_BY_CLASS: dict[str, set[int]] = {}
 
 LOGGER = logging.getLogger("visualization")
@@ -56,13 +55,6 @@ def class_name_for_id(args, cls_id: int) -> str:
     return str(names[cls_id]) if names is not None and 0 <= cls_id < len(names) else str(cls_id)
 
 
-def tilletia_count_from_counts(class_counts: dict[str, int]) -> int:
-    for class_name, count in class_counts.items():
-        if class_name.lower() == TILLETIA_CLASS_NAME.lower():
-            return int(count)
-    return 0
-
-
 def _display_class_names(args, class_counts: dict[str, int]) -> list[str]:
     names = getattr(args, "class_names", None)
     if isinstance(names, dict):
@@ -83,12 +75,31 @@ def _display_class_names(args, class_counts: dict[str, int]) -> list[str]:
     return display_names
 
 
+def display_class_names(args, class_counts: dict[str, int]) -> list[str]:
+    return _display_class_names(args, class_counts)
+
+
 def _format_class_counts(args, class_counts: dict[str, int]) -> str:
     parts = [
         f"{name}: {int(class_counts.get(name, 0))}"
         for name in _display_class_names(args, class_counts)
     ]
     return "Objects: " + (" | ".join(parts) if parts else "none")
+
+
+def class_s_values_from_counts(args, class_counts: dict[str, int]) -> dict[str, float]:
+    return {
+        name: calculate_s_value(int(class_counts.get(name, 0)))
+        for name in display_class_names(args, class_counts)
+    }
+
+
+def _format_s_values(args, class_counts: dict[str, int], s_values: dict[str, float] | None = None) -> str:
+    values = s_values if s_values is not None else class_s_values_from_counts(args, class_counts)
+    parts = []
+    for name in display_class_names(args, class_counts):
+        parts.append(f"S-{name}: {float(values.get(name, 0.0)):.1f}")
+    return " | ".join(parts) if parts else "S: none"
 
 
 def _update_cumulative_class_counts(
@@ -148,7 +159,7 @@ def tracks_to_sv_detections(tracks: np.ndarray) -> sv.Detections:
     )
 
 
-def draw_combined_banner(scene: np.ndarray, class_counts: dict[str, int], s_value: float, analysis_id: str, args) -> np.ndarray:
+def draw_combined_banner(scene: np.ndarray, class_counts: dict[str, int], s_values: dict[str, float], analysis_id: str, args) -> np.ndarray:
     """
     Draws the run metadata banner for all rendered outputs.
     """
@@ -158,7 +169,7 @@ def draw_combined_banner(scene: np.ndarray, class_counts: dict[str, int], s_valu
     inference_mode_text = _format_banner_inference_mode(args)
     model_text = _format_banner_model_name(args)
     lines = [
-        f"{current_time_str} | {_format_class_counts(args, class_counts)} | S: {s_value:.1f}",
+        f"{current_time_str} | {_format_class_counts(args, class_counts)} | {_format_s_values(args, class_counts, s_values)}",
         f"Model: {model_text} | Mode: {mode_text} | Inference: {inference_mode_text}",
         f"{analysis_id}",
     ]
@@ -228,10 +239,10 @@ def visualize_frame_with_supervision(
         vis = LABEL_ANNOTATOR.annotate(vis, detections, labels=labels)
 
     class_counts = _update_cumulative_class_counts(all_detections, args, allowed_track_ids=count_track_ids)
-    s_metric = calculate_s_value(tilletia_count_from_counts(class_counts))
+    s_values = class_s_values_from_counts(args, class_counts)
     
     p_id = getattr(args, "pipeline_id", "unknown")
-    vis = draw_combined_banner(vis, class_counts, s_metric, f"{p_id}", args)
+    vis = draw_combined_banner(vis, class_counts, s_values, f"{p_id}", args)
 
     return vis, class_counts
 
