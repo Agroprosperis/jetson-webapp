@@ -859,10 +859,11 @@ Result metrics are returned as per-class maps: detected_objects_per_class contai
 
 ### Parameters
 - `date` (query, string, optional) - Optional exact date in YYYY-MM-DD format.
+- `analysis_number` (query, string, optional) - Optional include filter for the analysis number/result ID.
 
 ### Request Sample
 ```shell
-curl -X GET "http://localhost:8000/api/v2/results?date=string" \
+curl -X GET "http://localhost:8000/api/v2/results?date=string&analysis_number=string" \
   -H "accept: application/json" \
   -H "Authorization: Bearer <access_token>" \
 ```

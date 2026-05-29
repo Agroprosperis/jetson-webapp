@@ -72,6 +72,10 @@ a:hover { text-decoration: underline; }
         Date
         <input id="dateFilter" type="date" />
     </label>
+    <label>
+        Analysis Number
+        <input id="analysisNumberFilter" type="text" placeholder="include" />
+    </label>
     <button id="applyFilters" type="button">Apply Filter</button>
     <button id="clearFilters" type="button">Clear</button>
 </div>
@@ -129,7 +133,9 @@ function formatSValuePerClass(sValuePerClass) {
 function buildResultsUrl() {
     const params = new URLSearchParams();
     const selectedDate = document.getElementById('dateFilter').value;
+    const analysisNumber = document.getElementById('analysisNumberFilter').value.trim();
     if (selectedDate) params.set('date', selectedDate);
+    if (analysisNumber) params.set('analysis_number', analysisNumber);
     const query = params.toString();
     return query ? `/api/v2/results?${query}` : '/api/v2/results';
 }
@@ -159,7 +165,7 @@ async function loadResults() {
             const msg = document.createElement('div');
             msg.className = 'empty';
             msg.setAttribute('data-results-empty', '1');
-            msg.textContent = 'No analysis results found for the selected date.';
+            msg.textContent = 'No analysis results found for the selected filters.';
             document.body.appendChild(msg);
             return;
         }
@@ -358,6 +364,7 @@ async function downloadResultZip(pid) {
 document.getElementById('applyFilters').addEventListener('click', loadResults);
 document.getElementById('clearFilters').addEventListener('click', () => {
     document.getElementById('dateFilter').value = '';
+    document.getElementById('analysisNumberFilter').value = '';
     document.getElementById('loading').style.display = 'block';
     document.getElementById('loading').textContent = 'Loading...';
     loadResults();

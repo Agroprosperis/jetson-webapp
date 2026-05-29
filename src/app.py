@@ -2234,6 +2234,11 @@ def api_v2_list_results():
         type: string
         required: false
         description: Optional exact date in YYYY-MM-DD format.
+      - name: analysis_number
+        in: query
+        type: string
+        required: false
+        description: Optional include filter for the analysis number/result ID.
     responses:
       200:
         description: List of processed videos
@@ -2283,10 +2288,16 @@ def api_v2_list_results():
 def _api_list_results(*, version):
     try:
         selected_date = _parse_results_date_filter()
+        analysis_number = ""
+        if version == 2:
+            analysis_number = flask.request.args.get("analysis_number", "").strip()
         results_list = auth.filter_results_for_user(
             flask.g.current_user,
             HQ_OUTPUT_DIR,
-            _collect_results_metadata(selected_date=selected_date),
+            _collect_results_metadata(
+                analysis_prefix=analysis_number,
+                selected_date=selected_date,
+            ),
         )
         for index, item in enumerate(results_list):
             if version == 1:
