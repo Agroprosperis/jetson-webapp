@@ -4,6 +4,7 @@
 <meta charset='utf-8'/>
 <title>RF App (Desktop)</title>
 <meta name='viewport' content='width=device-width,initial-scale=1'/>
+<link rel="stylesheet" href="/vendor/sweetalert2/sweetalert2.min.css" />
 <style>
 body {
   margin: 0;
@@ -95,6 +96,20 @@ button[disabled] { opacity: .5; cursor: not-allowed; }
 input[type="number"], input[type="text"] { border: 1px solid #444; background-color: #1a1a1a; }
 select { border: 1px solid #444; }
 .user-note { font-size: 12px; color: #999; }
+.snapshot-toast.swal2-popup.swal2-toast {
+  border: 1px solid #666;
+  border-radius: 8px;
+  background: #303030;
+  color: #f5f5f5;
+  box-shadow: 0 16px 44px rgba(0, 0, 0, .55);
+  padding: 12px 16px;
+}
+.snapshot-toast .swal2-title {
+  color: #f5f5f5;
+  font-size: 15px;
+  font-weight: 600;
+}
+.snapshot-toast-progress { background: #a3a3a3; }
 </style>
 </head>
 <body>
@@ -156,8 +171,8 @@ select { border: 1px solid #444; }
 
     <div style="flex:1"></div>
     <button id='run' class="btn-primary" style="min-width: 80px;">Run</button>
-    <button id='stop' type='button' style="min-width: 60px;">Stop</button>
-    <button id='snapshotBtn' type='button' class="btn-secondary" style="min-width: 120px;" disabled>Take Snapshot</button>
+    <button id='stop' type='button' style="min-width: 60px;">Stop (F10)</button>
+    <button id='snapshotBtn' type='button' class="btn-secondary" style="min-width: 120px;" disabled>Take Snapshot (F4)</button>
 
     <a href="/results" target="_blank" style="text-decoration:none; margin-left: 10px;">
       <button type="button" class="btn-secondary">See Results</button>
@@ -199,6 +214,7 @@ select { border: 1px solid #444; }
 </div>
 
 <script src="/auth-client.js"></script>
+<script src="/vendor/sweetalert2/sweetalert2.min.js"></script>
 <script>
 const CAN_CONFIGURE_DASHBOARD = {{ 'true' if can_configure_dashboard else 'false' }};
 const INITIAL_DASHBOARD_SETTINGS = {{ dashboard_settings_json | safe }};
@@ -249,6 +265,21 @@ const zoomState = {
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 8;
 const ZOOM_STEP = 1.2;
+function showSnapshotNotification() {
+  if (!window.Swal) return;
+  Swal.fire({
+    toast: true,
+    position: 'top-end',
+    title: 'Snapshot taken',
+    showConfirmButton: false,
+    timer: 5000,
+    timerProgressBar: true,
+    customClass: {
+      popup: 'snapshot-toast',
+      timerProgressBar: 'snapshot-toast-progress',
+    },
+  });
+}
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
@@ -773,6 +804,7 @@ snapshotBtn.onclick = async () => {
     if (!response.ok) {
       throw new Error(data.error || 'Snapshot failed');
     }
+    showSnapshotNotification();
   } catch (e) {
     console.error(e);
   } finally {
@@ -783,9 +815,10 @@ snapshotBtn.onclick = async () => {
 };
 
 document.addEventListener('keydown', (ev) => {
-  if (ev.key !== 'F4' || snapshotBtn.disabled) return;
+  const button = ev.key === 'F4' ? snapshotBtn : ev.key === 'F10' ? btnStop : null;
+  if (!button || button.disabled) return;
   ev.preventDefault();
-  snapshotBtn.click();
+  button.click();
 });
 
 uploadBtn.onclick = () => { uploadInput.click(); };
