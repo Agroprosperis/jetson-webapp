@@ -703,7 +703,7 @@ curl -X POST "http://localhost:8000/api/results/{pid}/process-source" \
 ## Capture a manual snapshot from the active pipeline.
 **POST** `/api/snapshot`
 
-
+<br/>Optional JSON body for zoomed snapshots:<br/>- `zoom_level` controls whether the snapshot is saved as a zoom crop. Use a<br/>  finite number greater than 1 to apply the crop. Values less than or equal<br/>  to 1 save the full current frame. There is no API-enforced maximum.<br/>- `crop.x` and `crop.y` are the left and top edges of the visible region in<br/>  source-frame pixels. Negative or out-of-frame values are accepted and<br/>  clamped to the frame.<br/>- `crop.width` and `crop.height` are the crop size in source-frame pixels.<br/>  They must be finite numbers greater than 0 to apply a zoom crop; otherwise<br/>  the full current frame is saved. Oversized values are clamped to the frame.<br/>- Omit the body, send `{}`, or omit either `zoom_level` or `crop` to save the<br/>  full current frame. If `crop` is present with `zoom_level`, all four crop<br/>  fields are required. Fractional crop values are accepted and rounded when<br/>  the JPEG is written.<br/>
 
 **Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
 
@@ -712,6 +712,8 @@ curl -X POST "http://localhost:8000/api/results/{pid}/process-source" \
 curl -X POST "http://localhost:8000/api/snapshot" \
   -H "accept: application/json" \
   -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"crop": {"height": 0.0, "width": 0.0, "x": 0.0, "y": 0.0}, "zoom_level": 0.0}'
 ```
 
 ### Response

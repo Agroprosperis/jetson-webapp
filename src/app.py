@@ -2857,9 +2857,56 @@ def snapshot_options_from_request():
 def api_snapshot():
     """
     Capture a manual snapshot from the active pipeline.
+
+    Optional JSON body for zoomed snapshots:
+    - `zoom_level` controls whether the snapshot is saved as a zoom crop. Use a
+      finite number greater than 1 to apply the crop. Values less than or equal
+      to 1 save the full current frame. There is no API-enforced maximum.
+    - `crop.x` and `crop.y` are the left and top edges of the visible region in
+      source-frame pixels. Negative or out-of-frame values are accepted and
+      clamped to the frame.
+    - `crop.width` and `crop.height` are the crop size in source-frame pixels.
+      They must be finite numbers greater than 0 to apply a zoom crop; otherwise
+      the full current frame is saved. Oversized values are clamped to the frame.
+    - Omit the body, send `{}`, or omit either `zoom_level` or `crop` to save the
+      full current frame. If `crop` is present with `zoom_level`, all four crop
+      fields are required. Fractional crop values are accepted and rounded when
+      the JPEG is written.
     ---
     tags:
       - Control
+    parameters:
+      - name: body
+        in: body
+        required: false
+        description: Optional zoom crop request. It controls only the saved snapshot image, not the running stream.
+        schema:
+          type: object
+          properties:
+            zoom_level:
+              type: number
+              description: Viewer zoom scale. Use a finite number greater than 1 to request a zoomed snapshot; values less than or equal to 1 save the full frame. The API does not enforce a maximum zoom.
+            crop:
+              type: object
+              description: Source-frame rectangle to save when zoom_level is greater than 1. If crop is missing, the full frame is saved. If crop is present, x, y, width, and height must be finite numbers.
+              required:
+                - x
+                - y
+                - width
+                - height
+              properties:
+                x:
+                  type: number
+                  description: Left edge of the crop in source-frame pixels. Values outside the frame are clamped.
+                y:
+                  type: number
+                  description: Top edge of the crop in source-frame pixels. Values outside the frame are clamped.
+                width:
+                  type: number
+                  description: Crop width in source-frame pixels. Must be greater than 0 to apply a zoom crop; otherwise the full frame is saved.
+                height:
+                  type: number
+                  description: Crop height in source-frame pixels. Must be greater than 0 to apply a zoom crop; otherwise the full frame is saved.
     responses:
       200:
         description: Snapshot saved successfully.
@@ -2872,12 +2919,15 @@ def api_snapshot():
               type: string
             filename:
               type: string
+              description: Saved snapshot filename. Zoomed snapshots include a -zoom-{level} suffix.
             path:
               type: string
       400:
-        description: No pipeline is currently running.
+        description: No pipeline is currently running or the zoom crop payload is invalid.
       504:
         description: Timed out waiting for the next frame.
+      500:
+        description: Snapshot capture failed.
     """
     global pipeline, pipeline_id
 
