@@ -682,19 +682,56 @@ def dump_screenshot(result, vis, hq_output_dir, pipeline_id, saved_track_ids, fr
         saved_track_ids.add(track_id)
 
 
-def dump_manual_snapshot(frame, run_dir, pipeline_id, frame_count, fps, request_id) -> str:
+def snapshot_zoom_suffix(snapshot_options) -> str:
+    if not snapshot_options:
+        return ""
+
+    zoom_level = snapshot_options.get("zoom_level")
+    if not isinstance(zoom_level, (int, float)) or zoom_level <= 1:
+        return ""
+
+    zoom_text = f"{zoom_level:.2f}".rstrip("0").rstrip(".")
+    return f"-zoom-{zoom_text}"
+
+
+def crop_manual_snapshot_frame(frame, snapshot_options):
+    if not snapshot_options:
+        return frame
+
+    crop = snapshot_options.get("crop")
+    if not isinstance(crop, dict):
+        return frame
+
+    h, w = frame.shape[:2]
+    x = float(crop.get("x", 0))
+    y = float(crop.get("y", 0))
+    width = float(crop.get("width", 0))
+    height = float(crop.get("height", 0))
+    if width <= 0 or height <= 0:
+        return frame
+
+    left = max(0, min(w - 1, int(round(x))))
+    top = max(0, min(h - 1, int(round(y))))
+    right = max(left + 1, min(w, int(round(x + width))))
+    bottom = max(top + 1, min(h, int(round(y + height))))
+    return np.ascontiguousarray(frame[top:bottom, left:right], dtype=np.uint8)
+
+
+def dump_manual_snapshot(frame, run_dir, pipeline_id, frame_count, fps, request_id, snapshot_options=None) -> str:
     if fps and fps > 0:
         frame_ts_ms = int(round((frame_count - 1) * 1000.0 / fps))
     else:
         frame_ts_ms = 0
 
+    zoom_suffix = snapshot_zoom_suffix(snapshot_options)
+    snapshot_frame = crop_manual_snapshot_frame(frame, snapshot_options)
     filename = (
         f"{pipeline_id}-snapshot-rq-{request_id:06d}-fn-{frame_count:06d}-"
-        f"ms-{frame_ts_ms:06d}.jpg"
+        f"ms-{frame_ts_ms:06d}{zoom_suffix}.jpg"
     )
     saved = cv2.imwrite(
         os.path.join(run_dir, filename),
-        frame,
+        snapshot_frame,
         [cv2.IMWRITE_JPEG_QUALITY, 100],
     )
     if not saved:
@@ -1016,7 +1053,7 @@ def output_loop(
             )
             snapshot_controller = getattr(args, "snapshot_controller", None)
             if snapshot_controller is not None:
-                for request_id in snapshot_controller.consume_snapshot_requests():
+                for request_id, snapshot_options in snapshot_controller.consume_snapshot_requests():
                     try:
                         filename = dump_manual_snapshot(
                             frame,
@@ -1025,6 +1062,7 @@ def output_loop(
                             frame_count,
                             fps,
                             request_id,
+                            snapshot_options,
                         )
                         snapshot_controller.complete_snapshot_request(
                             request_id,
@@ -1063,6 +1101,7 @@ class StreamPipeline:
         self.stop_event = threading.Event()
         self._snapshot_condition = threading.Condition()
         self._snapshot_pending_ids: list[int] = []
+        self._snapshot_pending_options: dict[int, dict | None] = {}
         self._snapshot_results: dict[int, dict[str, str]] = {}
         self._next_snapshot_request_id = 0
         self.args.snapshot_controller = self
@@ -1088,9 +1127,12 @@ class StreamPipeline:
         )
         self._threads = [self.capture_t, self.inference_t, self.grid_t, self.output_t]
 
-    def consume_snapshot_requests(self) -> list[int]:
+    def consume_snapshot_requests(self) -> list[tuple[int, dict | None]]:
         with self._snapshot_condition:
-            pending = list(self._snapshot_pending_ids)
+            pending = [
+                (request_id, self._snapshot_pending_options.pop(request_id, None))
+                for request_id in self._snapshot_pending_ids
+            ]
             self._snapshot_pending_ids.clear()
             return pending
 
@@ -1102,11 +1144,12 @@ class StreamPipeline:
     def fail_snapshot_request(self, request_id: int, error_message: str) -> None:
         self.complete_snapshot_request(request_id, {"error": error_message})
 
-    def request_snapshot(self, timeout: float = 5.0) -> dict[str, str]:
+    def request_snapshot(self, timeout: float = 5.0, snapshot_options: dict | None = None) -> dict[str, str]:
         with self._snapshot_condition:
             self._next_snapshot_request_id += 1
             request_id = self._next_snapshot_request_id
             self._snapshot_pending_ids.append(request_id)
+            self._snapshot_pending_options[request_id] = snapshot_options
             deadline = time.monotonic() + timeout
 
             while request_id not in self._snapshot_results:
@@ -1114,6 +1157,7 @@ class StreamPipeline:
                 if remaining <= 0:
                     if request_id in self._snapshot_pending_ids:
                         self._snapshot_pending_ids.remove(request_id)
+                    self._snapshot_pending_options.pop(request_id, None)
                     raise TimeoutError("Timed out waiting for the next frame.")
                 self._snapshot_condition.wait(timeout=remaining)
 
@@ -1132,6 +1176,8 @@ class StreamPipeline:
         with self._snapshot_condition:
             pending = list(self._snapshot_pending_ids)
             self._snapshot_pending_ids.clear()
+            for request_id in pending:
+                self._snapshot_pending_options.pop(request_id, None)
             for request_id in pending:
                 self._snapshot_results[request_id] = {"error": "Pipeline stopped before snapshot was captured."}
             if pending:

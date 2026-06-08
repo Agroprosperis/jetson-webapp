@@ -281,6 +281,35 @@ function showSnapshotNotification() {
   });
 }
 
+function snapshotZoomPayload() {
+  if (zoomState.scale <= 1 || !vWf.videoWidth || !vWf.videoHeight) return {};
+
+  const rect = videoViewport.getBoundingClientRect();
+  if (!rect.width || !rect.height) return {};
+
+  const fitScale = Math.min(rect.width / vWf.videoWidth, rect.height / vWf.videoHeight);
+  const contentWidth = vWf.videoWidth * fitScale;
+  const contentHeight = vWf.videoHeight * fitScale;
+  const contentX = (rect.width - contentWidth) / 2;
+  const contentY = (rect.height - contentHeight) / 2;
+  const visibleLeft = Math.max(contentX, -zoomState.x / zoomState.scale);
+  const visibleTop = Math.max(contentY, -zoomState.y / zoomState.scale);
+  const visibleRight = Math.min(contentX + contentWidth, (rect.width - zoomState.x) / zoomState.scale);
+  const visibleBottom = Math.min(contentY + contentHeight, (rect.height - zoomState.y) / zoomState.scale);
+
+  if (visibleRight <= visibleLeft || visibleBottom <= visibleTop) return {};
+
+  return {
+    zoom_level: zoomState.scale,
+    crop: {
+      x: (visibleLeft - contentX) / fitScale,
+      y: (visibleTop - contentY) / fitScale,
+      width: (visibleRight - visibleLeft) / fitScale,
+      height: (visibleBottom - visibleTop) / fitScale,
+    },
+  };
+}
+
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
@@ -799,7 +828,11 @@ btnStop.onclick = async () => {
 snapshotBtn.onclick = async () => {
   snapshotBtn.disabled = true;
   try {
-    const response = await fetch('/api/snapshot', { method: 'POST' });
+    const response = await fetch('/api/snapshot', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(snapshotZoomPayload()),
+    });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       throw new Error(data.error || 'Snapshot failed');

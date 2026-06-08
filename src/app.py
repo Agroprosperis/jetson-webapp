@@ -7,6 +7,7 @@ import flask
 import io
 import json
 import logging
+import math
 import os
 import re
 import requests
@@ -2817,6 +2818,40 @@ def api_download_result(pid):
         return flask.jsonify({"error": str(e)}), 500
 
 
+
+def snapshot_options_from_request():
+    data = flask.request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return None
+
+    crop = data.get("crop")
+    zoom_level = data.get("zoom_level")
+    if crop is None or zoom_level is None:
+        return None
+    if not isinstance(crop, dict):
+        raise ValueError("Invalid snapshot crop.")
+
+    try:
+        zoom_level = float(zoom_level)
+        x = float(crop["x"])
+        y = float(crop["y"])
+        width = float(crop["width"])
+        height = float(crop["height"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("Invalid snapshot crop.")
+
+    values = (zoom_level, x, y, width, height)
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("Invalid snapshot crop.")
+    if zoom_level <= 1 or width <= 0 or height <= 0:
+        return None
+
+    return {
+        "zoom_level": zoom_level,
+        "crop": {"x": x, "y": y, "width": width, "height": height},
+    }
+
+
 @app.route("/api/snapshot", methods=["POST"])
 @auth.require_permission("dashboard:view")
 def api_snapshot():
@@ -2850,7 +2885,8 @@ def api_snapshot():
         return flask.jsonify({"error": "Pipeline is not running."}), 400
 
     try:
-        snapshot = pipeline.request_snapshot(timeout=5.0)
+        snapshot_options = snapshot_options_from_request()
+        snapshot = pipeline.request_snapshot(timeout=5.0, snapshot_options=snapshot_options)
         return flask.jsonify(
             {
                 "success": True,
@@ -2859,6 +2895,8 @@ def api_snapshot():
                 "path": snapshot["path"],
             }
         )
+    except ValueError as exc:
+        return flask.jsonify({"error": str(exc)}), 400
     except TimeoutError as exc:
         return flask.jsonify({"error": str(exc)}), 504
     except Exception as exc:
