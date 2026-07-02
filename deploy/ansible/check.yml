@@ -5,6 +5,7 @@
 
   tasks:
     - name: systemd service active
+      become: yes
       ansible.builtin.command: systemctl is-active tilletia-app.service
       register: service_status
       changed_when: false
@@ -18,6 +19,7 @@
       changed_when: false
 
     - name: docker containers running
+      become: yes
       ansible.builtin.command: docker compose -f /opt/tilletia-app/deploy/docker-compose.yml ps --status running
       register: compose_ps
       changed_when: false
