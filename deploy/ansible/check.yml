@@ -1,0 +1,27 @@
+---
+- name: Health check Tilletia hosts
+  hosts: tilletia
+  gather_facts: no
+
+  tasks:
+    - name: systemd service active
+      ansible.builtin.command: systemctl is-active tilletia-app.service
+      register: service_status
+      changed_when: false
+      failed_when: service_status.stdout | trim != "active"
+
+    - name: login page reachable
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8000/login
+        status_code: 200
+      register: login_check
+      changed_when: false
+
+    - name: docker containers running
+      ansible.builtin.command: docker compose -f /opt/tilletia-app/deploy/docker-compose.yml ps --status running
+      register: compose_ps
+      changed_when: false
+
+    - name: summary
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} ({{ ansible_host }}) OK"

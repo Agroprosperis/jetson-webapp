@@ -1,0 +1,58 @@
+---
+- name: Install Tilletia on Ubuntu hosts
+  hosts: tilletia
+  gather_facts: yes
+
+  vars:
+    deploy_dir: "{{ playbook_dir | dirname }}"
+
+  tasks:
+    - name: Require Ubuntu 24.04 noble
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['distribution'] == 'Ubuntu'
+          - ansible_facts['distribution_version'] is version(expected_ubuntu_version, '==')
+          - ansible_facts['distribution_release'] == expected_ubuntu_codename
+        fail_msg: >-
+          {{ inventory_hostname }} must run Ubuntu {{ expected_ubuntu_version }}
+          ({{ expected_ubuntu_codename }}), got
+          {{ ansible_facts['distribution'] | default('unknown') }}
+          {{ ansible_facts['distribution_version'] | default('') }}
+          ({{ ansible_facts['distribution_release'] | default('') }}).
+
+    - name: Copy bootstrap script
+      ansible.builtin.copy:
+        src: "{{ deploy_dir }}/bootstrap-ubuntu.sh"
+        dest: /tmp/tilletia-bootstrap-ubuntu.sh
+        mode: "0755"
+
+    - name: Run bootstrap (docker, nvidia toolkit, clone, install)
+      ansible.builtin.command:
+        cmd: /tmp/tilletia-bootstrap-ubuntu.sh
+      environment:
+        REPO_URL: "{{ repo_url }}"
+        INSTALL_DIR: "{{ install_dir }}"
+        REQUIRED_CODENAME: "{{ expected_ubuntu_codename }}"
+        SKIP_NVIDIA: "{{ skip_nvidia | default('0') }}"
+        SKIP_INSTALL: "{{ skip_install | default('0') }}"
+      register: bootstrap_result
+      changed_when: true
+
+    - name: Show bootstrap output
+      ansible.builtin.debug:
+        var: bootstrap_result.stdout_lines
+
+    - name: Check systemd service
+      ansible.builtin.command: systemctl is-active tilletia-app.service
+      register: service_status
+      changed_when: false
+      failed_when: service_status.stdout | trim != "active"
+
+    - name: Check login page
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8000/login
+        status_code: 200
+      register: login_check
+      retries: 15
+      delay: 4
+      until: login_check.status == 200
