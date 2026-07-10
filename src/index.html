@@ -46,6 +46,15 @@ header {
   flex-shrink: 0;
 }
 
+.toolbar-extra {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  padding-left: 12px;
+  border-left: 1px solid #333;
+}
+
 .control-row.toolbar-main > .status {
   margin-left: auto;
 }
@@ -227,20 +236,22 @@ select { border: 1px solid #444; }
       <button type="button" class="btn-secondary">Результати</button>
     </a>
 
-    <details class="menu-dropdown">
-      <summary class="btn-secondary">Меню ▾</summary>
-      <div class="menu-dropdown-list">
-        <a href="/settings" target="_blank">Налаштування</a>
-        {% if can_view_models %}
-        <a href="/models" target="_blank">Каталог моделей</a>
-        {% endif %}
-        {% if can_manage_users %}
-        <a href="/users" target="_blank">Користувачі</a>
-        {% endif %}
-      </div>
-    </details>
+    <div class="toolbar-extra">
+      <details class="menu-dropdown">
+        <summary class="btn-secondary">Додатково ▾</summary>
+        <div class="menu-dropdown-list">
+          <a href="/settings" target="_blank">Налаштування</a>
+          {% if can_view_models %}
+          <a href="/models" target="_blank">Каталог моделей</a>
+          {% endif %}
+          {% if can_manage_users %}
+          <a href="/users" target="_blank">Користувачі</a>
+          {% endif %}
+        </div>
+      </details>
 
-    <button id="logoutBtn" type="button" class="btn-secondary">Вийти</button>
+      <button id="logoutBtn" type="button" class="btn-secondary">Вийти</button>
+    </div>
   </div>
 
   {% if not can_configure_dashboard %}
