@@ -36,13 +36,51 @@ header {
   overflow-x: auto;
 }
 
-.control-row.toolbar-main > * {
+.control-row.toolbar-main > *,
+.control-row.toolbar-actions > * {
   flex-shrink: 0;
 }
 
 .control-row.toolbar-main > .status {
   margin-left: auto;
 }
+
+.menu-dropdown { position: relative; }
+.menu-dropdown > summary {
+  list-style: none;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid #555;
+  background: #333;
+  font-size: 13px;
+  user-select: none;
+}
+.menu-dropdown > summary::-webkit-details-marker { display: none; }
+.menu-dropdown > summary:hover { background: #444; }
+.menu-dropdown[open] > summary { background: #444; }
+.menu-dropdown-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+  background: #222;
+  border: 1px solid #444;
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .5);
+}
+.menu-dropdown-list a {
+  padding: 8px 10px;
+  border-radius: 6px;
+  color: #eee;
+  text-decoration: none;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.menu-dropdown-list a:hover { background: #333; }
 
 input:not([type="checkbox"]), select, button {
   padding: 6px 10px;
@@ -168,6 +206,10 @@ select { border: 1px solid #444; }
       <input id="gridScoreThreshold" type="number" min="0.00" max="1.00" step="0.05" value="{{ '%.2f'|format(dashboard_settings.grid_score_threshold) }}" style="width: 90px;" title="Auto-disable grid counting when grid score is at or below this threshold"{% if not can_configure_dashboard %} disabled hidden{% endif %}/>
     </div>
 
+    <div class='status'><span id='status'>status: idle</span></div>
+  </div>
+
+  <div class="control-row toolbar-actions">
     <div class="controls">
       <label for="analysisNum" style="font-size:13px; font-weight:bold; color:#aaa; white-space:nowrap;">Analysis #:</label>
       <input id="analysisNum" type="text" placeholder="Auto" value="{{ dashboard_settings.analysis_number }}" style="width: 120px;" title="Manual Analysis Number"{% if not can_configure_dashboard %} disabled hidden{% endif %}/>
@@ -179,22 +221,21 @@ select { border: 1px solid #444; }
     <a href="/results" target="_blank" style="text-decoration:none;">
       <button type="button" class="btn-secondary">Результати</button>
     </a>
-    <a href="/settings" target="_blank" style="text-decoration:none;">
-      <button type="button" class="btn-secondary">Налаштування</button>
-    </a>
-    {% if can_view_models %}
-    <a href="/models" target="_blank" style="text-decoration:none;">
-      <button type="button" class="btn-secondary">Каталог моделей</button>
-    </a>
-    {% endif %}
-    {% if can_manage_users %}
-    <a href="/users" target="_blank" style="text-decoration:none;">
-      <button type="button" class="btn-secondary">Користувачі</button>
-    </a>
-    {% endif %}
-    <button id="logoutBtn" type="button" class="btn-secondary">Вийти</button>
 
-    <div class='status'><span id='status'>status: idle</span></div>
+    <details class="menu-dropdown">
+      <summary class="btn-secondary">Меню ▾</summary>
+      <div class="menu-dropdown-list">
+        <a href="/settings" target="_blank">Налаштування</a>
+        {% if can_view_models %}
+        <a href="/models" target="_blank">Каталог моделей</a>
+        {% endif %}
+        {% if can_manage_users %}
+        <a href="/users" target="_blank">Користувачі</a>
+        {% endif %}
+      </div>
+    </details>
+
+    <button id="logoutBtn" type="button" class="btn-secondary">Вийти</button>
   </div>
 
   {% if not can_configure_dashboard %}
