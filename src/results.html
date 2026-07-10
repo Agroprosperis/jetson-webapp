@@ -76,8 +76,8 @@ a:hover { text-decoration: underline; }
         Analysis Number
         <input id="analysisNumberFilter" type="text" placeholder="include" />
     </label>
-    <button id="applyFilters" type="button">Apply Filter</button>
-    <button id="clearFilters" type="button">Clear</button>
+    <button id="applyFilters" type="button">Застосувати</button>
+    <button id="clearFilters" type="button">Очистити</button>
 </div>
 
 <div id="loading">Loading...</div>
@@ -177,7 +177,7 @@ async function loadResults() {
             folderRow.className = 'folder-row';
             folderRow.dataset.folder = item.id;
             const deleteButton = CAN_DELETE_RESULTS
-                ? `<button class="btn-del" onclick="deleteResult('${item.id}')">Remove</button>`
+                ? `<button class="btn-del" onclick="deleteResult('${item.id}')">Видалити</button>`
                 : '';
             const ownerCell = SHOW_OWNER_COLUMN ? `<td>${item.owner_username || '-'}</td>` : '';
             folderRow.innerHTML = `
@@ -194,7 +194,7 @@ async function loadResults() {
                 <td class="file-type">folder</td>
                 <td>-</td>
                 <td>
-                    <button class="btn-download" onclick="downloadResultZip('${item.id}')">Download ZIP</button>
+                    <button class="btn-download" onclick="downloadResultZip('${item.id}')">Завантажити ZIP</button>
                     ${deleteButton}
                 </td>
             `;
@@ -229,7 +229,7 @@ async function loadResults() {
                 const fileUrl = `/download/${encodeURI(file.path)}`;
                 const fileOwnerCell = SHOW_OWNER_COLUMN ? '<td></td>' : '';
                 const processButton = CAN_CONFIGURE_DASHBOARD && typeLabel === 'video'
-                    ? `<button type="button" class="btn-process" onclick='processResultVideo(${JSON.stringify(item.id)}, ${JSON.stringify(file.path)})'>Process</button>`
+                    ? `<button type="button" class="btn-process" onclick='processResultVideo(${JSON.stringify(item.id)}, ${JSON.stringify(file.path)})'>Обробити</button>`
                     : '';
                 tr.innerHTML = `
                     <td>${file.name}</td>

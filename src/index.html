@@ -137,7 +137,7 @@ select { border: 1px solid #444; }
     </div>
 
     <div id="fileControls" class="controls{% if dashboard_settings.source_type != 'file' %} hidden{% endif %}">
-      <button id='uploadBtn' type='button' class="btn-secondary"{% if not can_configure_dashboard %} disabled hidden{% endif %}>Choose Video</button>
+      <button id='uploadBtn' type='button' class="btn-secondary"{% if not can_configure_dashboard %} disabled hidden{% endif %}>Обрати відео</button>
       <input id='upload' type='file' accept='video/*' style='display:none'{% if not can_configure_dashboard %} disabled hidden{% endif %}/>
       <span id="fileName" style="font-size:12px; color:#aaa; max-width: 200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></span>
       <input type="hidden" id="uploadedPath" value="{{ dashboard_settings.uploaded_path }}" />
@@ -170,27 +170,27 @@ select { border: 1px solid #444; }
     </div>
 
     <div style="flex:1"></div>
-    <button id='run' class="btn-primary" style="min-width: 80px;">Run</button>
-    <button id='stop' type='button' style="min-width: 60px;">Stop (F10)</button>
-    <button id='snapshotBtn' type='button' class="btn-secondary" style="min-width: 120px;" disabled>Take Snapshot (F4)</button>
+    <button id='run' class="btn-primary" style="min-width: 80px;">Запустити</button>
+    <button id='stop' type='button' style="min-width: 60px;">Зупинити (F10)</button>
+    <button id='snapshotBtn' type='button' class="btn-secondary" style="min-width: 120px;" disabled>Зробити знімок (F4)</button>
 
     <a href="/results" target="_blank" style="text-decoration:none; margin-left: 10px;">
-      <button type="button" class="btn-secondary">See Results</button>
+      <button type="button" class="btn-secondary">Результати</button>
     </a>
     <a href="/settings" target="_blank" style="text-decoration:none; margin-left: 6px;">
-      <button type="button" class="btn-secondary">Settings</button>
+      <button type="button" class="btn-secondary">Налаштування</button>
     </a>
     {% if can_view_models %}
     <a href="/models" target="_blank" style="text-decoration:none; margin-left: 6px;">
-      <button type="button" class="btn-secondary">Model Catalog</button>
+      <button type="button" class="btn-secondary">Каталог моделей</button>
     </a>
     {% endif %}
     {% if can_manage_users %}
     <a href="/users" target="_blank" style="text-decoration:none; margin-left: 6px;">
-      <button type="button" class="btn-secondary">Users</button>
+      <button type="button" class="btn-secondary">Користувачі</button>
     </a>
     {% endif %}
-    <button id="logoutBtn" type="button" class="btn-secondary" style="margin-left: 6px;">Logout</button>
+    <button id="logoutBtn" type="button" class="btn-secondary" style="margin-left: 6px;">Вийти</button>
   </div>
 
   {% if not can_configure_dashboard %}
@@ -204,9 +204,9 @@ select { border: 1px solid #444; }
   <div class='pane'>
     <div id="videoViewport" class="video-viewport">
       <div class="zoom-controls">
-        <button id="zoomInBtn" type="button" title="Zoom in">Zoom In</button>
-        <button id="zoomOutBtn" type="button" title="Zoom out">Zoom Out</button>
-        <button id="zoomResetBtn" type="button" title="Reset zoom">Reset</button>
+        <button id="zoomInBtn" type="button" title="Zoom in">Збільшити</button>
+        <button id="zoomOutBtn" type="button" title="Zoom out">Зменшити</button>
+        <button id="zoomResetBtn" type="button" title="Reset zoom">Скинути</button>
       </div>
       <video id='wf' playsinline autoplay muted controls></video>
     </div>
@@ -641,7 +641,7 @@ function applyState(j) {
   state = (j && j.state) || 'idle';
   const isRunning = state === 'starting' || state === 'running';
   btnRun.disabled = isRunning;
-  btnRun.textContent = state === 'running' ? 'Running' : (state === 'starting' ? 'Starting...' : 'Run');
+  btnRun.textContent = state === 'running' ? 'Працює' : (state === 'starting' ? 'Запуск...' : 'Запустити');
   btnStop.disabled = state === 'idle' || state === 'stopping';
   snapshotBtn.disabled = state !== 'running';
 

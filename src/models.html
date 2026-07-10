@@ -117,11 +117,11 @@ tr:hover { background: #2a2a2a; }
         <option value="ul">UL</option>
         <option value="rf">RF</option>
       </select>
-      <button id="uploadModelBtn" type="button" class="btn-ghost">Upload Weights (.pt)</button>
+      <button id="uploadModelBtn" type="button" class="btn-ghost">Завантажити ваги (.pt)</button>
       <input id="uploadModelInput" type="file" accept=".pt,.zip" style="display:none;" />
       <span id="uploadModelStatus" class="meta"></span>
     </div>
-    <button id="openCompileLogs" type="button" class="btn-ghost" style="display:none;">Open Compile Logs</button>
+    <button id="openCompileLogs" type="button" class="btn-ghost" style="display:none;">Логи компіляції</button>
   </div>
 </div>
 
@@ -151,7 +151,7 @@ tr:hover { background: #2a2a2a; }
         <div id="compileTitle" class="overlay-title">Compiling...</div>
         <div id="compileStatus" class="overlay-status">Waiting for updates...</div>
       </div>
-      <button id="compileClose" type="button" class="overlay-close">Close</button>
+      <button id="compileClose" type="button" class="overlay-close">Закрити</button>
     </div>
     <div class="overlay-body">
       <div id="compileCommand" class="meta"></div>
@@ -177,10 +177,10 @@ const tensorrtInfoEl = document.getElementById('tensorrtInfo');
 function updateUploadUiForType() {
     const type = uploadModelTypeEl.value;
     if (type === 'rf') {
-        uploadModelBtn.textContent = 'Upload Weights (.pt/.zip)';
+        uploadModelBtn.textContent = 'Завантажити ваги (.pt/.zip)';
         uploadModelInput.setAttribute('accept', '.pt,.zip');
     } else {
-        uploadModelBtn.textContent = 'Upload Weights (.pt)';
+        uploadModelBtn.textContent = 'Завантажити ваги (.pt)';
         uploadModelInput.setAttribute('accept', '.pt');
     }
 }
@@ -394,9 +394,9 @@ async function loadModels() {
                 );
             const actionParts = [];
             if (isCompiling) {
-                actionParts.push(`<button type="button" class="btn-ghost btn-open-job" data-job-id="${latestJob.id}" data-job-title="Compiling ${model.type.toUpperCase()} / ${model.name}">View Logs</button>`);
+                actionParts.push(`<button type="button" class="btn-ghost btn-open-job" data-job-id="${latestJob.id}" data-job-title="Compiling ${model.type.toUpperCase()} / ${model.name}">Переглянути логи</button>`);
             } else if (hasCompilableSource) {
-                const compileLabel = model.compiled ? 'Recompile' : 'Compile';
+                const compileLabel = model.compiled ? 'Перекомпілювати' : 'Компілювати';
                 actionParts.push(`<button type="button" class="btn-compile" data-name="${model.name}" data-type="${model.type}">${compileLabel}</button>`);
             } else {
                 actionParts.push('<span class="tag tag-warn">No source</span>');
@@ -404,7 +404,7 @@ async function loadModels() {
             if (model.compiled) {
                 actionParts.push('<span class="tag tag-ok">Compiled</span>');
             }
-            actionParts.push(`<button type="button" class="btn-danger btn-delete-model" data-name="${model.name}" data-type="${model.type}" ${isCompiling ? 'disabled' : ''}>Delete</button>`);
+            actionParts.push(`<button type="button" class="btn-danger btn-delete-model" data-name="${model.name}" data-type="${model.type}" ${isCompiling ? 'disabled' : ''}>Видалити</button>`);
             const actionHtml = actionParts.join(' ');
             const statusMeta = isCompiling ? `<div class="meta"><span class="tag tag-run">${latestJob.status}</span></div>` : '';
 
@@ -552,7 +552,7 @@ async function startCompile(buttonEl, model) {
     if (!model || !model.name || !model.type) return;
     buttonEl.disabled = true;
     const originalText = buttonEl.textContent;
-    buttonEl.textContent = 'Compiling...';
+    buttonEl.textContent = 'Компіляція...';
 
     try {
         const row = buttonEl.closest('tr');
@@ -727,7 +727,7 @@ async function deleteModel(buttonEl, model) {
 
     buttonEl.disabled = true;
     const originalText = buttonEl.textContent;
-    buttonEl.textContent = 'Deleting...';
+    buttonEl.textContent = 'Видалення...';
 
     try {
         const res = await fetch('/api/model-delete', {
