@@ -32,6 +32,7 @@ header {
   gap: 12px;
   align-items: center;
   width: 100%;
+  flex-wrap: wrap;
 }
 
 input:not([type="checkbox"]), select, button {
@@ -116,15 +117,6 @@ select { border: 1px solid #444; }
 
 <header>
   <div class="control-row">
-    <div class="controls">
-      <label for="analysisNum" style="font-size:13px; font-weight:bold; color:#aaa;">Analysis #:</label>
-      <input id="analysisNum" type="text" placeholder="Auto" value="{{ dashboard_settings.analysis_number }}" style="width: 120px;" title="Manual Analysis Number"{% if not can_configure_dashboard %} disabled hidden{% endif %}/>
-    </div>
-
-    <div class='status'><span id='status'>status: idle</span></div>
-  </div>
-
-  <div class="control-row">
     <select id="sourceType" style="font-weight:bold;"{% if not can_configure_dashboard %} disabled hidden{% endif %}>
       <option value="camera"{% if dashboard_settings.source_type == "camera" %} selected{% endif %}>Camera Source</option>
       <option value="file"{% if dashboard_settings.source_type == "file" %} selected{% endif %}>File Upload</option>
@@ -142,6 +134,8 @@ select { border: 1px solid #444; }
       <span id="fileName" style="font-size:12px; color:#aaa; max-width: 200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></span>
       <input type="hidden" id="uploadedPath" value="{{ dashboard_settings.uploaded_path }}" />
     </div>
+
+    <div class='status'><span id='status'>status: idle</span></div>
   </div>
 
   <div class="control-row">
@@ -170,6 +164,10 @@ select { border: 1px solid #444; }
     </div>
 
     <div style="flex:1"></div>
+    <div class="controls">
+      <label for="analysisNum" style="font-size:13px; font-weight:bold; color:#aaa;">Analysis #:</label>
+      <input id="analysisNum" type="text" placeholder="Auto" value="{{ dashboard_settings.analysis_number }}" style="width: 120px;" title="Manual Analysis Number"{% if not can_configure_dashboard %} disabled hidden{% endif %}/>
+    </div>
     <button id='run' class="btn-primary" style="min-width: 80px;">Запустити</button>
     <button id='stop' type='button' style="min-width: 60px;">Зупинити (F10)</button>
     <button id='snapshotBtn' type='button' class="btn-secondary" style="min-width: 120px;" disabled>Зробити знімок (F4)</button>
@@ -755,8 +753,22 @@ btnRun.onclick = async () => {
   let payload = {};
 
   if (CAN_CONFIGURE_DASHBOARD) {
+    const analysisVal = analysisNumEl.value.trim();
+    if (!analysisVal) {
+      if (window.Swal) {
+        await Swal.fire({
+          icon: 'warning',
+          title: 'Не вказано номер аналізу',
+          text: 'Вкажіть номер аналізу перед запуском.',
+        });
+      } else {
+        alert('Не вказано номер аналізу. Вкажіть номер аналізу перед запуском.');
+      }
+      analysisNumEl.focus();
+      return;
+    }
+
     const confVal = parseFloat(confThresholdEl.value);
-    const analysisVal = analysisNumEl.value;
     const modelVal = modelSelectEl.value;
     const common = {
       vis_conf: confVal,
