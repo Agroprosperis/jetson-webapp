@@ -32,7 +32,16 @@ header {
   gap: 12px;
   align-items: center;
   width: 100%;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+}
+
+.control-row.toolbar-main > * {
+  flex-shrink: 0;
+}
+
+.control-row.toolbar-main > .status {
+  margin-left: auto;
 }
 
 input:not([type="checkbox"]), select, button {
@@ -116,7 +125,7 @@ select { border: 1px solid #444; }
 <body>
 
 <header>
-  <div class="control-row">
+  <div class="control-row toolbar-main">
     <select id="sourceType" style="font-weight:bold;"{% if not can_configure_dashboard %} disabled hidden{% endif %}>
       <option value="camera"{% if dashboard_settings.source_type == "camera" %} selected{% endif %}>Camera Source</option>
       <option value="file"{% if dashboard_settings.source_type == "file" %} selected{% endif %}>File Upload</option>
@@ -135,10 +144,6 @@ select { border: 1px solid #444; }
       <input type="hidden" id="uploadedPath" value="{{ dashboard_settings.uploaded_path }}" />
     </div>
 
-    <div class='status'><span id='status'>status: idle</span></div>
-  </div>
-
-  <div class="control-row">
     <select id="modelSelect" title="Select AI Model" style="max-width: 250px;" data-selected-model="{{ dashboard_settings.model_path }}"{% if not can_configure_dashboard %} disabled hidden{% endif %}>
       <option value="">Loading Models...</option>
     </select>
@@ -148,12 +153,12 @@ select { border: 1px solid #444; }
       <input id="confThreshold" type="number" min="0.1" max="1.0" step="0.05" value="{{ '%.2f'|format(dashboard_settings.vis_conf) }}" style="width: 100px;" title="Detection Confidence Threshold"{% if not can_configure_dashboard %} disabled hidden{% endif %}/>
     </div>
 
-    <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:#ddd;">
+    <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:#ddd; white-space:nowrap;">
       <input id="gridCountEnabled" type="checkbox"{% if dashboard_settings.grid_count_enabled %} checked{% endif %}{% if not can_configure_dashboard %} disabled hidden{% endif %} />
       Grid Counting
     </label>
 
-    <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:#ddd;">
+    <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:#ddd; white-space:nowrap;">
       <input id="gridDebugEnabled" type="checkbox"{% if dashboard_settings.grid_debug_enabled %} checked{% endif %}{% if not can_configure_dashboard %} disabled hidden{% endif %} />
       Grid Debug
     </label>
@@ -163,32 +168,33 @@ select { border: 1px solid #444; }
       <input id="gridScoreThreshold" type="number" min="0.00" max="1.00" step="0.05" value="{{ '%.2f'|format(dashboard_settings.grid_score_threshold) }}" style="width: 90px;" title="Auto-disable grid counting when grid score is at or below this threshold"{% if not can_configure_dashboard %} disabled hidden{% endif %}/>
     </div>
 
-    <div style="flex:1"></div>
     <div class="controls">
-      <label for="analysisNum" style="font-size:13px; font-weight:bold; color:#aaa;">Analysis #:</label>
+      <label for="analysisNum" style="font-size:13px; font-weight:bold; color:#aaa; white-space:nowrap;">Analysis #:</label>
       <input id="analysisNum" type="text" placeholder="Auto" value="{{ dashboard_settings.analysis_number }}" style="width: 120px;" title="Manual Analysis Number"{% if not can_configure_dashboard %} disabled hidden{% endif %}/>
     </div>
     <button id='run' class="btn-primary" style="min-width: 80px;">Запустити</button>
     <button id='stop' type='button' style="min-width: 60px;">Зупинити (F10)</button>
     <button id='snapshotBtn' type='button' class="btn-secondary" style="min-width: 120px;" disabled>Зробити знімок (F4)</button>
 
-    <a href="/results" target="_blank" style="text-decoration:none; margin-left: 10px;">
+    <a href="/results" target="_blank" style="text-decoration:none;">
       <button type="button" class="btn-secondary">Результати</button>
     </a>
-    <a href="/settings" target="_blank" style="text-decoration:none; margin-left: 6px;">
+    <a href="/settings" target="_blank" style="text-decoration:none;">
       <button type="button" class="btn-secondary">Налаштування</button>
     </a>
     {% if can_view_models %}
-    <a href="/models" target="_blank" style="text-decoration:none; margin-left: 6px;">
+    <a href="/models" target="_blank" style="text-decoration:none;">
       <button type="button" class="btn-secondary">Каталог моделей</button>
     </a>
     {% endif %}
     {% if can_manage_users %}
-    <a href="/users" target="_blank" style="text-decoration:none; margin-left: 6px;">
+    <a href="/users" target="_blank" style="text-decoration:none;">
       <button type="button" class="btn-secondary">Користувачі</button>
     </a>
     {% endif %}
-    <button id="logoutBtn" type="button" class="btn-secondary" style="margin-left: 6px;">Вийти</button>
+    <button id="logoutBtn" type="button" class="btn-secondary">Вийти</button>
+
+    <div class='status'><span id='status'>status: idle</span></div>
   </div>
 
   {% if not can_configure_dashboard %}
