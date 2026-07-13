@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset='utf-8'/>
-<title>Analysis Results</title>
+<title>Результати аналізів</title>
 <meta name='viewport' content='width=device-width,initial-scale=1'/>
 <link rel="stylesheet" href="/vendor/glightbox/glightbox.min.css" />
 <link rel="stylesheet" href="/vendor/sweetalert2/sweetalert2.min.css" />
@@ -12,7 +12,7 @@ h1 { margin-bottom: 20px; font-weight: 300; }
 table { width: 100%; border-collapse: collapse; background: #222; border-radius: 8px; overflow: hidden; }
 table { min-width: 980px; }
 th, td { text-align: left; padding: 12px 16px; border-bottom: 1px solid #333; }
-th { background: #1b1b1b; font-weight: 600; color: #aaa; text-transform: uppercase; font-size: 12px; }
+th { background: #1b1b1b; font-weight: 600; color: #aaa; text-transform: uppercase; font-size: 12px; position: sticky; top: 0; z-index: 2; }
 tr:last-child td { border-bottom: none; }
 tr:hover { background: #2a2a2a; }
 a { color: #3b82f6; text-decoration: none; }
@@ -58,42 +58,53 @@ a:hover { text-decoration: underline; }
 .toolbar button:hover { background:#2a2a2a; }
 .file-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .metric-cell { white-space: nowrap; color: #ddd; }
-.table-wrap { overflow-x: auto; }
+.metric-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+.metric-badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    background: #2a2a2a; border: 1px solid #3a3a3a; border-radius: 999px;
+    padding: 2px 10px; font-size: 12px; white-space: nowrap;
+}
+.metric-badge .badge-name { color: #999; }
+.metric-badge .badge-value { color: #eee; font-weight: 600; }
+.results-count { color: #888; font-size: 13px; align-self: center; margin-left: auto; }
+.table-wrap { overflow: auto; max-height: calc(100vh - 230px); }
 </style>
 </head>
 <body>
 
-<a href="/" class="back-link">← Back to Dashboard</a>
+<a href="/" class="back-link">← Назад до панелі</a>
 
-<h1>Analysis Results</h1>
+<h1>Результати аналізів</h1>
 
 <div class="toolbar">
     <label>
-        Date
+        Дата
         <input id="dateFilter" type="date" />
     </label>
     <label>
-        Analysis Number
-        <input id="analysisNumberFilter" type="text" placeholder="include" />
+        Номер аналізу
+        <input id="analysisNumberFilter" type="text" placeholder="містить" />
     </label>
     <button id="applyFilters" type="button">Застосувати</button>
     <button id="clearFilters" type="button">Очистити</button>
+    <button id="toggleAllBtn" type="button" style="display:none;">Розгорнути все</button>
+    <span id="resultsCount" class="results-count"></span>
 </div>
 
-<div id="loading">Loading...</div>
+<div id="loading">Завантаження...</div>
 
 <div class="table-wrap">
     <table id="resultsTable" style="display:none;">
         <thead>
             <tr>
-                <th>Folder / File</th>
-                {% if can_view_result_owners %}<th>Owner</th>{% endif %}
-                <th>Duration</th>
-                <th>Detected Objects</th>
-                <th>S-values</th>
-                <th>Type</th>
-                <th>Size</th>
-                <th>Actions</th>
+                <th>Папка / Файл</th>
+                {% if can_view_result_owners %}<th>Власник</th>{% endif %}
+                <th>Тривалість</th>
+                <th>Виявлені об'єкти</th>
+                <th>S-значення</th>
+                <th>Тип</th>
+                <th>Розмір</th>
+                <th>Дії</th>
             </tr>
         </thead>
         <tbody id="resultsBody"></tbody>
@@ -110,10 +121,17 @@ function formatIntegerMetric(value) {
     return value === null || value === undefined || value === '' ? '-' : value;
 }
 
+function renderMetricBadges(entries) {
+    if (!entries.length) return '-';
+    const badges = entries.map(([name, value]) =>
+        `<span class="metric-badge"><span class="badge-name">${name}</span><span class="badge-value">${value}</span></span>`
+    ).join('');
+    return `<div class="metric-badges">${badges}</div>`;
+}
+
 function formatDetectedObjectsPerClass(detectedObjectsPerClass) {
     if (!detectedObjectsPerClass || typeof detectedObjectsPerClass !== 'object') return '-';
-    const parts = Object.entries(detectedObjectsPerClass).map(([name, count]) => `${name}: ${count}`);
-    return parts.length ? parts.join(' | ') : '-';
+    return renderMetricBadges(Object.entries(detectedObjectsPerClass));
 }
 
 function formatDecimalMetric(value, decimals = 1) {
@@ -124,10 +142,27 @@ function formatDecimalMetric(value, decimals = 1) {
 
 function formatSValuePerClass(sValuePerClass) {
     if (sValuePerClass && typeof sValuePerClass === 'object') {
-        const parts = Object.entries(sValuePerClass).map(([name, value]) => `${name}: ${formatDecimalMetric(value)}`);
-        if (parts.length) return parts.join(' | ');
+        const entries = Object.entries(sValuePerClass).map(([name, value]) => [name, formatDecimalMetric(value)]);
+        if (entries.length) return renderMetricBadges(entries);
     }
     return '-';
+}
+
+function updateResultsCount(count) {
+    const el = document.getElementById('resultsCount');
+    el.textContent = count > 0 ? `Знайдено аналізів: ${count}` : '';
+    const toggleBtn = document.getElementById('toggleAllBtn');
+    toggleBtn.style.display = count > 0 ? '' : 'none';
+    toggleBtn.textContent = 'Розгорнути все';
+}
+
+function setAllFoldersExpanded(expanded) {
+    document.querySelectorAll('.file-row, .gallery-row').forEach(row => {
+        row.classList.toggle('is-visible', expanded);
+    });
+    document.querySelectorAll('.folder-row .folder-caret').forEach(caret => {
+        caret.textContent = expanded ? '▾' : '▸';
+    });
 }
 
 function buildResultsUrl() {
@@ -145,7 +180,7 @@ async function loadResults() {
         const loading = document.getElementById('loading');
         const table = document.getElementById('resultsTable');
         loading.style.display = 'block';
-        loading.textContent = 'Loading...';
+        loading.textContent = 'Завантаження...';
         table.style.display = 'none';
         const res = await fetch(buildResultsUrl());
         const data = await res.json();
@@ -157,18 +192,21 @@ async function loadResults() {
         tbody.innerHTML = '';
 
         if (!res.ok) {
-            throw new Error(data.error || 'Failed to load results.');
+            throw new Error(data.error || 'Не вдалося завантажити результати.');
         }
 
         if (!data.results || data.results.length === 0) {
             table.style.display = 'none';
+            updateResultsCount(0);
             const msg = document.createElement('div');
             msg.className = 'empty';
             msg.setAttribute('data-results-empty', '1');
-            msg.textContent = 'No analysis results found for the selected filters.';
+            msg.textContent = 'Аналізів за вибраними фільтрами не знайдено.';
             document.body.appendChild(msg);
             return;
         }
+
+        updateResultsCount(data.results.length);
 
         table.style.display = 'table';
 
@@ -191,7 +229,7 @@ async function loadResults() {
                 <td class="metric-cell">${item.duration || '-'}</td>
                 <td class="metric-cell">${formatDetectedObjectsPerClass(item.detected_objects_per_class)}</td>
                 <td class="metric-cell">${formatSValuePerClass(item.s_value_per_class)}</td>
-                <td class="file-type">folder</td>
+                <td class="file-type">папка</td>
                 <td>-</td>
                 <td>
                     <button class="btn-download" onclick="downloadResultZip('${item.id}')">Завантажити ZIP</button>
@@ -208,7 +246,7 @@ async function loadResults() {
             galleryRow.className = 'gallery-row';
             galleryRow.dataset.folder = item.id;
             const galleryItems = imageFiles.length === 0
-                ? '<div class="gallery-empty">No screenshots</div>'
+                ? '<div class="gallery-empty">Немає знімків</div>'
                 : imageFiles.map(file => {
                     const fileUrl = `/download/${encodeURI(file.path)}`;
                     return `<a class="gallery-link" href="${fileUrl}" data-gallery="run-${item.id}"><img src="${fileUrl}" loading="lazy" alt="${file.name}" /></a>`;
@@ -221,14 +259,14 @@ async function loadResults() {
                 tr.className = 'file-row';
                 tr.dataset.folder = item.id;
                 const ext = (file.name || '').split('.').pop().toLowerCase();
-                let typeLabel = 'file';
-                if (ext === 'mkv') typeLabel = 'video';
+                let typeLabel = 'файл';
+                if (ext === 'mkv') typeLabel = 'відео';
                 else if (ext === 'csv') typeLabel = 'csv';
-                else if (ext === 'jpg' || ext === 'jpeg') typeLabel = 'image';
+                else if (ext === 'jpg' || ext === 'jpeg') typeLabel = 'зображення';
 
                 const fileUrl = `/download/${encodeURI(file.path)}`;
                 const fileOwnerCell = SHOW_OWNER_COLUMN ? '<td></td>' : '';
-                const processButton = CAN_CONFIGURE_DASHBOARD && typeLabel === 'video'
+                const processButton = CAN_CONFIGURE_DASHBOARD && ext === 'mkv'
                     ? `<button type="button" class="btn-process" onclick='processResultVideo(${JSON.stringify(item.id)}, ${JSON.stringify(file.path)})'>Обробити</button>`
                     : '';
                 tr.innerHTML = `
@@ -241,7 +279,7 @@ async function loadResults() {
                     <td>${file.size || '-'}</td>
                     <td>
                         <div class="file-actions">
-                            <a href="${fileUrl}" download>Download</a>
+                            <a href="${fileUrl}" download>Завантажити</a>
                             ${processButton}
                         </div>
                     </td>
@@ -266,7 +304,7 @@ async function loadResults() {
         }
 
     } catch(e) {
-        document.getElementById('loading').textContent = `Error loading results: ${e.message}`;
+        document.getElementById('loading').textContent = `Помилка завантаження результатів: ${e.message}`;
         console.error(e);
     }
 }
@@ -275,8 +313,8 @@ async function processResultVideo(pid, filePath) {
     try {
         if (window.Swal) {
             Swal.fire({
-                title: 'Preparing video',
-                text: 'Using the existing result video as a new file source...',
+                title: 'Підготовка відео',
+                text: 'Використовуємо наявне відео результату як нове джерело...',
                 allowOutsideClick: false,
                 didOpen: () => Swal.showLoading(),
             });
@@ -289,21 +327,34 @@ async function processResultVideo(pid, filePath) {
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
-            throw new Error(data.error || 'Failed to prepare result video.');
+            throw new Error(data.error || 'Не вдалося підготувати відео результату.');
         }
 
         window.location.href = '/';
     } catch (e) {
         if (window.Swal) {
-            Swal.fire({ icon: 'error', title: 'Process failed', text: e.message });
+            Swal.fire({ icon: 'error', title: 'Помилка обробки', text: e.message });
         } else {
-            alert(`Failed to prepare result video: ${e.message}`);
+            alert(`Не вдалося підготувати відео: ${e.message}`);
         }
     }
 }
 
 async function deleteResult(pid) {
-    if(!confirm(`Are you sure you want to delete analysis "${pid}"? This cannot be undone.`)) return;
+    if (window.Swal) {
+        const confirmation = await Swal.fire({
+            icon: 'warning',
+            title: 'Видалити аналіз?',
+            text: `Аналіз "${pid}" буде видалено назавжди. Цю дію не можна скасувати.`,
+            showCancelButton: true,
+            confirmButtonText: 'Видалити',
+            cancelButtonText: 'Скасувати',
+            confirmButtonColor: '#ef4444',
+        });
+        if (!confirmation.isConfirmed) return;
+    } else if (!confirm(`Видалити аналіз "${pid}"? Цю дію не можна скасувати.`)) {
+        return;
+    }
 
     try {
         const res = await fetch(`/api/results/${pid}`, { method: 'DELETE' });
@@ -315,11 +366,17 @@ async function deleteResult(pid) {
 
             const tbody = document.getElementById('resultsBody');
             if (tbody.children.length === 0) location.reload();
+        } else if (window.Swal) {
+            Swal.fire({ icon: 'error', title: 'Помилка видалення', text: j.error || 'Невідома помилка' });
         } else {
-            alert("Error: " + (j.error || "Unknown error"));
+            alert("Помилка: " + (j.error || "Невідома помилка"));
         }
     } catch(e) {
-        alert("Failed to delete: " + e);
+        if (window.Swal) {
+            Swal.fire({ icon: 'error', title: 'Помилка видалення', text: String(e) });
+        } else {
+            alert("Не вдалося видалити: " + e);
+        }
     }
 }
 
@@ -327,8 +384,8 @@ async function downloadResultZip(pid) {
     try {
         if (window.Swal) {
             Swal.fire({
-                title: 'Preparing download',
-                text: 'Creating ZIP file...',
+                title: 'Підготовка завантаження',
+                text: 'Створюємо ZIP-файл...',
                 allowOutsideClick: false,
                 didOpen: () => Swal.showLoading(),
             });
@@ -337,7 +394,7 @@ async function downloadResultZip(pid) {
         const res = await fetch(`/api/results/${encodeURIComponent(pid)}/download`);
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
-            throw new Error(err.error || 'Failed to download');
+            throw new Error(err.error || 'Не вдалося завантажити');
         }
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
@@ -354,9 +411,9 @@ async function downloadResultZip(pid) {
         }
     } catch (e) {
         if (window.Swal) {
-            Swal.fire({ icon: 'error', title: 'Download failed', text: e.message });
+            Swal.fire({ icon: 'error', title: 'Помилка завантаження', text: e.message });
         } else {
-            alert("Failed to download: " + e.message);
+            alert("Не вдалося завантажити: " + e.message);
         }
     }
 }
@@ -366,8 +423,23 @@ document.getElementById('clearFilters').addEventListener('click', () => {
     document.getElementById('dateFilter').value = '';
     document.getElementById('analysisNumberFilter').value = '';
     document.getElementById('loading').style.display = 'block';
-    document.getElementById('loading').textContent = 'Loading...';
+    document.getElementById('loading').textContent = 'Завантаження...';
     loadResults();
+});
+
+['dateFilter', 'analysisNumberFilter'].forEach(id => {
+    document.getElementById(id).addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') {
+            ev.preventDefault();
+            loadResults();
+        }
+    });
+});
+
+document.getElementById('toggleAllBtn').addEventListener('click', (ev) => {
+    const expand = ev.target.textContent === 'Розгорнути все';
+    setAllFoldersExpanded(expand);
+    ev.target.textContent = expand ? 'Згорнути все' : 'Розгорнути все';
 });
 
 window.onload = loadResults;

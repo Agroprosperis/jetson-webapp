@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset='utf-8'/>
-<title>RF App (Desktop)</title>
+<title>Tilletia — Аналіз</title>
 <meta name='viewport' content='width=device-width,initial-scale=1'/>
 <link rel="stylesheet" href="/vendor/sweetalert2/sweetalert2.min.css" />
 <style>
@@ -57,6 +57,12 @@ header {
 
 .control-row.toolbar-main > .status {
   margin-left: auto;
+}
+
+.toolbar-sep {
+  align-self: stretch;
+  width: 1px;
+  background: #3a3a3a;
 }
 
 .menu-dropdown { position: relative; }
@@ -118,7 +124,22 @@ button[disabled] { opacity: .5; cursor: not-allowed; }
   border-radius: 8px;
   background: #222;
   white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
+
+.status::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #777;
+  flex-shrink: 0;
+}
+.status.st-busy::before { background: #eab308; }
+.status.st-running::before { background: #22c55e; }
+.status.st-error::before { background: #ef4444; }
 
 .grid {
   display: grid;
@@ -148,13 +169,33 @@ button[disabled] { opacity: .5; cursor: not-allowed; }
   gap: 6px;
   z-index: 2;
 }
-.zoom-controls button { background: rgba(34, 34, 34, .88); border-color: #555; }
+.zoom-controls button {
+  background: rgba(34, 34, 34, .88);
+  border-color: #555;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  font-size: 17px;
+  line-height: 1;
+}
 .controls { display: flex; gap: 10px; align-items: center; }
 .hidden { display: none !important; }
 .btn-primary { background: #2563eb; border: 1px solid #1d4ed8; }
 .btn-primary:hover { background: #1d4ed8; }
+.btn-primary.btn-running { background: #16a34a; border-color: #15803d; opacity: 1; }
+.btn-danger { background: #dc2626; border: 1px solid #b91c1c; }
+.btn-danger:hover:not([disabled]) { background: #b91c1c; }
 .btn-secondary { background: #333; border: 1px solid #555; }
 .btn-secondary:hover { background: #444; }
+button kbd {
+  font-family: inherit;
+  font-size: 10px;
+  padding: 1px 5px;
+  margin-left: 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, .35);
+  background: rgba(0, 0, 0, .25);
+}
 input[type="number"], input[type="text"] { border: 1px solid #444; background-color: #1a1a1a; }
 select { border: 1px solid #444; }
 .user-note { font-size: 12px; color: #999; }
@@ -184,7 +225,7 @@ select { border: 1px solid #444; }
     </select>
 
     <div id="camControls" class="controls{% if dashboard_settings.source_type != 'camera' %} hidden{% endif %}">
-      <select id="camDevice" style="max-width: 200px;"{% if not can_configure_dashboard %} disabled hidden{% endif %}><option>Loading...</option></select>
+      <select id="camDevice" style="max-width: 200px;"{% if not can_configure_dashboard %} disabled hidden{% endif %}><option>Завантаження...</option></select>
       <select id="camMode" style="max-width: 220px;"{% if not can_configure_dashboard %} disabled hidden{% endif %}><option>-</option></select>
       <button id="refreshCams" title="Refresh Cameras"{% if not can_configure_dashboard %} disabled hidden{% endif %}>↻</button>
     </div>
@@ -196,14 +237,18 @@ select { border: 1px solid #444; }
       <input type="hidden" id="uploadedPath" value="{{ dashboard_settings.uploaded_path }}" />
     </div>
 
+    <div class="toolbar-sep"></div>
+
     <select id="modelSelect" title="Select AI Model" style="max-width: 250px;" data-selected-model="{{ dashboard_settings.model_path }}"{% if not can_configure_dashboard %} disabled hidden{% endif %}>
-      <option value="">Loading Models...</option>
+      <option value="">Завантаження моделей...</option>
     </select>
 
     <div class="controls">
       <label for="confThreshold" style="font-size:12px; opacity:0.8;">Conf:</label>
       <input id="confThreshold" type="number" min="0.1" max="1.0" step="0.05" value="{{ '%.2f'|format(dashboard_settings.vis_conf) }}" style="width: 100px;" title="Detection Confidence Threshold"{% if not can_configure_dashboard %} disabled hidden{% endif %}/>
     </div>
+
+    <div class="toolbar-sep"></div>
 
     <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:#ddd; white-space:nowrap;">
       <input id="gridCountEnabled" type="checkbox"{% if dashboard_settings.grid_count_enabled %} checked{% endif %}{% if not can_configure_dashboard %} disabled hidden{% endif %} />
@@ -229,8 +274,8 @@ select { border: 1px solid #444; }
       <input id="analysisNum" type="text" placeholder="Auto" value="{{ dashboard_settings.analysis_number }}" style="width: 120px;" title="Manual Analysis Number"{% if not can_configure_dashboard %} disabled hidden{% endif %}/>
     </div>
     <button id='run' class="btn-primary" style="min-width: 80px;">Запустити</button>
-    <button id='stop' type='button' style="min-width: 60px;">Зупинити (F10)</button>
-    <button id='snapshotBtn' type='button' class="btn-secondary" style="min-width: 120px;" disabled>Зробити знімок (F4)</button>
+    <button id='stop' type='button' class="btn-danger" style="min-width: 60px;">Зупинити<kbd>F10</kbd></button>
+    <button id='snapshotBtn' type='button' class="btn-secondary" style="min-width: 120px;" disabled>Зробити знімок<kbd>F4</kbd></button>
 
     <a href="/results" target="_blank" style="text-decoration:none;">
       <button type="button" class="btn-secondary">Результати</button>
@@ -256,7 +301,7 @@ select { border: 1px solid #444; }
 
   {% if not can_configure_dashboard %}
   <div class="control-row">
-    <div class="user-note">You can run, stop, and review your own results. Dashboard configuration is controlled by an administrator.</div>
+    <div class="user-note">Ви можете запускати, зупиняти та переглядати власні результати. Налаштування панелі контролює адміністратор.</div>
   </div>
   {% endif %}
 </header>
@@ -265,9 +310,9 @@ select { border: 1px solid #444; }
   <div class='pane'>
     <div id="videoViewport" class="video-viewport">
       <div class="zoom-controls">
-        <button id="zoomInBtn" type="button" title="Zoom in">Збільшити</button>
-        <button id="zoomOutBtn" type="button" title="Zoom out">Зменшити</button>
-        <button id="zoomResetBtn" type="button" title="Reset zoom">Скинути</button>
+        <button id="zoomInBtn" type="button" title="Збільшити">+</button>
+        <button id="zoomOutBtn" type="button" title="Зменшити">−</button>
+        <button id="zoomResetBtn" type="button" title="Скинути масштаб">⟲</button>
       </div>
       <video id='wf' playsinline autoplay muted controls></video>
     </div>
@@ -288,6 +333,12 @@ let cameraList = [];
 let modelThresholdByPath = {};
 
 const statusEl = document.getElementById('status');
+const statusBoxEl = statusEl.parentElement;
+
+function setStatusIndicator(kind) {
+  statusBoxEl.classList.remove('st-busy', 'st-running', 'st-error');
+  if (kind) statusBoxEl.classList.add(kind);
+}
 const btnRun = document.getElementById('run');
 const btnStop = document.getElementById('stop');
 const snapshotBtn = document.getElementById('snapshotBtn');
@@ -326,12 +377,20 @@ const zoomState = {
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 8;
 const ZOOM_STEP = 1.2;
+async function showWarning(title, text) {
+  if (window.Swal) {
+    await Swal.fire({ icon: 'warning', title, text });
+  } else {
+    alert(title + (text ? ' ' + text : ''));
+  }
+}
+
 function showSnapshotNotification() {
   if (!window.Swal) return;
   Swal.fire({
     toast: true,
     position: 'top-end',
-    title: 'Snapshot taken',
+    title: 'Знімок збережено',
     showConfirmButton: false,
     timer: 5000,
     timerProgressBar: true,
@@ -530,7 +589,7 @@ logoutBtn.onclick = async () => {
 };
 
 async function loadCameras() {
-  camDeviceEl.innerHTML = '<option>Loading...</option>';
+  camDeviceEl.innerHTML = '<option>Завантаження...</option>';
   try {
     const res = await fetch('/api/cameras');
     const data = await res.json();
@@ -538,7 +597,7 @@ async function loadCameras() {
 
     camDeviceEl.innerHTML = '';
     if (cameraList.length === 0) {
-      camDeviceEl.innerHTML = '<option value="">No cameras found</option>';
+      camDeviceEl.innerHTML = '<option value="">Камер не знайдено</option>';
       camModeEl.innerHTML = '';
       return;
     }
@@ -556,7 +615,7 @@ async function loadCameras() {
     updateModes();
   } catch (e) {
     console.error(e);
-    camDeviceEl.innerHTML = '<option>Error</option>';
+    camDeviceEl.innerHTML = '<option>Помилка</option>';
   }
 }
 
@@ -651,7 +710,7 @@ gridScoreThresholdEl.onchange = async () => {
 };
 
 async function loadModels() {
-  modelSelectEl.innerHTML = '<option value="">Loading...</option>';
+  modelSelectEl.innerHTML = '<option value="">Завантаження...</option>';
   modelThresholdByPath = {};
   try {
     const res = await fetch('/api/models');
@@ -662,7 +721,7 @@ async function loadModels() {
     if (models.length === 0) {
       const opt = document.createElement('option');
       opt.value = '';
-      opt.textContent = 'No models found (*.engine)';
+      opt.textContent = 'Моделей не знайдено (*.engine)';
       modelSelectEl.appendChild(opt);
       return;
     }
@@ -686,7 +745,7 @@ async function loadModels() {
     await applySelectedModelDefaults();
   } catch (e) {
     console.error(e);
-    modelSelectEl.innerHTML = '<option value="">Error loading models</option>';
+    modelSelectEl.innerHTML = '<option value="">Помилка завантаження моделей</option>';
   }
 }
 
@@ -703,6 +762,7 @@ function applyState(j) {
   const isRunning = state === 'starting' || state === 'running';
   btnRun.disabled = isRunning;
   btnRun.textContent = state === 'running' ? 'Працює' : (state === 'starting' ? 'Запуск...' : 'Запустити');
+  btnRun.classList.toggle('btn-running', state === 'running');
   btnStop.disabled = state === 'idle' || state === 'stopping';
   snapshotBtn.disabled = state !== 'running';
 
@@ -717,9 +777,11 @@ function applyState(j) {
   gridDebugEnabledEl.disabled = isRunning || !CAN_CONFIGURE_DASHBOARD;
   gridScoreThresholdEl.disabled = isRunning || !CAN_CONFIGURE_DASHBOARD;
 
+  let mtxOffline = false;
   let mtxStatus = '';
   if (j && j.mediamtx) {
     if (!j.mediamtx.whep) {
+      mtxOffline = true;
       mtxStatus = ' [MediaMTX OFFLINE]';
       statusEl.style.color = '#ff4444';
       statusEl.style.fontWeight = 'bold';
@@ -727,6 +789,16 @@ function applyState(j) {
       statusEl.style.color = '#eee';
       statusEl.style.fontWeight = 'normal';
     }
+  }
+
+  if (mtxOffline || (j && j.last_error && state !== 'running')) {
+    setStatusIndicator('st-error');
+  } else if (state === 'running') {
+    setStatusIndicator('st-running');
+  } else if (state === 'starting' || state === 'stopping') {
+    setStatusIndicator('st-busy');
+  } else {
+    setStatusIndicator(null);
   }
 
   let msg = 'status: ' + state + ' pid:' + ((j && j.pipeline_id) || '-') + mtxStatus;
@@ -772,6 +844,7 @@ async function refresh() {
     return j;
   } catch (e) {
     statusEl.textContent = 'status: error';
+    setStatusIndicator('st-error');
     return null;
   }
 }
@@ -818,15 +891,7 @@ btnRun.onclick = async () => {
   if (CAN_CONFIGURE_DASHBOARD) {
     const analysisVal = analysisNumEl.value.trim();
     if (!analysisVal) {
-      if (window.Swal) {
-        await Swal.fire({
-          icon: 'warning',
-          title: 'Не вказано номер аналізу',
-          text: 'Вкажіть номер аналізу перед запуском.',
-        });
-      } else {
-        alert('Не вказано номер аналізу. Вкажіть номер аналізу перед запуском.');
-      }
+      await showWarning('Не вказано номер аналізу', 'Вкажіть номер аналізу перед запуском.');
       analysisNumEl.focus();
       return;
     }
@@ -844,10 +909,10 @@ btnRun.onclick = async () => {
 
     if (sourceTypeEl.value === 'camera') {
       const camIdx = camDeviceEl.value;
-      if (camIdx === '' || !cameraList[camIdx]) { alert('Select a camera'); return; }
+      if (camIdx === '' || !cameraList[camIdx]) { await showWarning('Оберіть камеру'); return; }
 
       const modeStr = camModeEl.value;
-      if (!modeStr) { alert('Select a mode'); return; }
+      if (!modeStr) { await showWarning('Оберіть режим камери'); return; }
 
       const mode = JSON.parse(modeStr);
       payload = {
@@ -861,7 +926,7 @@ btnRun.onclick = async () => {
       };
     } else {
       const path = uploadedPathEl.value;
-      if (!path) { alert('Upload a file first'); return; }
+      if (!path) { await showWarning('Спочатку завантажте файл'); return; }
       payload = {
         ...common,
         source_type: 'file',
@@ -927,6 +992,13 @@ document.addEventListener('keydown', (ev) => {
   if (!button || button.disabled) return;
   ev.preventDefault();
   button.click();
+});
+
+document.addEventListener('click', (ev) => {
+  const clickedLink = ev.target.closest('.menu-dropdown-list a');
+  document.querySelectorAll('details.menu-dropdown[open]').forEach((dd) => {
+    if (clickedLink || !dd.contains(ev.target)) dd.removeAttribute('open');
+  });
 });
 
 uploadBtn.onclick = () => { uploadInput.click(); };
