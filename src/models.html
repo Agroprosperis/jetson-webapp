@@ -306,6 +306,14 @@ async function loadModels() {
                 : 0.75;
             const inferenceWidth = Number.isFinite(model.inference_width) ? model.inference_width : '';
             const inferenceHeight = Number.isFinite(model.inference_height) ? model.inference_height : '';
+            const tilletiaMaxWidth = Number.isFinite(model.tilletia_filter_max_width_px)
+                ? model.tilletia_filter_max_width_px : 68;
+            const tilletiaMaxHeight = Number.isFinite(model.tilletia_filter_max_height_px)
+                ? model.tilletia_filter_max_height_px : 68;
+            const tilletiaTrainingWidth = Number.isFinite(model.tilletia_filter_training_width)
+                ? model.tilletia_filter_training_width : 2592;
+            const tilletiaTrainingHeight = Number.isFinite(model.tilletia_filter_training_height)
+                ? model.tilletia_filter_training_height : 1944;
 
             let engineHtml = '<span class="tag tag-warn">Not compiled</span>';
             if (model.engine) {
@@ -357,7 +365,7 @@ async function loadModels() {
                 />
                 <div class="meta">Used by the dashboard for this model.</div>
             `;
-            const settingsHtml = model.type === 'ul'
+            let settingsHtml = model.type === 'ul'
                 ? `
                     <div class="settings-grid">
                         <label class="setting-field">
@@ -392,6 +400,50 @@ async function loadModels() {
                            ${normalizationLabel ? `<div class="meta">${normalizationLabel}</div>` : ''}`
                         : '<span class="meta">N/A</span>'
                 );
+            settingsHtml += `
+                <div class="meta" style="margin-top:10px;">Tilletia max object (training px)</div>
+                <div class="settings-grid">
+                    <label class="setting-field">
+                        <span>Max width</span>
+                        <input
+                            class="tilletia-filter-input tilletia-max-width-input"
+                            type="number" min="1" step="1"
+                            value="${tilletiaMaxWidth}"
+                            data-previous="${tilletiaMaxWidth}"
+                        />
+                    </label>
+                    <label class="setting-field">
+                        <span>Max height</span>
+                        <input
+                            class="tilletia-filter-input tilletia-max-height-input"
+                            type="number" min="1" step="1"
+                            value="${tilletiaMaxHeight}"
+                            data-previous="${tilletiaMaxHeight}"
+                        />
+                    </label>
+                </div>
+                <div class="meta" style="margin-top:8px;">Training resolution</div>
+                <div class="settings-grid">
+                    <label class="setting-field">
+                        <span>Width</span>
+                        <input
+                            class="tilletia-filter-input tilletia-training-width-input"
+                            type="number" min="1" step="1"
+                            value="${tilletiaTrainingWidth}"
+                            data-previous="${tilletiaTrainingWidth}"
+                        />
+                    </label>
+                    <label class="setting-field">
+                        <span>Height</span>
+                        <input
+                            class="tilletia-filter-input tilletia-training-height-input"
+                            type="number" min="1" step="1"
+                            value="${tilletiaTrainingHeight}"
+                            data-previous="${tilletiaTrainingHeight}"
+                        />
+                    </label>
+                </div>
+            `;
             const actionParts = [];
             if (isCompiling) {
                 actionParts.push(`<button type="button" class="btn-ghost btn-open-job" data-job-id="${latestJob.id}" data-job-title="Compiling ${model.type.toUpperCase()} / ${model.name}">Переглянути логи</button>`);
@@ -446,6 +498,9 @@ async function loadModels() {
             select.addEventListener('change', () => updateModelTask(select));
         });
         tbody.querySelectorAll('.default-confidence-input').forEach(input => {
+            input.addEventListener('change', () => updateModelSettings(input));
+        });
+        tbody.querySelectorAll('.tilletia-filter-input').forEach(input => {
             input.addEventListener('change', () => updateModelSettings(input));
         });
         tbody.querySelectorAll('.btn-delete-model').forEach(btn => {
@@ -628,7 +683,7 @@ async function updateModelTask(selectEl) {
 }
 
 function restorePreviousModelSettings(row) {
-    row.querySelectorAll('.default-confidence-input').forEach(input => {
+    row.querySelectorAll('.default-confidence-input, .tilletia-filter-input').forEach(input => {
         const previous = input.getAttribute('data-previous');
         if (previous !== null) {
             input.value = previous;
@@ -637,7 +692,7 @@ function restorePreviousModelSettings(row) {
 }
 
 function setModelSettingsDisabled(row, disabled) {
-    row.querySelectorAll('.default-confidence-input').forEach(input => {
+    row.querySelectorAll('.default-confidence-input, .tilletia-filter-input').forEach(input => {
         input.disabled = disabled;
     });
 }
@@ -651,6 +706,21 @@ function applySavedModelSettingsToRow(row, data) {
         defaultConfidenceInput.value = value;
         defaultConfidenceInput.setAttribute('data-previous', value);
     }
+
+    const filterFields = [
+        ['.tilletia-max-width-input', 'tilletia_filter_max_width_px'],
+        ['.tilletia-max-height-input', 'tilletia_filter_max_height_px'],
+        ['.tilletia-training-width-input', 'tilletia_filter_training_width'],
+        ['.tilletia-training-height-input', 'tilletia_filter_training_height'],
+    ];
+    filterFields.forEach(([selector, key]) => {
+        const input = row.querySelector(selector);
+        if (input && Number.isFinite(data[key])) {
+            const value = String(data[key]);
+            input.value = value;
+            input.setAttribute('data-previous', value);
+        }
+    });
 }
 
 function collectModelSettingsPayload(row) {
@@ -661,7 +731,15 @@ function collectModelSettingsPayload(row) {
     const name = row.getAttribute('data-name');
     const type = row.getAttribute('data-type');
     const defaultConfidenceInput = row.querySelector('.default-confidence-input');
-    if (!name || !type || !defaultConfidenceInput) {
+    const maxWidthInput = row.querySelector('.tilletia-max-width-input');
+    const maxHeightInput = row.querySelector('.tilletia-max-height-input');
+    const trainingWidthInput = row.querySelector('.tilletia-training-width-input');
+    const trainingHeightInput = row.querySelector('.tilletia-training-height-input');
+    if (
+        !name || !type || !defaultConfidenceInput ||
+        !maxWidthInput || !maxHeightInput ||
+        !trainingWidthInput || !trainingHeightInput
+    ) {
         throw new Error('Missing model settings.');
     }
 
@@ -670,10 +748,23 @@ function collectModelSettingsPayload(row) {
         throw new Error('Invalid default confidence threshold.');
     }
 
+    const maxWidth = Number(maxWidthInput.value);
+    const maxHeight = Number(maxHeightInput.value);
+    const trainingWidth = Number(trainingWidthInput.value);
+    const trainingHeight = Number(trainingHeightInput.value);
+    const filterValues = [maxWidth, maxHeight, trainingWidth, trainingHeight];
+    if (!filterValues.every(value => Number.isInteger(value) && value > 0)) {
+        throw new Error('Invalid Tilletia filter settings.');
+    }
+
     const payload = {
         name,
         type,
         default_confidence_threshold: threshold,
+        tilletia_filter_max_width_px: maxWidth,
+        tilletia_filter_max_height_px: maxHeight,
+        tilletia_filter_training_width: trainingWidth,
+        tilletia_filter_training_height: trainingHeight,
     };
 
     return payload;

@@ -36,9 +36,10 @@ PROFILER = Profiler()
 GRID_SCORE_RESET_THRESHOLD = 0.40
 GRID_QUEUE_SIZE = 1
 GRID_RESULT_HISTORY_SIZE = 128
-TILLETIA_TRAINING_FRAME_WIDTH = 2592
-TILLETIA_TRAINING_FRAME_HEIGHT = 1944
-TILLETIA_MAX_SIDE_PX = 68
+DEFAULT_TILLETIA_FILTER_MAX_WIDTH_PX = 68
+DEFAULT_TILLETIA_FILTER_MAX_HEIGHT_PX = 68
+DEFAULT_TILLETIA_FILTER_TRAINING_WIDTH = 2592
+DEFAULT_TILLETIA_FILTER_TRAINING_HEIGHT = 1944
 
 
 class CustomBOTrack(BOTrack):
@@ -234,8 +235,20 @@ def _filter_oversized_tilletia_detections(detection_boxes, frame_shape, args):
         return detection_boxes
 
     frame_height, frame_width = frame_shape[:2]
-    max_width = TILLETIA_MAX_SIDE_PX * frame_width / TILLETIA_TRAINING_FRAME_WIDTH
-    max_height = TILLETIA_MAX_SIDE_PX * frame_height / TILLETIA_TRAINING_FRAME_HEIGHT
+    configured_max_width = getattr(
+        args, "tilletia_filter_max_width_px", DEFAULT_TILLETIA_FILTER_MAX_WIDTH_PX
+    )
+    configured_max_height = getattr(
+        args, "tilletia_filter_max_height_px", DEFAULT_TILLETIA_FILTER_MAX_HEIGHT_PX
+    )
+    training_width = getattr(
+        args, "tilletia_filter_training_width", DEFAULT_TILLETIA_FILTER_TRAINING_WIDTH
+    )
+    training_height = getattr(
+        args, "tilletia_filter_training_height", DEFAULT_TILLETIA_FILTER_TRAINING_HEIGHT
+    )
+    max_width = configured_max_width * frame_width / training_width
+    max_height = configured_max_height * frame_height / training_height
 
     xyxy = detection_boxes.xyxy
     widths = xyxy[:, 2] - xyxy[:, 0]

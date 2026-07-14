@@ -11,7 +11,7 @@ SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from model_manager import ModelManager
+from model_manager import ModelManager, ModelValidationError
 
 
 class FakeAuth:
@@ -297,6 +297,84 @@ class ModelManagerRuntimeSettingsTests(unittest.TestCase):
             self.assertEqual(rf_entry["engine"]["path"], str(rf_engine))
             self.assertEqual(rf_entry["inference_width"], 800)
             self.assertEqual(rf_entry["inference_height"], 800)
+
+    def test_tilletia_filter_defaults_are_exposed_for_unconfigured_models(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = self.make_manager(temp_dir)
+            source_path = self.touch_model_source(temp_dir, "ul/sample.pt")
+
+            runtime = manager.resolve_model_runtime_settings_for_path(str(source_path))
+            catalog = manager.build_model_catalog()
+
+            expected = {
+                "tilletia_filter_max_width_px": 68,
+                "tilletia_filter_max_height_px": 68,
+                "tilletia_filter_training_width": 2592,
+                "tilletia_filter_training_height": 1944,
+            }
+            for key, value in expected.items():
+                self.assertEqual(runtime[key], value)
+                self.assertEqual(catalog[0][key], value)
+
+    def test_tilletia_filter_settings_persist_per_model_and_resolve_for_engine_aliases(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = self.make_manager(temp_dir)
+            ul_source = self.touch_model_source(temp_dir, "ul/sample.pt")
+            rf_source = self.touch_model_source(temp_dir, "rf/sample-rf.onnx")
+            rf_engine = self.touch_model_source(temp_dir, "rf/sample-rf-fp16.engine")
+            ul_values = {
+                "tilletia_filter_max_width_px": 80,
+                "tilletia_filter_max_height_px": 42,
+                "tilletia_filter_training_width": 2048,
+                "tilletia_filter_training_height": 1536,
+            }
+            rf_values = {
+                "tilletia_filter_max_width_px": 91,
+                "tilletia_filter_max_height_px": 55,
+                "tilletia_filter_training_width": 3000,
+                "tilletia_filter_training_height": 2000,
+            }
+
+            manager.set_model_metadata("ul", "sample", ul_values)
+            manager.set_model_metadata("rf", "sample-rf", rf_values)
+
+            ul_runtime = manager.resolve_model_runtime_settings_for_path(str(ul_source))
+            rf_source_runtime = manager.resolve_model_runtime_settings_for_path(str(rf_source))
+            rf_engine_runtime = manager.resolve_model_runtime_settings_for_path(str(rf_engine))
+            for key, value in ul_values.items():
+                self.assertEqual(ul_runtime[key], value)
+            for key, value in rf_values.items():
+                self.assertEqual(rf_source_runtime[key], value)
+                self.assertEqual(rf_engine_runtime[key], value)
+
+    def test_tilletia_filter_updates_require_four_positive_integers_atomically(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = self.make_manager(temp_dir)
+            self.touch_model_source(temp_dir, "ul/sample.pt")
+            valid_values = {
+                "tilletia_filter_max_width_px": 80,
+                "tilletia_filter_max_height_px": 42,
+                "tilletia_filter_training_width": 2048,
+                "tilletia_filter_training_height": 1536,
+            }
+            manager.set_model_metadata("ul", "sample", valid_values)
+            metadata_path = Path(temp_dir, "model_metadata.json")
+            saved_metadata = metadata_path.read_text(encoding="utf-8")
+
+            invalid_payloads = [
+                {"tilletia_filter_max_width_px": 90},
+                {**valid_values, "tilletia_filter_max_width_px": 0},
+                {**valid_values, "tilletia_filter_max_height_px": -1},
+                {**valid_values, "tilletia_filter_training_width": 1.5},
+                {**valid_values, "tilletia_filter_training_height": "bad"},
+            ]
+            for payload in invalid_payloads:
+                with self.assertRaises(ModelValidationError):
+                    manager.set_model_metadata("ul", "sample", payload)
+                self.assertEqual(
+                    metadata_path.read_text(encoding="utf-8"),
+                    saved_metadata,
+                )
 
 
 if __name__ == "__main__":

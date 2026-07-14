@@ -86,6 +86,27 @@ class TilletiaSizeFilterTests(unittest.TestCase):
         self.assertEqual(len(filtered), 1)
         np.testing.assert_array_equal(filtered.data[0, :4], [0, 0, 34, 17])
 
+    def test_uses_configured_object_and_training_dimensions(self):
+        boxes = FakeBoxes(
+            [
+                [0, 0, 40, 20, 0.9, 1],
+                [0, 0, 41, 20, 0.9, 1],
+                [0, 0, 40, 21, 0.9, 1],
+            ]
+        )
+        args = argparse.Namespace(
+            class_names={1: "Tilletia"},
+            tilletia_filter_max_width_px=80,
+            tilletia_filter_max_height_px=40,
+            tilletia_filter_training_width=1000,
+            tilletia_filter_training_height=500,
+        )
+
+        filtered = _filter_oversized_tilletia_detections(boxes, (250, 500, 3), args)
+
+        self.assertEqual(len(filtered), 1)
+        np.testing.assert_array_equal(filtered.data[0, :4], [0, 0, 40, 20])
+
     def test_keeps_oversized_non_tilletia_detection(self):
         boxes = FakeBoxes([[0, 0, 100, 100, 0.9, 0]])
         args = argparse.Namespace(class_names=["Alternaria", "Tilletia"])

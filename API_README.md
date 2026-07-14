@@ -112,6 +112,7 @@ curl -X GET "http://localhost:8000/api/dashboard-settings" \
 ```json
 {
   "analysis_number": "string",
+  "ask_manual_spore_count": true,
   "camera_device": "string",
   "camera_mode": {
     "format": "string",
@@ -144,7 +145,7 @@ curl -X PUT "http://localhost:8000/api/dashboard-settings" \
   -H "accept: application/json" \
   -H "Authorization: Bearer <access_token>" \
   -H "Content-Type: application/json" \
-  -d '{"analysis_number": "string", "camera_device": "string", "camera_mode": {"format": "string", "fps": 0, "height": 0, "width": 0}, "grid_count_enabled": true, "grid_debug_enabled": true, "grid_score_threshold": 0.0, "model_path": "string", "source_type": "camera", "uploaded_path": "string", "vis_conf": 0.0}'
+  -d '{"analysis_number": "string", "ask_manual_spore_count": true, "camera_device": "string", "camera_mode": {"format": "string", "fps": 0, "height": 0, "width": 0}, "grid_count_enabled": true, "grid_debug_enabled": true, "grid_score_threshold": 0.0, "model_path": "string", "source_type": "camera", "uploaded_path": "string", "vis_conf": 0.0}'
 ```
 
 ### Response
@@ -244,6 +245,10 @@ curl -X GET "http://localhost:8000/api/model-catalog" \
         "string"
       ],
       "task": "segment",
+      "tilletia_filter_max_height_px": 0,
+      "tilletia_filter_max_width_px": 0,
+      "tilletia_filter_training_height": 0,
+      "tilletia_filter_training_width": 0,
       "type": "string"
     }
   ],
@@ -402,7 +407,7 @@ curl -X POST "http://localhost:8000/api/model-metadata" \
   -H "accept: application/json" \
   -H "Authorization: Bearer <access_token>" \
   -H "Content-Type: application/json" \
-  -d '{"default_confidence_threshold": 0.0, "name": "string", "type": "ul"}'
+  -d '{"default_confidence_threshold": 0.0, "name": "string", "tilletia_filter_max_height_px": 0, "tilletia_filter_max_width_px": 0, "tilletia_filter_training_height": 0, "tilletia_filter_training_width": 0, "type": "ul"}'
 ```
 
 ### Response
@@ -674,6 +679,33 @@ curl -X GET "http://localhost:8000/api/results/string/last-row" \
 
 ---
 
+## Store the manually counted actual smut spore numbers for a result.
+**PUT** `/api/results/{pid}/manual-count`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Parameters
+- `pid` (path, string, required) - The Analysis ID to update
+
+### Request Sample
+```shell
+curl -X PUT "http://localhost:8000/api/results/string/manual-count" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: Manual counts stored successfully
+```json
+{
+  "success": true
+}
+```
+
+---
+
 ## Reuse a processed result video as the current dashboard file source.
 **POST** `/api/results/{pid}/process-source`
 
@@ -887,6 +919,7 @@ curl -X GET "http://localhost:8000/api/v2/results?date=string&analysis_number=st
         }
       ],
       "id": "string",
+      "manual_spore_count_per_class": {},
       "owner_username": "string",
       "s_value_per_class": {},
       "timestamp": "string"

@@ -1619,6 +1619,18 @@ def api_model_catalog():
                   default_confidence_threshold:
                     type: number
                     description: Saved per-model default confidence threshold used by the main dashboard when this model is selected.
+                  tilletia_filter_max_width_px:
+                    type: integer
+                    description: Maximum allowed Tilletia width in training-image pixels.
+                  tilletia_filter_max_height_px:
+                    type: integer
+                    description: Maximum allowed Tilletia height in training-image pixels.
+                  tilletia_filter_training_width:
+                    type: integer
+                    description: Training-image width used to scale the filter.
+                  tilletia_filter_training_height:
+                    type: integer
+                    description: Training-image height used to scale the filter.
                   compiled:
                     type: boolean
                   owner_username:
@@ -1872,6 +1884,22 @@ def api_model_metadata():
               minimum: 0
               maximum: 1
               description: Saved per-model default confidence threshold for the main dashboard.
+            tilletia_filter_max_width_px:
+              type: integer
+              minimum: 1
+              description: Maximum allowed Tilletia width in training-image pixels.
+            tilletia_filter_max_height_px:
+              type: integer
+              minimum: 1
+              description: Maximum allowed Tilletia height in training-image pixels.
+            tilletia_filter_training_width:
+              type: integer
+              minimum: 1
+              description: Width of the original training images.
+            tilletia_filter_training_height:
+              type: integer
+              minimum: 1
+              description: Height of the original training images.
     responses:
       200:
         description: Saved model metadata
@@ -3204,6 +3232,10 @@ def api_start():
             model_task=resolved_model_task,
             model_inference_width=runtime_model_settings.get("inference_width"),
             model_inference_height=runtime_model_settings.get("inference_height"),
+            tilletia_filter_max_width_px=runtime_model_settings.get("tilletia_filter_max_width_px"),
+            tilletia_filter_max_height_px=runtime_model_settings.get("tilletia_filter_max_height_px"),
+            tilletia_filter_training_width=runtime_model_settings.get("tilletia_filter_training_width"),
+            tilletia_filter_training_height=runtime_model_settings.get("tilletia_filter_training_height"),
         ))
 
         if source_type == "camera":

@@ -49,6 +49,16 @@ class ModelManager:
     DEFAULT_MODEL_CONFIDENCE_THRESHOLD = 0.75
     DEFAULT_MODEL_INFERENCE_WIDTH = 640
     DEFAULT_MODEL_INFERENCE_HEIGHT = 640
+    DEFAULT_TILLETIA_FILTER_MAX_WIDTH_PX = 68
+    DEFAULT_TILLETIA_FILTER_MAX_HEIGHT_PX = 68
+    DEFAULT_TILLETIA_FILTER_TRAINING_WIDTH = 2592
+    DEFAULT_TILLETIA_FILTER_TRAINING_HEIGHT = 1944
+    TILLETIA_FILTER_METADATA_FIELDS = (
+        "tilletia_filter_max_width_px",
+        "tilletia_filter_max_height_px",
+        "tilletia_filter_training_width",
+        "tilletia_filter_training_height",
+    )
     COMPILE_JOB_LOG_LIMIT = 500
 
     def __init__(
@@ -232,6 +242,18 @@ class ModelManager:
             return None
         return dimension
 
+    def _sanitize_positive_integer(self, value):
+        if isinstance(value, bool):
+            return None
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not numeric.is_integer():
+            return None
+        normalized = int(numeric)
+        return normalized if normalized > 0 else None
+
     def _normalize_imgsz_to_dimensions(self, value):
         if value is None:
             return None
@@ -281,6 +303,10 @@ class ModelManager:
         return dict(
             inference_width=self.DEFAULT_MODEL_INFERENCE_WIDTH,
             inference_height=self.DEFAULT_MODEL_INFERENCE_HEIGHT,
+            tilletia_filter_max_width_px=self.DEFAULT_TILLETIA_FILTER_MAX_WIDTH_PX,
+            tilletia_filter_max_height_px=self.DEFAULT_TILLETIA_FILTER_MAX_HEIGHT_PX,
+            tilletia_filter_training_width=self.DEFAULT_TILLETIA_FILTER_TRAINING_WIDTH,
+            tilletia_filter_training_height=self.DEFAULT_TILLETIA_FILTER_TRAINING_HEIGHT,
         )
 
     def _sanitize_model_metadata_entry(self, value):
@@ -293,6 +319,13 @@ class ModelManager:
         )
         if default_threshold is not None:
             entry["default_confidence_threshold"] = default_threshold
+
+        filter_values = {
+            field: self._sanitize_positive_integer(value.get(field))
+            for field in self.TILLETIA_FILTER_METADATA_FIELDS
+        }
+        if all(filter_values[field] is not None for field in self.TILLETIA_FILTER_METADATA_FIELDS):
+            entry.update(filter_values)
         return entry
 
     def _read_model_metadata_unlocked(self):
@@ -436,6 +469,25 @@ class ModelManager:
             if default_threshold is not None:
                 return default_threshold
         return self.DEFAULT_MODEL_CONFIDENCE_THRESHOLD
+
+    def get_catalog_model_tilletia_filter_settings(self, model_type, model_name):
+        defaults = {
+            "tilletia_filter_max_width_px": self.DEFAULT_TILLETIA_FILTER_MAX_WIDTH_PX,
+            "tilletia_filter_max_height_px": self.DEFAULT_TILLETIA_FILTER_MAX_HEIGHT_PX,
+            "tilletia_filter_training_width": self.DEFAULT_TILLETIA_FILTER_TRAINING_WIDTH,
+            "tilletia_filter_training_height": self.DEFAULT_TILLETIA_FILTER_TRAINING_HEIGHT,
+        }
+        with self.model_metadata_lock:
+            metadata = self._read_model_metadata_unlocked()
+
+        for candidate in self._model_name_candidates(model_name):
+            entry = metadata.get(self._model_task_key(model_type, candidate)) or {}
+            if all(field in entry for field in self.TILLETIA_FILTER_METADATA_FIELDS):
+                return {
+                    field: entry[field]
+                    for field in self.TILLETIA_FILTER_METADATA_FIELDS
+                }
+        return defaults
 
     def _candidate_source_paths_for_model(self, model_type, model_name):
         base_dir = self._model_dir_for_type(model_type)
@@ -723,6 +775,9 @@ class ModelManager:
             model_type,
             model_name,
         )
+        settings.update(
+            self.get_catalog_model_tilletia_filter_settings(model_type, model_name)
+        )
 
         dimensions = None
         if engine_path and model_type == "rf":
@@ -794,6 +849,22 @@ class ModelManager:
                 else:
                     stored_entry["default_confidence_threshold"] = normalized_threshold
 
+            supplied_filter_fields = [
+                field
+                for field in self.TILLETIA_FILTER_METADATA_FIELDS
+                if field in payload
+            ]
+            if supplied_filter_fields:
+                if len(supplied_filter_fields) != len(self.TILLETIA_FILTER_METADATA_FIELDS):
+                    raise ModelValidationError("All Tilletia filter settings are required.")
+                filter_values = {
+                    field: self._sanitize_positive_integer(payload.get(field))
+                    for field in self.TILLETIA_FILTER_METADATA_FIELDS
+                }
+                if any(value is None for value in filter_values.values()):
+                    raise ModelValidationError("Invalid Tilletia filter settings.")
+                stored_entry.update(filter_values)
+
             stored_entry = self._sanitize_model_metadata_entry(stored_entry)
             if stored_entry:
                 metadata[key] = stored_entry
@@ -811,6 +882,10 @@ class ModelManager:
             type=model_type,
             name=model_name,
             default_confidence_threshold=saved_settings["default_confidence_threshold"],
+            tilletia_filter_max_width_px=saved_settings["tilletia_filter_max_width_px"],
+            tilletia_filter_max_height_px=saved_settings["tilletia_filter_max_height_px"],
+            tilletia_filter_training_width=saved_settings["tilletia_filter_training_width"],
+            tilletia_filter_training_height=saved_settings["tilletia_filter_training_height"],
             inference_width=saved_settings["inference_width"],
             inference_height=saved_settings["inference_height"],
         )
@@ -1475,6 +1550,10 @@ class ModelManager:
             entry["default_confidence_threshold"] = runtime_settings["default_confidence_threshold"]
             entry["inference_width"] = runtime_settings["inference_width"]
             entry["inference_height"] = runtime_settings["inference_height"]
+            entry["tilletia_filter_max_width_px"] = runtime_settings["tilletia_filter_max_width_px"]
+            entry["tilletia_filter_max_height_px"] = runtime_settings["tilletia_filter_max_height_px"]
+            entry["tilletia_filter_training_width"] = runtime_settings["tilletia_filter_training_width"]
+            entry["tilletia_filter_training_height"] = runtime_settings["tilletia_filter_training_height"]
             if model_type == "rf":
                 package_metadata = {}
                 for source_path in entry.get("source_paths") or []:
