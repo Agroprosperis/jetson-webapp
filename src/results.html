@@ -18,10 +18,12 @@ tr:hover { background: #2a2a2a; }
 a { color: #3b82f6; text-decoration: none; }
 a:hover { text-decoration: underline; }
 .btn-del {
-    background: #ef4444; color: white; border: none; padding: 6px 12px;
-    border-radius: 4px; cursor: pointer; font-size: 12px;
+    background: transparent; color: #ef4444; border: 1px solid transparent;
+    padding: 6px 8px; border-radius: 4px; cursor: pointer; font-size: 16px; line-height: 1;
+    margin-left: auto;
 }
-.btn-del:hover { background: #dc2626; }
+.btn-del:hover { background: rgba(239, 68, 68, 0.15); border-color: #ef4444; }
+.actions-cell { display: flex; align-items: center; gap: 8px; }
 .btn-download {
     background: #2563eb; color: white; border: none; padding: 6px 12px;
     border-radius: 4px; cursor: pointer; font-size: 12px;
@@ -226,7 +228,7 @@ async function loadResults() {
             folderRow.className = 'folder-row';
             folderRow.dataset.folder = item.id;
             const deleteButton = CAN_DELETE_RESULTS
-                ? `<button class="btn-del" onclick="deleteResult('${item.id}')">Видалити</button>`
+                ? `<button class="btn-del" title="Видалити" aria-label="Видалити" onclick="deleteResult('${item.id}')">🗑</button>`
                 : '';
             const ownerCell = SHOW_OWNER_COLUMN ? `<td>${item.owner_username || '-'}</td>` : '';
             folderRow.innerHTML = `
@@ -244,9 +246,11 @@ async function loadResults() {
                 <td class="file-type">папка</td>
                 <td>-</td>
                 <td>
-                    <button class="btn-manual" data-manual-id="${item.id}">Внести факт</button>
-                    <button class="btn-download" onclick="downloadResultZip('${item.id}')">Завантажити ZIP</button>
-                    ${deleteButton}
+                    <div class="actions-cell">
+                        <button class="btn-manual" data-manual-id="${item.id}">Внести факт</button>
+                        <button class="btn-download" onclick="downloadResultZip('${item.id}')">Завантажити ZIP</button>
+                        ${deleteButton}
+                    </div>
                 </td>
             `;
             tbody.appendChild(folderRow);
