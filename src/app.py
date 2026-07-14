@@ -447,6 +447,23 @@ def _read_result_csv_summary(csv_path):
     }
 
 
+MANUAL_COUNTS_FILENAME = "manual_counts.json"
+
+
+def _read_manual_counts(run_path):
+    manual_path = os.path.join(run_path, MANUAL_COUNTS_FILENAME)
+    if not os.path.isfile(manual_path):
+        return {}
+    try:
+        with open(manual_path, "r", encoding="utf-8") as manual_input:
+            data = json.load(manual_input)
+    except Exception as exc:
+        LOGGER.warning("Failed to read manual counts %s: %s", manual_path, exc)
+        return {}
+    per_class = data.get("manual_spore_count_per_class")
+    return per_class if isinstance(per_class, dict) else {}
+
+
 def _build_result_metadata(run_id):
     run_path = os.path.join(HQ_OUTPUT_DIR, run_id)
     if not os.path.isdir(run_path):
@@ -489,6 +506,7 @@ def _build_result_metadata(run_id):
         "duration_seconds": longest_duration_seconds,
         "detected_objects_per_class": csv_summary.get("detected_objects_per_class"),
         "s_value_per_class": csv_summary.get("s_value_per_class"),
+        "manual_spore_count_per_class": _read_manual_counts(run_path),
         "files": files,
         "_mtime": latest_mtime,
         "csv_path": csv_path if os.path.isfile(csv_path) else None,
@@ -2265,6 +2283,9 @@ def api_v2_list_results():
                   s_value_per_class:
                     type: object
                     description: Per-class S metrics keyed by class name.
+                  manual_spore_count_per_class:
+                    type: object
+                    description: Manually counted actual spore numbers keyed by class name.
                   files:
                     type: array
                     items:
@@ -2644,6 +2665,76 @@ def api_delete_result(pid):
 
     except Exception as e:
         LOGGER.error(f"Failed to delete results for {pid}: {e}")
+        return flask.jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/results/<pid>/manual-count", methods=["PUT"])
+@auth.require_permission("results:inspect")
+def api_update_result_manual_count(pid):
+    """
+    Store the manually counted actual smut spore numbers for a result.
+    ---
+    tags:
+      - Results
+    parameters:
+      - name: pid
+        in: path
+        type: string
+        required: true
+        description: The Analysis ID to update
+    responses:
+      200:
+        description: Manual counts stored successfully
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+      400:
+        description: Invalid analysis ID or payload.
+      403:
+        description: Authenticated user cannot access this result.
+      404:
+        description: Result not found.
+      500:
+        description: Failed to store manual counts.
+    """
+    try:
+        if not pid or ".." in pid or "/" in pid:
+            return flask.jsonify({"error": "Invalid ID"}), 400
+        if not auth.user_can_access_result(flask.g.current_user, HQ_OUTPUT_DIR, pid):
+            return flask.jsonify({"error": "Forbidden"}), 403
+
+        run_path = os.path.join(HQ_OUTPUT_DIR, pid)
+        if not os.path.isdir(run_path):
+            return flask.jsonify({"error": "Result not found"}), 404
+
+        data = flask.request.get_json(silent=True) or {}
+        raw_counts = data.get("manual_spore_count_per_class")
+        if not isinstance(raw_counts, dict):
+            return flask.jsonify({"error": "manual_spore_count_per_class must be an object"}), 400
+
+        per_class = {}
+        for class_name, value in raw_counts.items():
+            try:
+                count = int(value)
+            except (TypeError, ValueError):
+                return flask.jsonify({"error": f"Invalid count for '{class_name}'"}), 400
+            if count < 0:
+                return flask.jsonify({"error": f"Count for '{class_name}' must be >= 0"}), 400
+            per_class[str(class_name)] = count
+
+        payload = {"manual_spore_count_per_class": per_class}
+        manual_path = os.path.join(run_path, MANUAL_COUNTS_FILENAME)
+        tmp_path = f"{manual_path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as manual_output:
+            json.dump(payload, manual_output, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, manual_path)
+
+        return flask.jsonify({"success": True})
+
+    except Exception as e:
+        LOGGER.error(f"Failed to store manual counts for {pid}: {e}")
         return flask.jsonify({"error": str(e)}), 500
 
 

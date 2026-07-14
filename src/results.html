@@ -102,6 +102,7 @@ a:hover { text-decoration: underline; }
                 <th>Тривалість</th>
                 <th>Виявлені об'єкти</th>
                 <th>S-значення</th>
+                <th>Факт. спори</th>
                 <th>Тип</th>
                 <th>Розмір</th>
                 <th>Дії</th>
@@ -138,6 +139,11 @@ function formatDecimalMetric(value, decimals = 1) {
     if (value === null || value === undefined || value === '') return '-';
     const numberValue = Number(value);
     return Number.isFinite(numberValue) ? numberValue.toFixed(decimals) : '-';
+}
+
+function formatManualSporeCount(manualSporeCountPerClass) {
+    if (!manualSporeCountPerClass || typeof manualSporeCountPerClass !== 'object') return '-';
+    return renderMetricBadges(Object.entries(manualSporeCountPerClass));
 }
 
 function formatSValuePerClass(sValuePerClass) {
@@ -229,6 +235,7 @@ async function loadResults() {
                 <td class="metric-cell">${item.duration || '-'}</td>
                 <td class="metric-cell">${formatDetectedObjectsPerClass(item.detected_objects_per_class)}</td>
                 <td class="metric-cell">${formatSValuePerClass(item.s_value_per_class)}</td>
+                <td class="metric-cell">${formatManualSporeCount(item.manual_spore_count_per_class)}</td>
                 <td class="file-type">папка</td>
                 <td>-</td>
                 <td>
@@ -251,7 +258,7 @@ async function loadResults() {
                     const fileUrl = `/download/${encodeURI(file.path)}`;
                     return `<a class="gallery-link" href="${fileUrl}" data-gallery="run-${item.id}"><img src="${fileUrl}" loading="lazy" alt="${file.name}" /></a>`;
                 }).join('');
-            galleryRow.innerHTML = `<td colspan="${SHOW_OWNER_COLUMN ? 8 : 7}"><div class="gallery">${galleryItems}</div></td>`;
+            galleryRow.innerHTML = `<td colspan="${SHOW_OWNER_COLUMN ? 9 : 8}"><div class="gallery">${galleryItems}</div></td>`;
             tbody.appendChild(galleryRow);
 
             (item.files || []).forEach(file => {
@@ -272,6 +279,7 @@ async function loadResults() {
                 tr.innerHTML = `
                     <td>${file.name}</td>
                     ${fileOwnerCell}
+                    <td></td>
                     <td></td>
                     <td></td>
                     <td></td>
