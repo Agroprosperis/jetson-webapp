@@ -36,6 +36,9 @@ PROFILER = Profiler()
 GRID_SCORE_RESET_THRESHOLD = 0.40
 GRID_QUEUE_SIZE = 1
 GRID_RESULT_HISTORY_SIZE = 128
+TILLETIA_TRAINING_FRAME_WIDTH = 2592
+TILLETIA_TRAINING_FRAME_HEIGHT = 1944
+TILLETIA_MAX_SIDE_PX = 68
 
 
 class CustomBOTrack(BOTrack):
@@ -213,12 +216,36 @@ class BotSortTrackerBackend(InferenceBackend):
         start_time = time.perf_counter()
         detection_boxes = results[0].boxes
         detection_boxes = detection_boxes.cpu().numpy()
+        detection_boxes = _filter_oversized_tilletia_detections(
+            detection_boxes,
+            frame.shape,
+            args,
+        )
         tracks = self.tracker.update(detection_boxes, frame)
         
         if debug:=False:
             self.dump_debug_frame(frame)
 
         return tracks, time.perf_counter() - start_time
+
+
+def _filter_oversized_tilletia_detections(detection_boxes, frame_shape, args):
+    if len(detection_boxes) == 0:
+        return detection_boxes
+
+    frame_height, frame_width = frame_shape[:2]
+    max_width = TILLETIA_MAX_SIDE_PX * frame_width / TILLETIA_TRAINING_FRAME_WIDTH
+    max_height = TILLETIA_MAX_SIDE_PX * frame_height / TILLETIA_TRAINING_FRAME_HEIGHT
+
+    xyxy = detection_boxes.xyxy
+    widths = xyxy[:, 2] - xyxy[:, 0]
+    heights = xyxy[:, 3] - xyxy[:, 1]
+    oversized = (widths > max_width) | (heights > max_height)
+    tilletia = np.array(
+        [class_name_for_id(args, int(cls_id)) == "Tilletia" for cls_id in detection_boxes.cls],
+        dtype=bool,
+    )
+    return detection_boxes[~(tilletia & oversized)]
 
 
 class OptimizedGMC(GMC):
