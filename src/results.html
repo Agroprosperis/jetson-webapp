@@ -32,6 +32,11 @@ a:hover { text-decoration: underline; }
     border-radius: 4px; cursor: pointer; font-size: 12px;
 }
 .btn-process:hover { background: #15803d; }
+.btn-manual {
+    background: #7c3aed; color: white; border: none; padding: 6px 12px;
+    border-radius: 4px; cursor: pointer; font-size: 12px;
+}
+.btn-manual:hover { background: #6d28d9; }
 .empty { padding: 20px; text-align: center; color: #777; font-style: italic; }
 .back-link { display: inline-block; margin-bottom: 20px; color: #888; text-decoration: none; font-size: 14px;}
 .back-link:hover { color: #eee; }
@@ -239,11 +244,24 @@ async function loadResults() {
                 <td class="file-type">папка</td>
                 <td>-</td>
                 <td>
+                    <button class="btn-manual" data-manual-id="${item.id}">Внести факт</button>
                     <button class="btn-download" onclick="downloadResultZip('${item.id}')">Завантажити ZIP</button>
                     ${deleteButton}
                 </td>
             `;
             tbody.appendChild(folderRow);
+
+            const manualButton = folderRow.querySelector('.btn-manual');
+            if (manualButton) {
+                manualButton.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    editManualSporeCount(
+                        item.id,
+                        item.detected_objects_per_class || {},
+                        item.manual_spore_count_per_class || {}
+                    );
+                });
+            }
 
             const imageFiles = (item.files || []).filter(file => {
                 const ext = (file.name || '').split('.').pop().toLowerCase();
@@ -423,6 +441,71 @@ async function downloadResultZip(pid) {
         } else {
             alert("Не вдалося завантажити: " + e.message);
         }
+    }
+}
+
+async function editManualSporeCount(pid, aiCounts, manualCounts) {
+    if (!window.Swal) return;
+
+    const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+
+    const classNames = Array.from(new Set([
+        ...Object.keys(aiCounts || {}),
+        ...Object.keys(manualCounts || {}),
+    ]));
+    const fields = classNames.length ? classNames : ['Разом'];
+
+    const rowsHtml = fields.map((name, idx) => {
+        const hasAi = Object.prototype.hasOwnProperty.call(aiCounts || {}, name);
+        const aiHint = hasAi ? ` <span style="color:#888;font-size:12px;">(ШІ: ${aiCounts[name]})</span>` : '';
+        const existing = (manualCounts && manualCounts[name] != null) ? manualCounts[name] : '';
+        return `
+            <div style="display:flex; align-items:center; gap:10px; margin:6px 0;">
+                <label style="flex:1; text-align:left;">${escapeHtml(name)}${aiHint}</label>
+                <input type="number" min="0" step="1" data-class="${escapeHtml(name)}" value="${existing}"
+                       style="width:120px; padding:6px 8px; border-radius:6px; border:1px solid #444; background:#1a1a1a; color:#eee;" />
+            </div>`;
+    }).join('');
+
+    const result = await Swal.fire({
+        title: 'Фактична кількість спор',
+        html: `<div style="text-align:left;">Кількість спор сажки, порахована вручну:</div>${rowsHtml}`,
+        showCancelButton: true,
+        confirmButtonText: 'Зберегти',
+        cancelButtonText: 'Скасувати',
+        focusConfirm: false,
+        preConfirm: () => {
+            const counts = {};
+            document.querySelectorAll('[data-class]').forEach((input) => {
+                const raw = input.value.trim();
+                if (raw === '') return;
+                const num = parseInt(raw, 10);
+                if (Number.isFinite(num) && num >= 0) {
+                    counts[input.getAttribute('data-class')] = num;
+                }
+            });
+            return counts;
+        },
+    });
+
+    if (!result.isConfirmed) return;
+
+    try {
+        const res = await fetch(`/api/results/${encodeURIComponent(pid)}/manual-count`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ manual_spore_count_per_class: result.value || {} }),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || res.status);
+        }
+        loadResults();
+    } catch (e) {
+        console.error(e);
+        Swal.fire({ icon: 'error', title: 'Помилка збереження', text: String(e.message || e) });
     }
 }
 

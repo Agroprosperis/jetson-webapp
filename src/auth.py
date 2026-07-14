@@ -63,6 +63,7 @@ DEFAULT_DASHBOARD_SETTINGS = {
     "grid_count_enabled": False,
     "grid_debug_enabled": False,
     "grid_score_threshold": 0.30,
+    "ask_manual_spore_count": True,
 }
 
 _init_lock = threading.Lock()
@@ -255,6 +256,7 @@ def get_dashboard_settings():
             "grid_count_enabled": bool(row["grid_count_enabled"]),
             "grid_debug_enabled": bool(row["grid_debug_enabled"]),
             "grid_score_threshold": float(row["grid_score_threshold"]),
+            "ask_manual_spore_count": bool(row["ask_manual_spore_count"]),
         }
     finally:
         connection.close()
@@ -419,6 +421,7 @@ def init_auth_storage():
                     grid_count_enabled INTEGER NOT NULL DEFAULT 0,
                     grid_debug_enabled INTEGER NOT NULL DEFAULT 0,
                     grid_score_threshold REAL NOT NULL DEFAULT 0.30,
+                    ask_manual_spore_count INTEGER NOT NULL DEFAULT 1,
                     updated_at TEXT NOT NULL
                 );
                 """
@@ -427,6 +430,11 @@ def init_auth_storage():
             if not _has_column(connection, "users", "force_password_change"):
                 connection.execute(
                     "ALTER TABLE users ADD COLUMN force_password_change INTEGER NOT NULL DEFAULT 0"
+                )
+
+            if not _has_column(connection, "dashboard_settings", "ask_manual_spore_count"):
+                connection.execute(
+                    "ALTER TABLE dashboard_settings ADD COLUMN ask_manual_spore_count INTEGER NOT NULL DEFAULT 1"
                 )
 
             if connection.execute("SELECT id FROM dashboard_settings WHERE id = 1").fetchone() is None:
@@ -447,8 +455,9 @@ def init_auth_storage():
                         grid_count_enabled,
                         grid_debug_enabled,
                         grid_score_threshold,
+                        ask_manual_spore_count,
                         updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         1,
@@ -465,6 +474,7 @@ def init_auth_storage():
                         int(DEFAULT_DASHBOARD_SETTINGS["grid_count_enabled"]),
                         int(DEFAULT_DASHBOARD_SETTINGS["grid_debug_enabled"]),
                         DEFAULT_DASHBOARD_SETTINGS["grid_score_threshold"],
+                        int(DEFAULT_DASHBOARD_SETTINGS["ask_manual_spore_count"]),
                         _utcnow_text(),
                     ),
                 )
@@ -788,6 +798,7 @@ def update_dashboard_settings(payload):
         "grid_count_enabled": current["grid_count_enabled"],
         "grid_debug_enabled": current["grid_debug_enabled"],
         "grid_score_threshold": current["grid_score_threshold"],
+        "ask_manual_spore_count": current["ask_manual_spore_count"],
     }
 
     if "analysis_number" in payload:
@@ -819,6 +830,8 @@ def update_dashboard_settings(payload):
         updated["grid_debug_enabled"] = bool(payload.get("grid_debug_enabled"))
     if "grid_score_threshold" in payload:
         updated["grid_score_threshold"] = float(payload.get("grid_score_threshold"))
+    if "ask_manual_spore_count" in payload:
+        updated["ask_manual_spore_count"] = bool(payload.get("ask_manual_spore_count"))
 
     connection = _connect()
     try:
@@ -838,6 +851,7 @@ def update_dashboard_settings(payload):
                 grid_count_enabled = ?,
                 grid_debug_enabled = ?,
                 grid_score_threshold = ?,
+                ask_manual_spore_count = ?,
                 updated_at = ?
             WHERE id = 1
             """,
@@ -855,6 +869,7 @@ def update_dashboard_settings(payload):
                 int(updated["grid_count_enabled"]),
                 int(updated["grid_debug_enabled"]),
                 updated["grid_score_threshold"],
+                int(updated["ask_manual_spore_count"]),
                 _utcnow_text(),
             ),
         )

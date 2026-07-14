@@ -74,6 +74,18 @@ button:hover { background:#2a2a2a; }
   <div id="changePasswordMessage" class="message"></div>
 </div>
 
+{% if can_configure_dashboard %}
+<div class="card">
+  <h2 style="margin:0 0 12px; font-weight:300; font-size:18px;">Налаштування аналізу</h2>
+  <label style="display:flex; align-items:center; gap:10px; color:#eee; font-size:14px; cursor:pointer;">
+    <input id="askManualSporeCount" type="checkbox"{% if dashboard_settings.ask_manual_spore_count %} checked{% endif %} />
+    Запитувати фактичну кількість спор після зупинки
+  </label>
+  <div class="hint">Після натискання «Зупинити» зʼявиться вікно для введення кількості спор, порахованої вручну.</div>
+  <div id="analysisSettingsMessage" class="message"></div>
+</div>
+{% endif %}
+
 <script src="/auth-client.js"></script>
 <script>
 const SETTINGS_USERNAME = {{ current_user.username | tojson }};
@@ -118,6 +130,32 @@ document.getElementById('changePasswordBtn').addEventListener('click', async () 
     messageEl.classList.add('error');
   }
 });
+
+const askManualSporeCountEl = document.getElementById('askManualSporeCount');
+if (askManualSporeCountEl) {
+  askManualSporeCountEl.addEventListener('change', async () => {
+    const messageEl = document.getElementById('analysisSettingsMessage');
+    messageEl.textContent = '';
+    messageEl.className = 'message';
+    try {
+      const response = await fetch('/api/dashboard-settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ask_manual_spore_count: askManualSporeCountEl.checked }),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Не вдалося зберегти налаштування.');
+      }
+      messageEl.textContent = 'Збережено.';
+      messageEl.classList.add('success');
+    } catch (error) {
+      askManualSporeCountEl.checked = !askManualSporeCountEl.checked;
+      messageEl.textContent = error.message || 'Не вдалося зберегти налаштування.';
+      messageEl.classList.add('error');
+    }
+  });
+}
 </script>
 
 </body>

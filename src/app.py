@@ -1359,6 +1359,8 @@ def api_get_dashboard_settings():
               type: boolean
             grid_score_threshold:
               type: number
+            ask_manual_spore_count:
+              type: boolean
       401:
         description: Missing or invalid access token.
       403:
@@ -1414,6 +1416,8 @@ def api_put_dashboard_settings():
               type: boolean
             grid_score_threshold:
               type: number
+            ask_manual_spore_count:
+              type: boolean
     responses:
       200:
         description: Updated dashboard settings.

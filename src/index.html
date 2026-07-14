@@ -970,7 +970,8 @@ btnStop.onclick = async () => {
   }
 
   currentPipelineId = null;
-  if (CAN_CONFIGURE_DASHBOARD && stoppedPipelineId) {
+  const askManualCount = !INITIAL_DASHBOARD_SETTINGS || INITIAL_DASHBOARD_SETTINGS.ask_manual_spore_count !== false;
+  if (CAN_CONFIGURE_DASHBOARD && stoppedPipelineId && askManualCount) {
     await promptManualSporeCount(stoppedPipelineId);
   }
 };
