@@ -44,6 +44,18 @@ a:hover { text-decoration: underline; }
 .back-link:hover { color: #eee; }
 .folder-row td { background: #191919; font-weight: 600; color: #cfcfcf; }
 .folder-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.folder-id-group { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.analysis-num { display: inline-flex; align-items: center; gap: 6px; color: #ddd; font-size: 13px; }
+.analysis-num b { color: #fff; }
+.btn-edit-analysis {
+    background: transparent; border: 1px solid transparent; color: #a78bfa;
+    padding: 2px 6px; border-radius: 4px; cursor: pointer; font-size: 13px; line-height: 1;
+}
+.btn-edit-analysis:hover { background: rgba(167, 139, 250, 0.15); border-color: #a78bfa; }
+.analysis-history-badge {
+    color: #888; font-size: 12px; cursor: pointer; text-decoration: underline dotted; white-space: nowrap;
+}
+.analysis-history-badge:hover { color: #ccc; }
 .folder-meta { color: #888; font-weight: 400; font-size: 12px; }
 .file-row td { padding-left: 28px; }
 .file-row { display: none; }
@@ -231,10 +243,18 @@ async function loadResults() {
                 ? `<button class="btn-del" title="Видалити" aria-label="Видалити" onclick="deleteResult('${item.id}')">🗑</button>`
                 : '';
             const ownerCell = SHOW_OWNER_COLUMN ? `<td>${item.owner_username || '-'}</td>` : '';
+            const analysisNumber = item.analysis_number || item.id;
+            const historyCount = (item.analysis_number_history || []).length;
+            const historyBadge = historyCount
+                ? `<span class="analysis-history-badge" title="Переглянути історію змін">історія (${historyCount})</span>`
+                : '';
             folderRow.innerHTML = `
                 <td>
                     <div class="folder-line folder-toggle">
-                        <span style="font-family:monospace;"><span class="folder-caret">▸</span>${item.id}</span>
+                        <span class="folder-id-group">
+                            <span style="font-family:monospace;"><span class="folder-caret">▸</span>${escapeHtml(item.id)}</span>
+                            <span class="analysis-num">№ <b>${escapeHtml(analysisNumber)}</b><button type="button" class="btn-edit-analysis" title="Змінити номер аналізу">✎</button>${historyBadge}</span>
+                        </span>
                         <span class="folder-meta">${item.timestamp}</span>
                     </div>
                 </td>
@@ -264,6 +284,22 @@ async function loadResults() {
                         item.detected_objects_per_class || {},
                         item.manual_spore_count_per_class || {}
                     );
+                });
+            }
+
+            const editAnalysisButton = folderRow.querySelector('.btn-edit-analysis');
+            if (editAnalysisButton) {
+                editAnalysisButton.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    editAnalysisNumber(item.id, analysisNumber, item.analysis_number_history || []);
+                });
+            }
+
+            const historyBadgeEl = folderRow.querySelector('.analysis-history-badge');
+            if (historyBadgeEl) {
+                historyBadgeEl.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    editAnalysisNumber(item.id, analysisNumber, item.analysis_number_history || []);
                 });
             }
 
@@ -448,12 +484,70 @@ async function downloadResultZip(pid) {
     }
 }
 
-async function editManualSporeCount(pid, aiCounts, manualCounts) {
-    if (!window.Swal) return;
-
-    const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     }[c]));
+}
+
+async function editAnalysisNumber(pid, currentNumber, history) {
+    if (!window.Swal) return;
+
+    const historyHtml = (history && history.length)
+        ? `<div style="text-align:left; margin-top:12px;">
+             <div style="color:#aaa; font-size:12px; margin-bottom:4px;">Історія змін:</div>
+             <ul style="margin:0; padding-left:18px; color:#bbb; font-size:13px;">
+               ${history.map(h => `<li>${escapeHtml(h.value)} <span style="color:#777;">(${escapeHtml(h.changed_at || '')}${h.changed_by ? ', ' + escapeHtml(h.changed_by) : ''})</span></li>`).join('')}
+             </ul>
+           </div>`
+        : '';
+
+    const result = await Swal.fire({
+        title: 'Номер аналізу',
+        html: `
+            <div style="text-align:left;">
+                <label style="display:block; color:#aaa; font-size:12px; margin-bottom:6px;">Новий номер аналізу</label>
+                <input id="analysisNumberInput" type="text" value="${escapeHtml(currentNumber)}"
+                       style="width:100%; box-sizing:border-box; padding:8px 10px; border-radius:6px; border:1px solid #444; background:#1a1a1a; color:#eee;" />
+            </div>
+            ${historyHtml}`,
+        showCancelButton: true,
+        confirmButtonText: 'Зберегти',
+        cancelButtonText: 'Скасувати',
+        focusConfirm: false,
+        preConfirm: () => {
+            const value = document.getElementById('analysisNumberInput').value.trim();
+            if (!value) {
+                Swal.showValidationMessage('Вкажіть номер аналізу.');
+                return false;
+            }
+            return value;
+        },
+    });
+
+    if (!result.isConfirmed) return;
+    const newNumber = result.value;
+    if (newNumber === currentNumber) return;
+
+    try {
+        const res = await fetch(`/api/results/${encodeURIComponent(pid)}/analysis-number`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ analysis_number: newNumber }),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || res.status);
+        }
+        loadResults();
+    } catch (e) {
+        console.error(e);
+        Swal.fire({ icon: 'error', title: 'Помилка збереження', text: String(e.message || e) });
+    }
+}
+
+async function editManualSporeCount(pid, aiCounts, manualCounts) {
+    if (!window.Swal) return;
 
     const classNames = Array.from(new Set([
         ...Object.keys(aiCounts || {}),
