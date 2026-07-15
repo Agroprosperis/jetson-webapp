@@ -60,6 +60,7 @@ DEFAULT_DASHBOARD_SETTINGS = {
     "uploaded_path": "",
     "model_path": "",
     "vis_conf": 0.75,
+    "captions_enabled": False,
     "grid_count_enabled": False,
     "grid_debug_enabled": False,
     "grid_score_threshold": 0.30,
@@ -253,6 +254,7 @@ def get_dashboard_settings():
             "uploaded_path": row["uploaded_path"],
             "model_path": row["model_path"],
             "vis_conf": float(row["vis_conf"]),
+            "captions_enabled": bool(row["captions_enabled"]),
             "grid_count_enabled": bool(row["grid_count_enabled"]),
             "grid_debug_enabled": bool(row["grid_debug_enabled"]),
             "grid_score_threshold": float(row["grid_score_threshold"]),
@@ -418,6 +420,7 @@ def init_auth_storage():
                     uploaded_path TEXT NOT NULL DEFAULT '',
                     model_path TEXT NOT NULL DEFAULT '',
                     vis_conf REAL NOT NULL DEFAULT 0.75,
+                    captions_enabled INTEGER NOT NULL DEFAULT 0,
                     grid_count_enabled INTEGER NOT NULL DEFAULT 0,
                     grid_debug_enabled INTEGER NOT NULL DEFAULT 0,
                     grid_score_threshold REAL NOT NULL DEFAULT 0.30,
@@ -437,6 +440,11 @@ def init_auth_storage():
                     "ALTER TABLE dashboard_settings ADD COLUMN ask_manual_spore_count INTEGER NOT NULL DEFAULT 1"
                 )
 
+            if not _has_column(connection, "dashboard_settings", "captions_enabled"):
+                connection.execute(
+                    "ALTER TABLE dashboard_settings ADD COLUMN captions_enabled INTEGER NOT NULL DEFAULT 0"
+                )
+
             if connection.execute("SELECT id FROM dashboard_settings WHERE id = 1").fetchone() is None:
                 connection.execute(
                     """
@@ -452,12 +460,13 @@ def init_auth_storage():
                         uploaded_path,
                         model_path,
                         vis_conf,
+                        captions_enabled,
                         grid_count_enabled,
                         grid_debug_enabled,
                         grid_score_threshold,
                         ask_manual_spore_count,
                         updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         1,
@@ -471,6 +480,7 @@ def init_auth_storage():
                         DEFAULT_DASHBOARD_SETTINGS["uploaded_path"],
                         DEFAULT_DASHBOARD_SETTINGS["model_path"],
                         DEFAULT_DASHBOARD_SETTINGS["vis_conf"],
+                        int(DEFAULT_DASHBOARD_SETTINGS["captions_enabled"]),
                         int(DEFAULT_DASHBOARD_SETTINGS["grid_count_enabled"]),
                         int(DEFAULT_DASHBOARD_SETTINGS["grid_debug_enabled"]),
                         DEFAULT_DASHBOARD_SETTINGS["grid_score_threshold"],
@@ -665,6 +675,7 @@ def resolve_dashboard_start_payload(raw_payload, user):
         "model_path": raw_payload.get("model_path", settings.get("model_path", "")),
         "model_task": raw_payload.get("model_task"),
         "vis_conf": raw_payload.get("vis_conf", settings.get("vis_conf", 0.75)),
+        "captions_enabled": raw_payload.get("captions_enabled", settings.get("captions_enabled", False)),
         "grid_count_enabled": raw_payload.get("grid_count_enabled", settings.get("grid_count_enabled", False)),
         "grid_debug_enabled": raw_payload.get("grid_debug_enabled", settings.get("grid_debug_enabled", False)),
         "grid_score_threshold": raw_payload.get("grid_score_threshold", settings.get("grid_score_threshold", 0.30)),
@@ -795,6 +806,7 @@ def update_dashboard_settings(payload):
         "uploaded_path": current["uploaded_path"],
         "model_path": current["model_path"],
         "vis_conf": current["vis_conf"],
+        "captions_enabled": current["captions_enabled"],
         "grid_count_enabled": current["grid_count_enabled"],
         "grid_debug_enabled": current["grid_debug_enabled"],
         "grid_score_threshold": current["grid_score_threshold"],
@@ -824,6 +836,8 @@ def update_dashboard_settings(payload):
         updated["model_path"] = str(payload.get("model_path") or "")
     if "vis_conf" in payload:
         updated["vis_conf"] = float(payload.get("vis_conf"))
+    if "captions_enabled" in payload:
+        updated["captions_enabled"] = bool(payload.get("captions_enabled"))
     if "grid_count_enabled" in payload:
         updated["grid_count_enabled"] = bool(payload.get("grid_count_enabled"))
     if "grid_debug_enabled" in payload:
@@ -848,6 +862,7 @@ def update_dashboard_settings(payload):
                 uploaded_path = ?,
                 model_path = ?,
                 vis_conf = ?,
+                captions_enabled = ?,
                 grid_count_enabled = ?,
                 grid_debug_enabled = ?,
                 grid_score_threshold = ?,
@@ -866,6 +881,7 @@ def update_dashboard_settings(payload):
                 updated["uploaded_path"],
                 updated["model_path"],
                 updated["vis_conf"],
+                int(updated["captions_enabled"]),
                 int(updated["grid_count_enabled"]),
                 int(updated["grid_debug_enabled"]),
                 updated["grid_score_threshold"],

@@ -549,6 +549,37 @@ class ZDashboardSettingsValueTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["vis_conf"], 0.55)
 
+    def test_caption_setting_is_additive_and_preserved_by_legacy_updates(self):
+        status, _, _ = request(
+            "PUT",
+            "/api/dashboard-settings",
+            token=self.admin_token,
+            payload={"captions_enabled": True},
+        )
+        self.assertEqual(status, 200)
+
+        status, _, _ = request(
+            "PUT",
+            "/api/dashboard-settings",
+            token=self.admin_token,
+            payload={"vis_conf": 0.55},
+        )
+        self.assertEqual(status, 200)
+        status, _, body = request("GET", "/api/dashboard-settings", token=self.user_token)
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["captions_enabled"])
+
+        status, _, _ = request(
+            "PUT",
+            "/api/dashboard-settings",
+            token=self.admin_token,
+            payload={"captions_enabled": False},
+        )
+        self.assertEqual(status, 200)
+        status, _, body = request("GET", "/api/dashboard-settings", token=self.user_token)
+        self.assertEqual(status, 200)
+        self.assertFalse(json.loads(body)["captions_enabled"])
+
     def test_admin_selected_grid_count_is_used_for_user(self):
         status, _, _ = request("PUT", "/api/dashboard-settings", token=self.admin_token, payload={"grid_count_enabled": False})
         self.assertEqual(status, 200)

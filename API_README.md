@@ -120,6 +120,7 @@ curl -X GET "http://localhost:8000/api/dashboard-settings" \
     "height": 0,
     "width": 0
   },
+  "captions_enabled": true,
   "grid_count_enabled": true,
   "grid_debug_enabled": true,
   "grid_score_threshold": 0.0,
@@ -145,7 +146,7 @@ curl -X PUT "http://localhost:8000/api/dashboard-settings" \
   -H "accept: application/json" \
   -H "Authorization: Bearer <access_token>" \
   -H "Content-Type: application/json" \
-  -d '{"analysis_number": "string", "ask_manual_spore_count": true, "camera_device": "string", "camera_mode": {"format": "string", "fps": 0, "height": 0, "width": 0}, "grid_count_enabled": true, "grid_debug_enabled": true, "grid_score_threshold": 0.0, "model_path": "string", "source_type": "camera", "uploaded_path": "string", "vis_conf": 0.0}'
+  -d '{"analysis_number": "string", "ask_manual_spore_count": true, "camera_device": "string", "camera_mode": {"format": "string", "fps": 0, "height": 0, "width": 0}, "captions_enabled": true, "grid_count_enabled": true, "grid_debug_enabled": true, "grid_score_threshold": 0.0, "model_path": "string", "source_type": "camera", "uploaded_path": "string", "vis_conf": 0.0}'
 ```
 
 ### Response
@@ -774,7 +775,7 @@ curl -X POST "http://localhost:8000/api/start" \
   -H "accept: application/json" \
   -H "Authorization: Bearer <access_token>" \
   -H "Content-Type: application/json" \
-  -d '{"analysis_number": "string", "device": "string", "format": "string", "fps": 0, "grid_count_enabled": true, "grid_debug_enabled": true, "grid_score_threshold": 0.0, "height": 0, "model_path": "string", "model_task": "segment", "source_type": "camera", "video": "string", "vis_conf": 0.0, "vis_strategy": "string", "width": 0}'
+  -d '{"analysis_number": "string", "captions_enabled": true, "device": "string", "format": "string", "fps": 0, "grid_count_enabled": true, "grid_debug_enabled": true, "grid_score_threshold": 0.0, "height": 0, "model_path": "string", "model_task": "segment", "source_type": "camera", "video": "string", "vis_conf": 0.0, "vis_strategy": "string", "width": 0}'
 ```
 
 ### Response

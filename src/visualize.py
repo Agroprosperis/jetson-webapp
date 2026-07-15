@@ -232,11 +232,11 @@ def visualize_frame_with_supervision(
     else:
         pass
 
-    labels = build_labels_from_tracks(detections, args)
-
     if len(detections) > 0:
         vis = BOX_ANNOTATOR.annotate(vis, detections)
-        vis = LABEL_ANNOTATOR.annotate(vis, detections, labels=labels)
+        if getattr(args, "captions_enabled", False):
+            labels = build_labels_from_tracks(detections, args)
+            vis = LABEL_ANNOTATOR.annotate(vis, detections, labels=labels)
 
     class_counts = _update_cumulative_class_counts(all_detections, args, allowed_track_ids=count_track_ids)
     s_values = class_s_values_from_counts(args, class_counts)

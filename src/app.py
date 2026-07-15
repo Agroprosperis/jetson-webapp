@@ -1353,6 +1353,9 @@ def api_get_dashboard_settings():
               type: string
             vis_conf:
               type: number
+            captions_enabled:
+              type: boolean
+              description: Render class, confidence, and tracker-ID captions on detection boxes. Defaults to false.
             grid_count_enabled:
               type: boolean
             grid_debug_enabled:
@@ -1410,6 +1413,9 @@ def api_put_dashboard_settings():
               type: string
             vis_conf:
               type: number
+            captions_enabled:
+              type: boolean
+              description: Render class, confidence, and tracker-ID captions on detection boxes. Defaults to false.
             grid_count_enabled:
               type: boolean
             grid_debug_enabled:
@@ -3121,6 +3127,9 @@ def api_start():
               description: Optional Ultralytics task override. When omitted, the saved catalog setting is used and defaults to segment.
             vis_conf:
               type: number
+            captions_enabled:
+              type: boolean
+              description: Render class, confidence, and tracker-ID captions on detection boxes. Defaults to false.
             vis_strategy:
               type: string
             grid_count_enabled:
@@ -3224,6 +3233,7 @@ def api_start():
             output_path="pub-output",
             model_conf=0.10,
             vis_conf=requested_conf,
+            captions_enabled=bool(data.get("captions_enabled", False)),
             vis_strategy=vis_strategy,
             pipeline_id=pipeline_id,
             hq_output_dir=HQ_OUTPUT_DIR,
@@ -3333,6 +3343,7 @@ def api_start():
                     "uploaded_path": data.get("video", ""),
                     "model_path": model_path,
                     "vis_conf": requested_conf,
+                    "captions_enabled": bool(data.get("captions_enabled", False)),
                     "grid_count_enabled": data.get("grid_count_enabled", get_grid_count_enabled()),
                     "grid_debug_enabled": data.get("grid_debug_enabled", get_grid_debug_enabled()),
                     "grid_score_threshold": data.get("grid_score_threshold", get_grid_score_threshold()),
