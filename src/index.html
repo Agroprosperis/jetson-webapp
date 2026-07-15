@@ -889,15 +889,36 @@ function disconnectWHEP_wf() {
   vWf.srcObject = null;
 }
 
+async function promptAnalysisNumber() {
+  if (!window.Swal) {
+    const value = prompt('Вкажіть номер аналізу перед запуском:') || '';
+    return value.trim();
+  }
+  const result = await Swal.fire({
+    title: 'Номер аналізу',
+    input: 'text',
+    inputLabel: 'Вкажіть номер аналізу перед запуском',
+    inputPlaceholder: 'Наприклад, 12345',
+    showCancelButton: true,
+    confirmButtonText: 'Запустити',
+    cancelButtonText: 'Скасувати',
+    inputValidator: (value) => {
+      if (!value || !value.trim()) return 'Вкажіть номер аналізу.';
+    },
+  });
+  return result.isConfirmed ? String(result.value || '').trim() : '';
+}
+
 btnRun.onclick = async () => {
   let payload = {};
 
   if (CAN_CONFIGURE_DASHBOARD) {
-    const analysisVal = analysisNumEl.value.trim();
+    let analysisVal = analysisNumEl.value.trim();
     if (!analysisVal) {
-      await showWarning('Не вказано номер аналізу', 'Вкажіть номер аналізу перед запуском.');
-      analysisNumEl.focus();
-      return;
+      analysisVal = await promptAnalysisNumber();
+      if (!analysisVal) return;
+      analysisNumEl.value = analysisVal;
+      await saveDashboardSettings({ analysis_number: analysisVal });
     }
 
     const confVal = parseFloat(confThresholdEl.value);
@@ -970,6 +991,12 @@ btnStop.onclick = async () => {
   }
 
   currentPipelineId = null;
+
+  if (CAN_CONFIGURE_DASHBOARD) {
+    analysisNumEl.value = '';
+    await saveDashboardSettings({ analysis_number: '' });
+  }
+
   const askManualCount = !INITIAL_DASHBOARD_SETTINGS || INITIAL_DASHBOARD_SETTINGS.ask_manual_spore_count !== false;
   if (CAN_CONFIGURE_DASHBOARD && stoppedPipelineId && askManualCount) {
     await promptManualSporeCount(stoppedPipelineId);

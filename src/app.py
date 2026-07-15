@@ -420,45 +420,34 @@ def _format_duration(seconds):
 
 
 def _read_result_csv_summary(csv_path):
-    empty = {
-        "detected_objects_per_class": None,
-        "s_value_per_class": None,
-        "analysis_number": None,
-    }
     if not os.path.isfile(csv_path):
-        return dict(empty)
+        return {
+            "detected_objects_per_class": None,
+            "s_value_per_class": None,
+        }
 
     try:
         row = _coerce_csv_row(_read_last_csv_row_fast(csv_path))
     except Exception:
         LOGGER.exception("Failed to read result CSV summary: %s", csv_path)
-        return dict(empty)
+        return {
+            "detected_objects_per_class": None,
+            "s_value_per_class": None,
+        }
 
     if not row:
-        return dict(empty)
+        return {
+            "detected_objects_per_class": None,
+            "s_value_per_class": None,
+        }
 
     return {
         "detected_objects_per_class": row.get("detected_objects_per_class"),
         "s_value_per_class": row.get("s_value_per_class"),
-        "analysis_number": (row.get("analysis_number") or "").strip() or None,
     }
 
 
 MANUAL_COUNTS_FILENAME = "manual_counts.json"
-ANALYSIS_META_FILENAME = "analysis_meta.json"
-
-
-def _read_analysis_meta(run_path):
-    meta_path = os.path.join(run_path, ANALYSIS_META_FILENAME)
-    if not os.path.isfile(meta_path):
-        return {}
-    try:
-        with open(meta_path, "r", encoding="utf-8") as meta_input:
-            data = json.load(meta_input)
-    except Exception as exc:
-        LOGGER.warning("Failed to read analysis meta %s: %s", meta_path, exc)
-        return {}
-    return data if isinstance(data, dict) else {}
 
 
 def _read_manual_counts(run_path):
@@ -509,21 +498,12 @@ def _build_result_metadata(run_id):
     video_path = os.path.join(run_path, f"{run_id}.mkv")
     csv_summary = _read_result_csv_summary(csv_path)
 
-    analysis_meta = _read_analysis_meta(run_path)
-    original_analysis_number = csv_summary.get("analysis_number") or run_id
-    analysis_history = analysis_meta.get("history")
-    if not isinstance(analysis_history, list):
-        analysis_history = []
-    effective_analysis_number = analysis_meta.get("analysis_number") or original_analysis_number
-
     return {
         "id": run_id,
         "run_path": run_path,
         "timestamp": timestamp,
         "duration": _format_duration(longest_duration_seconds),
         "duration_seconds": longest_duration_seconds,
-        "analysis_number": effective_analysis_number,
-        "analysis_number_history": analysis_history,
         "detected_objects_per_class": csv_summary.get("detected_objects_per_class"),
         "s_value_per_class": csv_summary.get("s_value_per_class"),
         "manual_spore_count_per_class": _read_manual_counts(run_path),
@@ -636,10 +616,11 @@ def _collect_results_metadata(*, analysis_prefix="", selected_date=None):
     ]
 
     for run_id in run_dirs:
+        if analysis_prefix and analysis_prefix not in run_id:
+            continue
+
         metadata = _build_result_metadata(run_id)
         if metadata is None:
-            continue
-        if analysis_prefix and analysis_prefix not in run_id and analysis_prefix not in str(metadata.get("analysis_number") or ""):
             continue
         if not _result_matches_date(metadata["_mtime"], selected_date):
             continue
@@ -2328,14 +2309,6 @@ def api_v2_list_results():
                     type: string
                   duration_seconds:
                     type: number
-                  analysis_number:
-                    type: string
-                    description: Effective analysis number (edited value if changed).
-                  analysis_number_history:
-                    type: array
-                    description: Previous analysis numbers with change timestamps.
-                    items:
-                      type: object
                   detected_objects_per_class:
                     type: object
                     description: Per-class detected object counts keyed by class name.
@@ -2794,97 +2767,6 @@ def api_update_result_manual_count(pid):
 
     except Exception as e:
         LOGGER.error(f"Failed to store manual counts for {pid}: {e}")
-        return flask.jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/results/<pid>/analysis-number", methods=["PUT"])
-@auth.require_permission("results:inspect")
-def api_update_result_analysis_number(pid):
-    """
-    Change the analysis number for a result, keeping the previous value in history.
-    ---
-    tags:
-      - Results
-    parameters:
-      - name: pid
-        in: path
-        type: string
-        required: true
-        description: The Analysis ID to update
-    responses:
-      200:
-        description: Analysis number updated successfully
-        schema:
-          type: object
-          properties:
-            success:
-              type: boolean
-            analysis_number:
-              type: string
-            analysis_number_history:
-              type: array
-              items:
-                type: object
-      400:
-        description: Invalid analysis ID or payload.
-      403:
-        description: Authenticated user cannot access this result.
-      404:
-        description: Result not found.
-      500:
-        description: Failed to update the analysis number.
-    """
-    try:
-        if not pid or ".." in pid or "/" in pid:
-            return flask.jsonify({"error": "Invalid ID"}), 400
-        if not auth.user_can_access_result(flask.g.current_user, HQ_OUTPUT_DIR, pid):
-            return flask.jsonify({"error": "Forbidden"}), 403
-
-        run_path = os.path.join(HQ_OUTPUT_DIR, pid)
-        if not os.path.isdir(run_path):
-            return flask.jsonify({"error": "Result not found"}), 404
-
-        data = flask.request.get_json(silent=True) or {}
-        new_number = str(data.get("analysis_number") or "").strip()
-        if not new_number:
-            return flask.jsonify({"error": "analysis_number is required"}), 400
-
-        csv_path = os.path.join(run_path, f"{pid}.csv")
-        original_number = _read_result_csv_summary(csv_path).get("analysis_number") or pid
-        meta = _read_analysis_meta(run_path)
-        history = meta.get("history")
-        if not isinstance(history, list):
-            history = []
-        current_number = meta.get("analysis_number") or original_number
-
-        if new_number == current_number:
-            return flask.jsonify({
-                "success": True,
-                "analysis_number": current_number,
-                "analysis_number_history": history,
-            })
-
-        history.append({
-            "value": current_number,
-            "changed_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            "changed_by": flask.g.current_user.get("username", ""),
-        })
-
-        payload = {"analysis_number": new_number, "history": history}
-        meta_path = os.path.join(run_path, ANALYSIS_META_FILENAME)
-        tmp_path = f"{meta_path}.tmp"
-        with open(tmp_path, "w", encoding="utf-8") as meta_output:
-            json.dump(payload, meta_output, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, meta_path)
-
-        return flask.jsonify({
-            "success": True,
-            "analysis_number": new_number,
-            "analysis_number_history": history,
-        })
-
-    except Exception as e:
-        LOGGER.error(f"Failed to update analysis number for {pid}: {e}")
         return flask.jsonify({"error": str(e)}), 500
 
 
