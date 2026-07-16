@@ -1,0 +1,12 @@
+services:
+  rf-nas-model-manager:
+    build:
+      context: ..
+      dockerfile: rf_nas_model_manager/Dockerfile
+    image: rf-nas-model-manager:latest
+    container_name: rf-nas-model-manager
+    runtime: nvidia
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./data:/data

@@ -73,6 +73,8 @@ tr:hover { background: #2a2a2a; }
 }
 .overlay-title { font-size: 14px; font-weight: 600; }
 .overlay-status { font-size: 12px; color: #aaa; }
+.overlay-status.is-error { color: #fca5a5; }
+.overlay-close:disabled { opacity: 0.5; cursor: default; }
 .overlay-close {
   background: #333; color: #eee; border: 1px solid #444;
   padding: 6px 10px; border-radius: 6px; cursor: pointer;
@@ -144,6 +146,18 @@ tr:hover { background: #2a2a2a; }
   </table>
 </div>
 
+<div id="uploadOverlay" class="overlay">
+  <div class="overlay-card" style="width:min(560px, 96vw);">
+    <div class="overlay-header">
+      <div>
+        <div id="uploadTitle" class="overlay-title">Uploading model...</div>
+        <div id="uploadStatus" class="overlay-status">Preparing upload...</div>
+      </div>
+      <button id="uploadClose" type="button" class="overlay-close" disabled>Закрити</button>
+    </div>
+  </div>
+</div>
+
 <div id="compileOverlay" class="overlay">
   <div class="overlay-card">
     <div class="overlay-header">
@@ -172,7 +186,68 @@ const uploadModelTypeEl = document.getElementById('uploadModelType');
 const uploadModelBtn = document.getElementById('uploadModelBtn');
 const uploadModelInput = document.getElementById('uploadModelInput');
 const uploadModelStatusEl = document.getElementById('uploadModelStatus');
-const tensorrtInfoEl = document.getElementById('tensorrtInfo');
+const tensorrtInfoEl = document.getElementById("tensorrtInfo");
+const uploadOverlayEl = document.getElementById("uploadOverlay");
+const uploadTitleEl = document.getElementById("uploadTitle");
+const uploadStatusModalEl = document.getElementById("uploadStatus");
+const uploadCloseEl = document.getElementById("uploadClose");
+
+function showUploadOverlay(filename) {
+    uploadTitleEl.textContent = "Importing " + filename;
+    uploadStatusModalEl.textContent = "Preparing upload...";
+    uploadStatusModalEl.classList.remove("is-error");
+    uploadCloseEl.disabled = true;
+    uploadOverlayEl.classList.add("is-visible");
+}
+
+function setUploadModalStatus(message, isError) {
+    uploadStatusModalEl.textContent = message;
+    uploadStatusModalEl.classList.toggle("is-error", Boolean(isError));
+    uploadCloseEl.disabled = !isError;
+}
+
+function hideUploadOverlay() {
+    uploadOverlayEl.classList.remove("is-visible");
+}
+
+uploadCloseEl.addEventListener("click", hideUploadOverlay);
+
+function sendModelUpload(formData, filename, isPackage) {
+    return new Promise((resolve, reject) => {
+        const request = new XMLHttpRequest();
+        request.open("POST", "/api/model-upload");
+        request.responseType = "json";
+
+        request.upload.addEventListener("progress", event => {
+            if (!event.lengthComputable) {
+                setUploadModalStatus("Uploading " + filename + "...", false);
+                return;
+            }
+            const percent = Math.round((event.loaded / event.total) * 100);
+            setUploadModalStatus("Uploading " + filename + " (" + percent + "%)...", false);
+        });
+        request.upload.addEventListener("load", () => {
+            setUploadModalStatus(
+                isPackage
+                    ? "Upload complete. Checking archive and TensorRT compatibility..."
+                    : "Upload complete. Processing model metadata...",
+                false
+            );
+        });
+        request.addEventListener("load", () => {
+            const data = request.response || {};
+            if (request.status < 200 || request.status >= 300) {
+                reject(new Error(data.error || "Failed to upload model."));
+                return;
+            }
+            resolve(data);
+        });
+        request.addEventListener("error", () => {
+            reject(new Error("Failed to upload model."));
+        });
+        request.send(formData);
+    });
+}
 
 function updateUploadUiForType() {
     const type = uploadModelTypeEl.value;
@@ -563,20 +638,18 @@ uploadModelInput.addEventListener('change', async () => {
 
     uploadModelBtn.disabled = true;
     uploadModelStatusEl.textContent = `Uploading ${file.name}...`;
+    showUploadOverlay(file.name);
 
     try {
         const formData = new FormData();
         formData.append('type', uploadModelTypeEl.value);
         formData.append('file', file);
 
-        const res = await fetch('/api/model-upload', {
-            method: 'POST',
-            body: formData,
-        });
-        const data = await res.json();
-        if (!res.ok) {
-            throw new Error(data.error || 'Failed to upload model.');
-        }
+        const data = await sendModelUpload(
+            formData,
+            file.name,
+            lowerName.endsWith(".zip")
+        );
 
         uploadModelStatusEl.textContent = `Uploaded ${file.name}`;
         if (Number.isFinite(data.uploaded && data.uploaded.inference_width) && Number.isFinite(data.uploaded && data.uploaded.inference_height)) {
@@ -592,11 +665,13 @@ uploadModelInput.addEventListener('change', async () => {
         if (data.tensorrt && data.tensorrt.current) {
             tensorrtInfoEl.textContent = `Current TensorRT: ${data.tensorrt.current}`;
         }
+        setUploadModalStatus("Import complete. Refreshing model catalog...", false);
         await loadCompileJobs();
         await loadModels();
+        hideUploadOverlay();
     } catch (err) {
-        uploadModelStatusEl.textContent = '';
-        alert(err.message || 'Failed to upload model.');
+        uploadModelStatusEl.textContent = "";
+        setUploadModalStatus(err.message || "Failed to upload model.", true);
     } finally {
         uploadModelBtn.disabled = false;
         uploadModelInput.value = '';

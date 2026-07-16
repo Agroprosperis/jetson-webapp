@@ -71,6 +71,8 @@ sudo docker compose -f docker-compose.deploy-model.yml run --rm --build deploy-m
 ```
 It creates <modelid>.zip archive which could be directly uploaded to the app
 
+A UI-first version of this workflow is available in `rf_nas_model_manager/`. It discovers the workspace, projects, and trained versions from a browser-provided API key, verifies RF-DETR packages, optionally compiles TensorRT, and produces Tilletia-compatible ZIP files. See `rf_nas_model_manager/README.md`.
+
 # Compile model as TensorRT from UI
 Open `Model Catalog` from the dashboard, upload the model file if it is not already listed, then click the model's compile action to create a TensorRT engine. Wait for the compile job to finish, then return to the dashboard and select the compiled engine from the model dropdown.
 

@@ -46,6 +46,9 @@ class TestableModelManager(ModelManager):
     def _inspect_engine_inference_size(self, engine_path):
         return self.engine_dimensions.get(str(engine_path))
 
+    def _is_tensorrt_engine_compatible(self, engine_path):
+        return True
+
 
 class ModelManagerRuntimeSettingsTests(unittest.TestCase):
     def make_manager(self, temp_dir, *, detected_dimensions=None, engine_dimensions=None):
@@ -188,6 +191,20 @@ class ModelManagerRuntimeSettingsTests(unittest.TestCase):
             self.assertEqual(runtime["inference_width"], 1024)
             self.assertEqual(runtime["inference_height"], 768)
             self.assertNotIn("sliding_window", runtime)
+
+    def test_incompatible_engine_is_not_shown_as_compiled(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = self.make_manager(temp_dir)
+            manager._is_tensorrt_engine_compatible = lambda engine_path: False
+            self.touch_model_source(temp_dir, "ul/sample.pt")
+            self.touch_model_source(temp_dir, "ul/sample.engine")
+
+            catalog = manager.build_model_catalog()
+
+            self.assertEqual(len(catalog), 1)
+            self.assertFalse(catalog[0]["compiled"])
+            self.assertIsNone(catalog[0]["engine"])
+            self.assertEqual(manager.list_engine_models(), [])
 
     def test_upload_rf_zip_package_extracts_artifacts_and_package_metadata(self):
         with tempfile.TemporaryDirectory() as temp_dir:

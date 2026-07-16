@@ -39,6 +39,12 @@ class ModelManager:
     MODEL_UPLOAD_EXTENSIONS = (".pt", ".zip")
     RF_PACKAGE_REQUIRED_SUFFIXES = (".onnx", ".inference_config.json", ".class_names.txt")
     RF_PACKAGE_OPTIONAL_SUFFIXES = (".model_config.json", ".manifest.json")
+    RF_PACKAGE_ENGINE_SUFFIXES = (
+        "-fp16.engine",
+        "-fp16.engine.json",
+        "-fp16.engine.class_names.txt",
+        "-fp16.engine.compile.json",
+    )
     RF_PACKAGE_SIDECAR_SUFFIXES = (
         ".inference_config.json",
         ".model_config.json",
@@ -734,6 +740,39 @@ class ModelManager:
 
         return None
 
+    def _is_tensorrt_engine_compatible(self, engine_path):
+        if not engine_path or not os.path.isfile(engine_path):
+            return False
+
+        try:
+            import tensorrt as trt
+
+            logger = trt.Logger(trt.Logger.ERROR)
+            runtime = trt.Runtime(logger)
+            with open(engine_path, "rb") as engine_input:
+                engine = runtime.deserialize_cuda_engine(engine_input.read())
+            if engine is None:
+                self.logger.warning(
+                    "TensorRT rejected engine %s during compatibility check.",
+                    engine_path,
+                )
+                return False
+            context = engine.create_execution_context()
+            if context is None:
+                self.logger.warning(
+                    "TensorRT could not create an execution context for %s.",
+                    engine_path,
+                )
+                return False
+            return True
+        except Exception as exc:
+            self.logger.warning(
+                "TensorRT engine %s is not compatible with this machine: %s",
+                engine_path,
+                exc,
+            )
+            return False
+
     def _should_inspect_engine_inference_size(self, metadata):
         if not metadata:
             return False
@@ -1177,6 +1216,7 @@ class ModelManager:
         package_name = os.path.splitext(filename)[0]
         temp_path = os.path.join(target_dir, f".{filename}.{uuid.uuid4().hex}.tmp")
         staged_paths = []
+        temporary_member_paths = []
 
         try:
             uploaded_file.save(temp_path)
@@ -1190,37 +1230,127 @@ class ModelManager:
                 raise ModelValidationError("RF model package must be a zip archive.")
 
             with zipfile.ZipFile(temp_path) as archive:
-                member_names = set(archive.namelist())
-                required_members = [f"{package_name}{suffix}" for suffix in self.RF_PACKAGE_REQUIRED_SUFFIXES]
-                missing_members = [member for member in required_members if member not in member_names]
+                archive_names = archive.namelist()
+                member_names = set(archive_names)
+                if len(member_names) != len(archive_names):
+                    raise ModelValidationError("RF model package contains duplicate files.")
+
+                required_members = [
+                    f"{package_name}{suffix}"
+                    for suffix in self.RF_PACKAGE_REQUIRED_SUFFIXES
+                ]
+                missing_members = [
+                    member for member in required_members if member not in member_names
+                ]
                 if missing_members:
                     raise ModelValidationError(
                         "RF model package is missing required files: "
                         + ", ".join(missing_members)
                     )
 
-                package_members = required_members + [
+                optional_members = [
                     f"{package_name}{suffix}"
                     for suffix in self.RF_PACKAGE_OPTIONAL_SUFFIXES
                     if f"{package_name}{suffix}" in member_names
                 ]
+                engine_members = [
+                    f"{package_name}{suffix}"
+                    for suffix in self.RF_PACKAGE_ENGINE_SUFFIXES
+                ]
+                present_engine_members = [
+                    member for member in engine_members if member in member_names
+                ]
+                if present_engine_members and len(present_engine_members) != len(engine_members):
+                    missing_engine_members = [
+                        member for member in engine_members if member not in member_names
+                    ]
+                    raise ModelValidationError(
+                        "RF model package has an incomplete TensorRT engine: "
+                        + ", ".join(missing_engine_members)
+                    )
+
+                package_members = required_members + optional_members
+                if present_engine_members:
+                    package_members.extend(engine_members)
+
+                unsafe_members = [
+                    member
+                    for member in archive_names
+                    if not member
+                    or member != os.path.basename(member)
+                    or member in (".", "..")
+                ]
+                if unsafe_members:
+                    raise ModelValidationError("RF model package contains unsafe file paths.")
+
+                unexpected_members = sorted(member_names - set(package_members))
+                if unexpected_members:
+                    raise ModelValidationError(
+                        "RF model package contains unexpected files: "
+                        + ", ".join(unexpected_members)
+                    )
+
+                declared_target_paths = [
+                    os.path.join(target_dir, member_name)
+                    for member_name in package_members
+                ]
+                if any(os.path.exists(path) for path in declared_target_paths):
+                    raise ModelConflictError("A model package with this name already exists.")
+
+                for member_name in package_members:
+                    temporary_member_path = os.path.join(
+                        target_dir,
+                        f".{member_name}.{uuid.uuid4().hex}.tmp",
+                    )
+                    self._copy_zip_member(archive, member_name, temporary_member_path)
+                    temporary_member_paths.append(temporary_member_path)
+
+                if present_engine_members:
+                    temporary_engine_path = temporary_member_paths[
+                        package_members.index(engine_members[0])
+                    ]
+                    if not self._is_tensorrt_engine_compatible(temporary_engine_path):
+                        self.logger.warning(
+                            "Ignoring incompatible TensorRT engine from RF package %s.",
+                            filename,
+                        )
+                        retained_members = []
+                        retained_temporary_paths = []
+                        engine_member_set = set(engine_members)
+                        for member_name, temporary_member_path in zip(
+                            package_members, temporary_member_paths
+                        ):
+                            if member_name in engine_member_set:
+                                self._cleanup_partial_upload(temporary_member_path)
+                                continue
+                            retained_members.append(member_name)
+                            retained_temporary_paths.append(temporary_member_path)
+                        package_members = retained_members
+                        temporary_member_paths = retained_temporary_paths
+
                 target_paths = [
                     os.path.join(target_dir, member_name)
                     for member_name in package_members
                 ]
-                existing_targets = [path for path in target_paths if os.path.exists(path)]
-                if existing_targets:
+                if any(os.path.exists(path) for path in target_paths):
                     raise ModelConflictError("A model package with this name already exists.")
 
-                for member_name, target_path in zip(package_members, target_paths):
-                    self._copy_zip_member(archive, member_name, target_path)
+                for temporary_member_path, target_path in zip(
+                    temporary_member_paths,
+                    target_paths,
+                ):
+                    os.replace(temporary_member_path, target_path)
                     staged_paths.append(target_path)
         except (ModelValidationError, ModelConflictError):
+            for path in temporary_member_paths:
+                self._cleanup_partial_upload(path)
             for path in staged_paths:
                 self._cleanup_partial_upload(path)
             raise
         except Exception as exc:
             self.logger.error("Failed to extract RF package %s: %s", temp_path, exc)
+            for path in temporary_member_paths:
+                self._cleanup_partial_upload(path)
             for path in staged_paths:
                 self._cleanup_partial_upload(path)
             raise ModelManagerError("Failed to extract uploaded model package.") from exc
@@ -1244,6 +1374,8 @@ class ModelManager:
 
         for candidate_path in candidate_paths:
             if not os.path.exists(candidate_path):
+                continue
+            if not self._is_tensorrt_engine_compatible(candidate_path):
                 continue
             engine = self._new_engine_info(candidate_path)
             engine_dimensions = self._resolve_engine_inference_size(candidate_path)
@@ -1520,6 +1652,11 @@ class ModelManager:
                     source_entry = model_map.get((model_type, source_base_name))
                     if source_entry and source_entry.get("source_paths"):
                         catalog_base_name = source_base_name
+                existing_entry = model_map.get((model_type, catalog_base_name))
+                if existing_entry and existing_entry.get("source_paths"):
+                    continue
+                if not self._is_tensorrt_engine_compatible(path):
+                    continue
                 self._get_or_create_catalog_entry(model_map, model_type, catalog_base_name)
 
         models = []
