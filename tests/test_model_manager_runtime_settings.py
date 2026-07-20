@@ -5,6 +5,8 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 SRC_DIR = Path(__file__).resolve().parents[1] / "src"
@@ -205,6 +207,46 @@ class ModelManagerRuntimeSettingsTests(unittest.TestCase):
             self.assertFalse(catalog[0]["compiled"])
             self.assertIsNone(catalog[0]["engine"])
             self.assertEqual(manager.list_engine_models(), [])
+
+    def test_ultralytics_engine_metadata_is_removed_before_compatibility_check(self):
+        received_payloads = []
+
+        class FakeLogger:
+            ERROR = object()
+
+            def __init__(self, level):
+                self.level = level
+
+        class FakeEngine:
+            def create_execution_context(self):
+                return object()
+
+        class FakeRuntime:
+            def __init__(self, logger):
+                self.logger = logger
+
+            def deserialize_cuda_engine(self, payload):
+                received_payloads.append(payload)
+                return FakeEngine()
+
+        fake_tensorrt = SimpleNamespace(Logger=FakeLogger, Runtime=FakeRuntime)
+        metadata = json.dumps({"author": "Ultralytics", "version": "8.4.23"}).encode("utf-8")
+        tensorrt_payload = b"ftrt-engine-payload"
+        wrapped_payload = (
+            len(metadata).to_bytes(4, byteorder="little", signed=True)
+            + metadata
+            + tensorrt_payload
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            engine_path = Path(temp_dir, "sample.engine")
+            engine_path.write_bytes(wrapped_payload)
+            manager = ModelManager(auth_module=FakeAuth(), model_dir=temp_dir)
+
+            with patch.dict(sys.modules, {"tensorrt": fake_tensorrt}):
+                self.assertTrue(manager._is_tensorrt_engine_compatible(str(engine_path)))
+
+        self.assertEqual(received_payloads, [tensorrt_payload])
 
     def test_upload_rf_zip_package_extracts_artifacts_and_package_metadata(self):
         with tempfile.TemporaryDirectory() as temp_dir:

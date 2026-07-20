@@ -706,8 +706,9 @@ class ModelManager:
         try:
             logger = trt.Logger(trt.Logger.ERROR)
             runtime = trt.Runtime(logger)
-            with open(engine_path, "rb") as engine_input:
-                engine = runtime.deserialize_cuda_engine(engine_input.read())
+            engine = runtime.deserialize_cuda_engine(
+                self._read_tensorrt_engine_payload(engine_path)
+            )
         except Exception as exc:
             self.logger.warning("Failed to inspect TensorRT engine %s: %s", engine_path, exc)
             return None
@@ -740,6 +741,27 @@ class ModelManager:
 
         return None
 
+    def _read_tensorrt_engine_payload(self, engine_path):
+        with open(engine_path, "rb") as engine_input:
+            payload = engine_input.read()
+
+        if len(payload) < 4:
+            return payload
+
+        metadata_length = int.from_bytes(payload[:4], byteorder="little", signed=True)
+        metadata_end = 4 + metadata_length
+        if metadata_length <= 0 or metadata_end >= len(payload):
+            return payload
+
+        try:
+            metadata = json.loads(payload[4:metadata_end].decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return payload
+
+        if not isinstance(metadata, dict) or metadata.get("author") != "Ultralytics":
+            return payload
+        return payload[metadata_end:]
+
     def _is_tensorrt_engine_compatible(self, engine_path):
         if not engine_path or not os.path.isfile(engine_path):
             return False
@@ -749,8 +771,9 @@ class ModelManager:
 
             logger = trt.Logger(trt.Logger.ERROR)
             runtime = trt.Runtime(logger)
-            with open(engine_path, "rb") as engine_input:
-                engine = runtime.deserialize_cuda_engine(engine_input.read())
+            engine = runtime.deserialize_cuda_engine(
+                self._read_tensorrt_engine_payload(engine_path)
+            )
             if engine is None:
                 self.logger.warning(
                     "TensorRT rejected engine %s during compatibility check.",
