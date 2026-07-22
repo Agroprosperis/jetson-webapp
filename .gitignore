@@ -1,0 +1,5 @@
+__pycache__
+sandbox
+TIMETRACKING.md
+data/runs/roboflow.json
+data/runs/.roboflow-*

@@ -44,6 +44,9 @@ UPLOAD_DIR = "/upload"
 VENDOR_DIR = "/opt/web/vendor"
 RESULT_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")
 RESULT_VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".mov")
+ROBOFLOW_UPLOAD_URL = "https://api.roboflow.com/dataset/{project_name}/upload"
+ROBOFLOW_UPLOAD_TIMEOUT = (10, 120)
+MAX_ROBOFLOW_UPLOAD_IMAGES = 100
 
 app = flask.Flask(__name__, template_folder=".")
 
@@ -599,6 +602,67 @@ def _resolve_result_video_path(run_id, requested_relative_path=""):
     if not os.path.isfile(candidate_path):
         raise FileNotFoundError("Result video not found.")
     return candidate_path
+
+
+def _resolve_result_image_path(requested_relative_path):
+    if not isinstance(requested_relative_path, str) or not requested_relative_path:
+        raise ValueError("Invalid result image path.")
+
+    normalized_path = requested_relative_path.replace("\\", "/")
+    if normalized_path != requested_relative_path or normalized_path.startswith("/"):
+        raise ValueError("Invalid result image path.")
+
+    path_parts = normalized_path.split("/")
+    if len(path_parts) != 2 or any(part in ("", ".", "..") for part in path_parts):
+        raise ValueError("Invalid result image path.")
+
+    run_id, filename = path_parts
+    output_root = os.path.realpath(HQ_OUTPUT_DIR)
+    run_path = os.path.realpath(os.path.join(output_root, run_id))
+    image_path = os.path.realpath(os.path.join(run_path, filename))
+    try:
+        is_contained = os.path.commonpath([output_root, image_path]) == output_root
+    except ValueError:
+        is_contained = False
+
+    if not is_contained or os.path.dirname(image_path) != run_path:
+        raise ValueError("Invalid result image path.")
+    if not _is_result_image(filename):
+        raise ValueError("Selected result file is not an image.")
+    if not os.path.isfile(image_path):
+        raise FileNotFoundError("Result image not found.")
+    return image_path, normalized_path
+
+
+def _upload_result_image_to_roboflow(image_path, settings):
+    upload_url = ROBOFLOW_UPLOAD_URL.format(
+        project_name=quote(settings["project_name"], safe=""),
+    )
+    with open(image_path, "rb") as image_input:
+        try:
+            response = requests.post(
+                upload_url,
+                params={"api_key": settings["api_token"]},
+                data={"name": os.path.basename(image_path), "split": "train"},
+                files={"file": (os.path.basename(image_path), image_input)},
+                timeout=ROBOFLOW_UPLOAD_TIMEOUT,
+            )
+        except requests.RequestException:
+            raise RuntimeError("Unable to reach Roboflow.") from None
+
+    if not 200 <= response.status_code < 300:
+        raise RuntimeError(f"Roboflow rejected the upload (HTTP {response.status_code}).")
+
+    try:
+        response_data = response.json()
+    except ValueError:
+        response_data = {}
+
+    if isinstance(response_data, dict) and response_data.get("duplicate") is True:
+        return "duplicate"
+    if isinstance(response_data, dict) and response_data.get("success") is True:
+        return "uploaded"
+    raise RuntimeError("Roboflow returned an invalid upload response.")
 
 
 def _is_result_image(filename):
@@ -1228,6 +1292,11 @@ def settings_page():
     return flask.render_template(
         "settings.html",
         role_label=", ".join(flask.g.current_user.get("roles", [])),
+        roboflow_settings=(
+            auth.get_roboflow_settings()
+            if auth.user_has_permission(flask.g.current_user, "roboflow:manage")
+            else None
+        ),
         **auth.build_page_context(flask.g.current_user),
     )
 
@@ -1437,6 +1506,92 @@ def api_put_dashboard_settings():
     payload = flask.request.get_json(silent=True) or {}
     try:
         settings = auth.update_dashboard_settings(payload)
+    except (TypeError, ValueError) as exc:
+        return flask.jsonify({"error": str(exc)}), 400
+    return flask.jsonify(settings)
+
+
+@app.route("/api/roboflow/settings", methods=["GET"])
+@auth.require_permission("roboflow:manage")
+def api_get_roboflow_settings():
+    """
+    Get the server-side Roboflow upload configuration without exposing the API token.
+    ---
+    tags:
+      - Roboflow
+    responses:
+      200:
+        description: Safe Roboflow configuration status.
+        schema:
+          type: object
+          properties:
+            project_name:
+              type: string
+            api_token_configured:
+              type: boolean
+            api_token_usable:
+              type: boolean
+            secure_storage_status:
+              type: string
+              enum: [available, unavailable, error]
+            secure_storage_available:
+              type: boolean
+            api_token_storage:
+              type: string
+              enum: [none, memory, encrypted, encrypted_unavailable, plaintext_file, plaintext_file_unconfirmed, plaintext_file_unavailable]
+            api_token_persistent:
+              type: boolean
+      401:
+        description: Missing or invalid access token.
+      403:
+        description: Authenticated user is not an administrator.
+    """
+    return flask.jsonify(auth.get_roboflow_settings())
+
+
+@app.route("/api/roboflow/settings", methods=["PUT"])
+@auth.require_permission("roboflow:manage")
+def api_put_roboflow_settings():
+    """
+    Save the server-side Roboflow upload configuration.
+    ---
+    tags:
+      - Roboflow
+    consumes:
+      - application/json
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          properties:
+            project_name:
+              type: string
+              description: Roboflow project ID, also called the dataset name by the upload API.
+            api_token:
+              type: string
+              description: Replacement private API token. A blank or omitted value preserves the current token.
+            allow_insecure_file_storage:
+              type: boolean
+              description: When secure storage is unavailable, true selects an owner-only plaintext token file and false selects process memory. If omitted, an existing mode is preserved; a new token defaults to memory.
+    responses:
+      200:
+        description: Safe Roboflow configuration status.
+      400:
+        description: Invalid or incomplete configuration.
+      401:
+        description: Missing or invalid access token.
+      403:
+        description: Authenticated user is not an administrator.
+      503:
+        description: The configured token storage cannot be used without a replacement token.
+    """
+    payload = flask.request.get_json(silent=True)
+    try:
+        settings = auth.update_roboflow_settings(payload)
+    except auth.RoboflowStorageError as exc:
+        return flask.jsonify({"error": str(exc)}), 503
     except (TypeError, ValueError) as exc:
         return flask.jsonify({"error": str(exc)}), 400
     return flask.jsonify(settings)
@@ -2378,6 +2533,116 @@ def _api_list_results(*, version):
     except Exception as e:
         LOGGER.error(f"Failed to list results: {e}")
         return flask.jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/roboflow/upload", methods=["POST"])
+@auth.require_permission("roboflow:manage")
+def api_upload_results_to_roboflow():
+    """
+    Upload selected result images to the configured Roboflow project.
+    ---
+    tags:
+      - Roboflow
+    consumes:
+      - application/json
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - image_paths
+          properties:
+            image_paths:
+              type: array
+              maxItems: 100
+              items:
+                type: string
+              description: Result-relative image paths returned by the v2 results API.
+    responses:
+      200:
+        description: Every selected image was uploaded or already existed.
+      400:
+        description: Invalid paths, empty selection, or incomplete Roboflow configuration.
+      401:
+        description: Missing or invalid access token.
+      403:
+        description: Authenticated user is not an administrator.
+      502:
+        description: One or more uploads failed at Roboflow.
+      503:
+        description: The configured Roboflow token is not currently usable.
+    """
+    payload = flask.request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return flask.jsonify({"error": "A JSON request body is required."}), 400
+
+    image_paths = payload.get("image_paths")
+    if not isinstance(image_paths, list) or not image_paths:
+        return flask.jsonify({"error": "Select at least one result image."}), 400
+
+    if len(image_paths) > MAX_ROBOFLOW_UPLOAD_IMAGES:
+        return flask.jsonify({
+            "error": f"Select no more than {MAX_ROBOFLOW_UPLOAD_IMAGES} images at once.",
+        }), 400
+
+    resolved_images = []
+    seen_paths = set()
+    try:
+        for requested_path in image_paths:
+            image_path, normalized_path = _resolve_result_image_path(requested_path)
+            if normalized_path in seen_paths:
+                continue
+            seen_paths.add(normalized_path)
+            resolved_images.append((image_path, normalized_path))
+    except (FileNotFoundError, ValueError) as exc:
+        return flask.jsonify({"error": str(exc)}), 400
+
+    try:
+        settings = auth.get_roboflow_settings(include_api_token=True)
+    except auth.RoboflowStorageError as exc:
+        return flask.jsonify({"error": str(exc)}), 503
+    except (OSError, ValueError):
+        return flask.jsonify({"error": "Stored Roboflow settings are invalid."}), 500
+    if not settings.get("api_token") or not settings.get("project_name"):
+        return flask.jsonify({"error": "Configure the Roboflow API token and project first."}), 400
+
+    upload_results = []
+    for image_path, normalized_path in resolved_images:
+        try:
+            upload_status = _upload_result_image_to_roboflow(image_path, settings)
+            upload_results.append({"path": normalized_path, "status": upload_status})
+        except OSError:
+            upload_results.append({
+                "path": normalized_path,
+                "status": "failed",
+                "error": "The selected image could not be read.",
+            })
+        except RuntimeError as exc:
+            upload_results.append({
+                "path": normalized_path,
+                "status": "failed",
+                "error": str(exc),
+            })
+
+    uploaded_count = sum(item["status"] == "uploaded" for item in upload_results)
+    duplicate_count = sum(item["status"] == "duplicate" for item in upload_results)
+    failed_count = sum(item["status"] == "failed" for item in upload_results)
+    response_data = {
+        "success": failed_count == 0,
+        "requested_count": len(resolved_images),
+        "uploaded_count": uploaded_count,
+        "duplicate_count": duplicate_count,
+        "failed_count": failed_count,
+        "results": upload_results,
+    }
+    if failed_count:
+        response_data["error"] = (
+            f"{failed_count} of {len(resolved_images)} images could not be uploaded."
+        )
+        return flask.jsonify(response_data), 502
+    return flask.jsonify(response_data)
 
 
 @app.route("/api/results/search")

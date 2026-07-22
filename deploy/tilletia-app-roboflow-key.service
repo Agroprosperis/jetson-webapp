@@ -1,0 +1,11 @@
+[Unit]
+Description=Prepare optional TPM-backed Roboflow master key
+Wants=run-tilletia-secrets.mount
+After=run-tilletia-secrets.mount
+Before=docker.service tilletia-app.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash __DEPLOY_DIR__/prepare-roboflow-key.sh
+UMask=0077
+TimeoutStartSec=30

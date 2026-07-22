@@ -497,6 +497,16 @@ class UserDirectModificationTests(unittest.TestCase):
             request("PUT", "/api/grid", token=self.token, payload={"score_threshold": 0.10})
         self.assertEqual(ctx.exception.code, 403)
 
+    def test_user_cannot_read_roboflow_settings(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            request("GET", "/api/roboflow/settings", token=self.token)
+        self.assertEqual(ctx.exception.code, 403)
+
+    def test_user_cannot_upload_results_to_roboflow(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            request("POST", "/api/roboflow/upload", token=self.token, payload={"image_paths": ["run/image.jpg"]})
+        self.assertEqual(ctx.exception.code, 403)
+
 
 class ZDashboardSettingsValueTests(unittest.TestCase):
     @classmethod
@@ -631,6 +641,9 @@ class UserResultsPageTests(unittest.TestCase):
     def test_results_page_does_not_have_owner_column(self):
         self.assertNotIn("<th>Owner</th>", self.body)
 
+    def test_results_page_does_not_have_roboflow_upload_button(self):
+        self.assertNotIn('id="uploadToRoboflowBtn"', self.body)
+
 
 class AdminResultsPageTests(unittest.TestCase):
     @classmethod
@@ -641,6 +654,26 @@ class AdminResultsPageTests(unittest.TestCase):
         status, _, body = request("GET", "/results", token=self.token)
         self.assertEqual(status, 200)
         self.assertIn("<th>Owner</th>", body)
+
+    def test_admin_results_page_has_roboflow_upload_button(self):
+        status, _, body = request("GET", "/results", token=self.token)
+        self.assertEqual(status, 200)
+        self.assertIn('id="uploadToRoboflowBtn"', body)
+
+    def test_admin_roboflow_upload_requires_selection(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            request("POST", "/api/roboflow/upload", token=self.token, payload={"image_paths": []})
+        self.assertEqual(ctx.exception.code, 400)
+
+    def test_admin_roboflow_upload_rejects_traversal(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            request("POST", "/api/roboflow/upload", token=self.token, payload={"image_paths": ["../secret.jpg"]})
+        self.assertEqual(ctx.exception.code, 400)
+
+    def test_admin_roboflow_upload_limits_batch_size(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            request("POST", "/api/roboflow/upload", token=self.token, payload={"image_paths": ["run/image.jpg"] * 101})
+        self.assertEqual(ctx.exception.code, 400)
 
 
 class AdminUsersPageTests(unittest.TestCase):
@@ -709,6 +742,11 @@ class UserSettingsPageTests(unittest.TestCase):
         self.assertIn('id="settingsConfirmPassword"', self.body)
         self.assertIn('id="changePasswordBtn"', self.body)
 
+    def test_user_settings_page_does_not_expose_roboflow_fields(self):
+        self.assertNotIn('id="roboflowStorageNotice"', self.body)
+        self.assertNotIn('id="allowInsecureFileStorage"', self.body)
+        self.assertNotIn('id="roboflowApiToken"', self.body)
+
 
 class AdminSettingsPageTests(unittest.TestCase):
     @classmethod
@@ -719,6 +757,55 @@ class AdminSettingsPageTests(unittest.TestCase):
         status, _, body = request("GET", "/settings", token=self.token)
         self.assertEqual(status, 200)
         self.assertRegex(body, r"id=\"settingsRole\"[^>]*value=\"admin\"[^>]*readonly")
+
+    def test_admin_settings_page_has_roboflow_fields(self):
+        status, _, body = request("GET", "/settings", token=self.token)
+        self.assertEqual(status, 200)
+        self.assertIn('id="roboflowProjectName"', body)
+        self.assertIn('id="roboflowStorageNotice"', body)
+        self.assertIn('id="allowInsecureFileStorage"', body)
+        self.assertIn('id="roboflowApiToken"', body)
+        self.assertLess(
+            body.index('id="roboflowStorageNotice"'),
+            body.index('id="roboflowApiToken"'),
+        )
+        self.assertLess(
+            body.index('id="allowInsecureFileStorage"'),
+            body.index('id="roboflowApiToken"'),
+        )
+
+    def test_admin_roboflow_settings_response_never_exposes_token(self):
+        status, _, body = request("GET", "/api/roboflow/settings", token=self.token)
+        self.assertEqual(status, 200)
+        data = json.loads(body)
+        self.assertNotIn("api_token", data)
+        self.assertIn("api_token_configured", data)
+        self.assertIn("api_token_usable", data)
+        self.assertIn("secure_storage_available", data)
+        self.assertIn(data["secure_storage_status"], ("available", "unavailable", "error"))
+        self.assertIn(
+            data["api_token_storage"],
+            (
+                "none",
+                "memory",
+                "encrypted",
+                "encrypted_unavailable",
+                "plaintext_file",
+                "plaintext_file_unconfirmed",
+                "plaintext_file_unavailable",
+            ),
+        )
+        self.assertIn("api_token_persistent", data)
+
+    def test_admin_roboflow_settings_reject_non_boolean_plaintext_confirmation(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            request(
+                "PUT",
+                "/api/roboflow/settings",
+                token=self.token,
+                payload={"allow_insecure_file_storage": "true"},
+            )
+        self.assertEqual(ctx.exception.code, 400)
 
 
 class AuthenticatedPasswordChangeTests(unittest.TestCase):

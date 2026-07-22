@@ -85,6 +85,9 @@ RUN mkdir -p /opt/web/vendor/glightbox /opt/web/vendor/sweetalert2 && \
 
 WORKDIR /app
 
+# Keep this small dependency after all expensive native build layers.
+RUN python3 -m pip install --no-cache-dir cryptography
+
 COPY src/ /app/
 
 CMD ["python", "/app/app.py"]

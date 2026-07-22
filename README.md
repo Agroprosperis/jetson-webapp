@@ -52,6 +52,18 @@ The application uses local authentication with bearer access tokens.
 - New users are created by an admin and must change the initial password on first login.
 - Owner columns are shown only for admin views where ownership is relevant.
 
+## Upload result images to Roboflow
+
+An administrator can configure a private Roboflow API token and project ID on the Settings page. Before the token field is shown, the server reports whether secure persistent storage is usable. The token is never returned by the web API or rendered into a page. The project ID is non-secret and persists separately; it is the last part of the Roboflow project URL and is also the dataset name used by the upload API.
+
+For the systemd deployment, startup checks for TPM 2.0 support and provisions a persistent TPM-encrypted 32-byte master-key credential at `/var/lib/tilletia-app/credentials/roboflow-master-key.cred`. On every service start, the same key is decrypted into the volatile `/run/tilletia/secrets` ramfs and mounted read-only into the container. The application uses that key with AES-256-GCM and stores only the nonce and authenticated ciphertext in SQLite. App reinstall and ordinary service or machine restarts preserve decryptability because the TPM-encrypted credential is retained. The credential remains TPM-bound but deliberately has no PCR binding, avoiding lockout during routine OS or firmware updates at the cost of weaker protection against alternate boot environments on the same machine.
+
+If the TPM, systemd credential support, ramfs mount, provisioning, or decryption is unavailable, the admin sees a warning before entering the token. By default, the token is held only in the single application process and is lost on service restart. The admin may instead explicitly check the warning checkbox to persist it unencrypted in owner-only `/app/runs/roboflow.json` mode `0600`. This fallback is not encryption at rest.
+
+An existing encrypted token is never silently downgraded if the TPM key later becomes unavailable. Restore the secure-storage key or enter a replacement token and choose memory or the confirmed plaintext fallback. Clearing or replacing the TPM can make its encrypted credential unrecoverable. Legacy plaintext settings are automatically migrated to encrypted storage when secure storage is available; without it, an unconfirmed legacy token is moved into memory and the plaintext file is removed.
+
+On the Results page, administrators can select multiple image thumbnails. The **Upload to Roboflow** button appears when at least one image is selected and uploads the selection to the configured project's `train` split. Regular users do not see these controls and cannot call the Roboflow configuration or upload APIs.
+
 
 Optional: Run stack without installing service:
 ```
@@ -59,7 +71,7 @@ cd ${REPO_DIR}/deploy
 ./start.sh
 ```
 This mode builds the `tilletia-app:latest` image from the current tree, mounts models from `${REPO_DIR}/data/model`, and uses `${REPO_DIR}/data/output_hq` and `${REPO_DIR}/data/runs` for outputs.
-Missing runtime folders under `data/` are created automatically by deploy scripts.
+Missing runtime folders under `data/` are created automatically by deploy scripts. Standalone mode intentionally uses an empty, nonpersistent runtime secrets directory, so the Settings page offers memory-only storage or the explicitly confirmed plaintext fallback.
 
 # YOLO model deployment
 YOLO model weights must be downloaded from the Roboflow site. Upload the downloaded `.pt` weights in the app from `Model Catalog`, then compile the uploaded model as TensorRT from the UI according to [Compile model as TensorRT from UI](#compile-model-as-tensorrt-from-ui). After compilation, select the generated engine on the dashboard and run analysis.

@@ -17,16 +17,26 @@ APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 SYSTEMD_DIR="/etc/systemd/system"
 APP_SERVICE_TEMPLATE="$SCRIPT_DIR/tilletia-app.service"
+ROBOFLOW_KEY_SERVICE_TEMPLATE="$SCRIPT_DIR/tilletia-app-roboflow-key.service"
+RUNTIME_SECRETS_MOUNT_TEMPLATE="$SCRIPT_DIR/run-tilletia-secrets.mount"
+DOCKER_DROP_IN_TEMPLATE="$SCRIPT_DIR/docker-tilletia-secrets.conf"
+ROBOFLOW_KEY_SCRIPT="$SCRIPT_DIR/prepare-roboflow-key.sh"
 TIMEZONE_SYNC_SERVICE_TEMPLATE="$SCRIPT_DIR/tilletia-app-timezone-sync.service"
 TIMEZONE_SYNC_PATH_TEMPLATE="$SCRIPT_DIR/tilletia-app-timezone-sync.path"
 TIMEZONE_SYNC_SCRIPT="$SCRIPT_DIR/tilletia-app-timezone-sync.sh"
 APP_SERVICE_PATH="$SYSTEMD_DIR/tilletia-app.service"
+ROBOFLOW_KEY_SERVICE_PATH="$SYSTEMD_DIR/tilletia-app-roboflow-key.service"
+RUNTIME_SECRETS_MOUNT_PATH="$SYSTEMD_DIR/run-tilletia-secrets.mount"
+DOCKER_DROP_IN_DIR="$SYSTEMD_DIR/docker.service.d"
+DOCKER_DROP_IN_PATH="$DOCKER_DROP_IN_DIR/tilletia-secrets.conf"
 TIMEZONE_SYNC_SERVICE_PATH="$SYSTEMD_DIR/tilletia-app-timezone-sync.service"
 TIMEZONE_SYNC_PATH_UNIT="$SYSTEMD_DIR/tilletia-app-timezone-sync.path"
 ENV_DIR="/etc/tilletia-app"
 MEDIAMTX_TEMPLATE="$APP_DIR/config/mediamtx.yml"
 MEDIAMTX_CONFIG="$ENV_DIR/mediamtx.yml"
 APP_IMAGE="tilletia-app:latest"
+SYSTEM_SECRET_ROOT="/run/tilletia/secrets"
+ROBOFLOW_CREDENTIAL_DIR="/var/lib/tilletia-app/credentials"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "docker is not installed or not in PATH"
@@ -52,6 +62,7 @@ EOF
     export TILLETIA_DATA_ROOT="${TILLETIA_DATA_ROOT:-$APP_DIR/data}"
     export TILLETIA_CONFIG_ROOT="${TILLETIA_CONFIG_ROOT:-$APP_DIR/data/config}"
   fi
+  export TILLETIA_SECRET_ROOT="$SYSTEM_SECRET_ROOT"
   docker compose -f "$COMPOSE_FILE" down --remove-orphans || true
 
   systemctl disable --now tilletia-app-timezone-sync.path >/dev/null 2>&1 || true
@@ -62,17 +73,46 @@ EOF
   fi
   systemctl stop tilletia-app-timezone-sync.service >/dev/null 2>&1 || true
 
+  systemctl stop tilletia-app-roboflow-key.service >/dev/null 2>&1 || true
+  if [[ ! -L "$SYSTEM_SECRET_ROOT" ]]; then
+    rm -f -- "$SYSTEM_SECRET_ROOT/roboflow-master-key"
+  fi
+  systemctl stop run-tilletia-secrets.mount >/dev/null 2>&1 || true
+
   rm -f "$APP_SERVICE_PATH"
+  rm -f "$ROBOFLOW_KEY_SERVICE_PATH"
+  rm -f "$RUNTIME_SECRETS_MOUNT_PATH"
+  rm -f "$DOCKER_DROP_IN_PATH"
   rm -f "$TIMEZONE_SYNC_SERVICE_PATH"
   rm -f "$TIMEZONE_SYNC_PATH_UNIT"
   systemctl daemon-reload
   systemctl reset-failed
-  echo "tilletia-app.service removed. Data/config were kept intact."
+  echo "tilletia-app.service removed. Data/config and the TPM-encrypted Roboflow credential were kept intact."
   exit 0
 fi
 
 if [[ ! -f "$APP_SERVICE_TEMPLATE" ]]; then
   echo "Missing service template: $APP_SERVICE_TEMPLATE"
+  exit 1
+fi
+
+if [[ ! -f "$ROBOFLOW_KEY_SERVICE_TEMPLATE" ]]; then
+  echo "Missing Roboflow key service template: $ROBOFLOW_KEY_SERVICE_TEMPLATE"
+  exit 1
+fi
+
+if [[ ! -f "$RUNTIME_SECRETS_MOUNT_TEMPLATE" ]]; then
+  echo "Missing runtime secrets mount template: $RUNTIME_SECRETS_MOUNT_TEMPLATE"
+  exit 1
+fi
+
+if [[ ! -f "$DOCKER_DROP_IN_TEMPLATE" ]]; then
+  echo "Missing Docker secrets drop-in template: $DOCKER_DROP_IN_TEMPLATE"
+  exit 1
+fi
+
+if [[ ! -f "$ROBOFLOW_KEY_SCRIPT" ]]; then
+  echo "Missing Roboflow key preparation script: $ROBOFLOW_KEY_SCRIPT"
   exit 1
 fi
 
@@ -117,6 +157,12 @@ mkdir -p \
   /var/lib/tilletia-app/output_hq \
   /var/lib/tilletia-app/runs
 
+if [[ -L "$ROBOFLOW_CREDENTIAL_DIR" || -L "$SYSTEM_SECRET_ROOT" ]]; then
+  echo "Refusing symlinked Roboflow credential or runtime secrets directory."
+  exit 1
+fi
+install -d -m 0700 "$ROBOFLOW_CREDENTIAL_DIR" "$SYSTEM_SECRET_ROOT"
+
 # Seed persisted runtime data from repository layout if present.
 if [[ -d "$APP_DIR/data/model" ]]; then
   cp -an "$APP_DIR/data/model/." /var/lib/tilletia-app/model/
@@ -131,10 +177,15 @@ fi
 echo "Building app image $APP_IMAGE..."
 docker compose -f "$COMPOSE_FILE" build tilletia-app
 
+install -d -m 0755 "$DOCKER_DROP_IN_DIR"
+
 sed "s|__DEPLOY_DIR__|$SCRIPT_DIR|g" "$APP_SERVICE_TEMPLATE" > "$APP_SERVICE_PATH"
+sed "s|__DEPLOY_DIR__|$SCRIPT_DIR|g" "$ROBOFLOW_KEY_SERVICE_TEMPLATE" > "$ROBOFLOW_KEY_SERVICE_PATH"
 sed "s|__DEPLOY_DIR__|$SCRIPT_DIR|g" "$TIMEZONE_SYNC_SERVICE_TEMPLATE" > "$TIMEZONE_SYNC_SERVICE_PATH"
 cp "$TIMEZONE_SYNC_PATH_TEMPLATE" "$TIMEZONE_SYNC_PATH_UNIT"
-chmod 0644 "$APP_SERVICE_PATH"
+cp "$RUNTIME_SECRETS_MOUNT_TEMPLATE" "$RUNTIME_SECRETS_MOUNT_PATH"
+cp "$DOCKER_DROP_IN_TEMPLATE" "$DOCKER_DROP_IN_PATH"
+chmod 0644 "$APP_SERVICE_PATH" "$ROBOFLOW_KEY_SERVICE_PATH" "$RUNTIME_SECRETS_MOUNT_PATH" "$DOCKER_DROP_IN_PATH"
 chmod 0644 "$TIMEZONE_SYNC_SERVICE_PATH" "$TIMEZONE_SYNC_PATH_UNIT"
 
 systemctl daemon-reload

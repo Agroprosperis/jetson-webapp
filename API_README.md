@@ -733,6 +733,76 @@ curl -X POST "http://localhost:8000/api/results/{pid}/process-source" \
 
 ---
 
+## Get the server-side Roboflow upload configuration without exposing the API token.
+**GET** `/api/roboflow/settings`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X GET "http://localhost:8000/api/roboflow/settings" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+```
+
+### Response
+**200 OK**: Safe Roboflow configuration status.
+```json
+{
+  "api_token_configured": true,
+  "api_token_persistent": true,
+  "api_token_storage": "none",
+  "api_token_usable": true,
+  "project_name": "string",
+  "secure_storage_available": true,
+  "secure_storage_status": "available"
+}
+```
+
+---
+
+## Save the server-side Roboflow upload configuration.
+**PUT** `/api/roboflow/settings`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X PUT "http://localhost:8000/api/roboflow/settings" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"allow_insecure_file_storage": true, "api_token": "string", "project_name": "string"}'
+```
+
+### Response
+**200 OK**: Safe Roboflow configuration status.
+---
+
+## Upload selected result images to the configured Roboflow project.
+**POST** `/api/roboflow/upload`
+
+
+
+**Auth:** Bearer access token required. Add `-H "Authorization: Bearer <access_token>"`.
+
+### Request Sample
+```shell
+curl -X POST "http://localhost:8000/api/roboflow/upload" \
+  -H "accept: application/json" \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"image_paths": ["string"]}'
+```
+
+### Response
+**200 OK**: Every selected image was uploaded or already existed.
+---
+
 ## Capture a manual snapshot from the active pipeline.
 **POST** `/api/snapshot`
 

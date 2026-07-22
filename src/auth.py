@@ -2,17 +2,28 @@ import flask
 import hashlib
 import hmac
 import json
+import logging
 import os
+import re
 import sqlite3
+import stat
+import tempfile
 import threading
 import cookies
 import tokens
+
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from datetime import datetime, timedelta
 from functools import wraps
 
 
 DB_PATH = "/app/runs/tilletia.sqlite3"
+ROBOFLOW_SETTINGS_PATH = "/app/runs/roboflow.json"
+ROBOFLOW_MASTER_KEY_PATH = "/run/secrets/roboflow-master-key"
+ROBOFLOW_KEY_VERSION = 1
+ROBOFLOW_TOKEN_NONCE_BYTES = 12
 PASSWORD_HASH_ITERATIONS = 200_000
 VALID_ROLES = ("admin", "user")
 
@@ -26,6 +37,7 @@ ROLE_PERMISSIONS = {
         "models:view",
         "pipeline:start",
         "pipeline:stop",
+        "roboflow:manage",
         "results:delete",
         "results:download",
         "results:inspect",
@@ -68,6 +80,13 @@ DEFAULT_DASHBOARD_SETTINGS = {
 }
 
 _init_lock = threading.Lock()
+_roboflow_settings_lock = threading.Lock()
+_roboflow_memory_api_token = ""
+LOGGER = logging.getLogger(__name__)
+
+
+class RoboflowStorageError(RuntimeError):
+    pass
 
 
 def _connect():
@@ -169,6 +188,7 @@ def build_page_context(user, **extra_context):
         "can_delete_results": user_has_permission(user, "results:delete"),
         "can_view_models": user_has_permission(user, "models:view"),
         "can_manage_users": user_has_permission(user, "users:manage"),
+        "can_manage_roboflow": user_has_permission(user, "roboflow:manage"),
         "can_view_result_owners": is_admin(user),
         "can_view_model_owners": is_admin(user),
     }
@@ -269,6 +289,478 @@ def get_permissions_for_roles(roles):
     for role in roles:
         permissions.update(ROLE_PERMISSIONS.get(role, set()))
     return permissions
+
+
+def _validate_roboflow_project_name(value):
+    if not isinstance(value, str):
+        raise ValueError("Roboflow project name must be a string.")
+    project_name = value.strip()
+    if not project_name:
+        raise ValueError("Roboflow project name is required.")
+    if len(project_name) > 255 or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", project_name) is None:
+        raise ValueError("Use a valid Roboflow project ID, without the workspace or URL.")
+    return project_name
+
+
+def _load_roboflow_master_key():
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        file_descriptor = os.open(ROBOFLOW_MASTER_KEY_PATH, flags)
+    except OSError:
+        raise RoboflowStorageError("Secure Roboflow token storage is unavailable.") from None
+
+    try:
+        key_stat = os.fstat(file_descriptor)
+        if (
+            not stat.S_ISREG(key_stat.st_mode)
+            or stat.S_IMODE(key_stat.st_mode) & 0o077
+        ):
+            raise RoboflowStorageError("Secure Roboflow token storage is unavailable.")
+        with os.fdopen(file_descriptor, "rb") as key_input:
+            file_descriptor = None
+            master_key = key_input.read(33)
+    finally:
+        if file_descriptor is not None:
+            os.close(file_descriptor)
+
+    if len(master_key) != 32:
+        raise RoboflowStorageError("Secure Roboflow token storage is unavailable.")
+    return master_key
+
+
+def _probe_roboflow_secure_storage():
+    if not os.path.exists(ROBOFLOW_MASTER_KEY_PATH):
+        return "unavailable", None
+    try:
+        master_key = _load_roboflow_master_key()
+        nonce = os.urandom(ROBOFLOW_TOKEN_NONCE_BYTES)
+        probe_aad = b"tilletia-app:roboflow-storage-probe:v1"
+        encrypted_probe = AESGCM(master_key).encrypt(nonce, b"probe", probe_aad)
+        if AESGCM(master_key).decrypt(nonce, encrypted_probe, probe_aad) != b"probe":
+            raise RoboflowStorageError("Secure Roboflow token storage is unavailable.")
+        return "available", master_key
+    except (InvalidTag, OSError, ValueError, RoboflowStorageError):
+        return "error", None
+
+
+def _roboflow_token_aad(project_name):
+    return b"tilletia-app:roboflow-settings:v1|" + project_name.encode("utf-8")
+
+
+def _encrypt_roboflow_token(api_token, project_name, master_key):
+    nonce = os.urandom(ROBOFLOW_TOKEN_NONCE_BYTES)
+    ciphertext = AESGCM(master_key).encrypt(
+        nonce,
+        api_token.encode("utf-8"),
+        _roboflow_token_aad(project_name),
+    )
+    return nonce, ciphertext
+
+
+def _decrypt_roboflow_token(row, master_key):
+    nonce = row["api_token_nonce"]
+    ciphertext = row["api_token_ciphertext"]
+    if nonce is None and ciphertext is None:
+        return ""
+    if nonce is None or ciphertext is None:
+        raise RoboflowStorageError("The encrypted Roboflow token is invalid.")
+
+    nonce = bytes(nonce)
+    ciphertext = bytes(ciphertext)
+    if (
+        row["key_version"] != ROBOFLOW_KEY_VERSION
+        or len(nonce) != ROBOFLOW_TOKEN_NONCE_BYTES
+        or len(ciphertext) < 16
+    ):
+        raise RoboflowStorageError("The encrypted Roboflow token is invalid.")
+
+    try:
+        plaintext = AESGCM(master_key).decrypt(
+            nonce,
+            ciphertext,
+            _roboflow_token_aad(row["project_name"]),
+        )
+        return plaintext.decode("utf-8")
+    except (InvalidTag, UnicodeDecodeError, ValueError):
+        raise RoboflowStorageError("The encrypted Roboflow token could not be decrypted.") from None
+
+
+def _read_plaintext_roboflow_settings():
+    try:
+        settings_stat = os.lstat(ROBOFLOW_SETTINGS_PATH)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise RoboflowStorageError("The plaintext Roboflow token file could not be read.") from None
+
+    if not stat.S_ISREG(settings_stat.st_mode):
+        raise RoboflowStorageError("The plaintext Roboflow token path is invalid.")
+
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    file_descriptor = None
+    try:
+        file_descriptor = os.open(ROBOFLOW_SETTINGS_PATH, flags)
+        opened_stat = os.fstat(file_descriptor)
+        if not stat.S_ISREG(opened_stat.st_mode):
+            raise OSError("Not a regular file")
+        os.fchmod(file_descriptor, 0o600)
+        with os.fdopen(file_descriptor, "r", encoding="utf-8") as settings_input:
+            file_descriptor = None
+            serialized_settings = settings_input.read(65_537)
+    except (OSError, UnicodeDecodeError):
+        raise RoboflowStorageError("The plaintext Roboflow token file could not be read.") from None
+    finally:
+        if file_descriptor is not None:
+            os.close(file_descriptor)
+
+    if len(serialized_settings) > 65_536:
+        raise RoboflowStorageError("The plaintext Roboflow token file is invalid.")
+    try:
+        settings = json.loads(serialized_settings)
+    except ValueError:
+        raise RoboflowStorageError("The plaintext Roboflow token file is invalid.") from None
+    if not isinstance(settings, dict):
+        raise RoboflowStorageError("The plaintext Roboflow token file is invalid.")
+
+    project_name = settings.get("project_name", "")
+    api_token = settings.get("api_token", "")
+    if not isinstance(project_name, str) or not isinstance(api_token, str):
+        raise RoboflowStorageError("The plaintext Roboflow token file is invalid.")
+    return {
+        "project_name": project_name.strip(),
+        "api_token": api_token.strip(),
+        "plaintext_storage_confirmed": settings.get("plaintext_storage_confirmed") is True,
+    }
+
+
+def _write_plaintext_roboflow_settings(project_name, api_token):
+    settings_dir = os.path.dirname(ROBOFLOW_SETTINGS_PATH)
+    os.makedirs(settings_dir, exist_ok=True)
+    file_descriptor, temporary_path = tempfile.mkstemp(prefix=".roboflow-", dir=settings_dir)
+    try:
+        os.fchmod(file_descriptor, 0o600)
+        with os.fdopen(file_descriptor, "w", encoding="utf-8") as settings_output:
+            file_descriptor = None
+            json.dump(
+                {
+                    "schema_version": 1,
+                    "project_name": project_name,
+                    "api_token": api_token,
+                    "plaintext_storage_confirmed": True,
+                },
+                settings_output,
+            )
+            settings_output.flush()
+            os.fsync(settings_output.fileno())
+        os.replace(temporary_path, ROBOFLOW_SETTINGS_PATH)
+    finally:
+        if file_descriptor is not None:
+            os.close(file_descriptor)
+        if os.path.exists(temporary_path):
+            os.unlink(temporary_path)
+
+
+def _delete_plaintext_roboflow_settings():
+    try:
+        settings_stat = os.lstat(ROBOFLOW_SETTINGS_PATH)
+    except FileNotFoundError:
+        return
+    if not stat.S_ISREG(settings_stat.st_mode):
+        raise RoboflowStorageError("The plaintext Roboflow token path is invalid.")
+    try:
+        os.unlink(ROBOFLOW_SETTINGS_PATH)
+    except OSError:
+        raise RoboflowStorageError("The plaintext Roboflow token file could not be removed.") from None
+
+
+def _get_roboflow_settings_row(connection):
+    return connection.execute(
+        """
+        SELECT project_name, api_token_nonce, api_token_ciphertext, key_version
+        FROM roboflow_settings
+        WHERE id = 1
+        """
+    ).fetchone()
+
+
+def _upsert_roboflow_settings_row(connection, project_name, nonce, ciphertext):
+    connection.execute(
+        """
+        INSERT INTO roboflow_settings (
+            id, project_name, api_token_nonce, api_token_ciphertext, key_version, updated_at
+        ) VALUES (1, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            project_name = excluded.project_name,
+            api_token_nonce = excluded.api_token_nonce,
+            api_token_ciphertext = excluded.api_token_ciphertext,
+            key_version = excluded.key_version,
+            updated_at = excluded.updated_at
+        """,
+        (
+            project_name,
+            nonce,
+            ciphertext,
+            ROBOFLOW_KEY_VERSION,
+            _utcnow_text(),
+        ),
+    )
+
+
+def _inspect_roboflow_settings(connection):
+    row = _get_roboflow_settings_row(connection)
+    project_name = row["project_name"] if row is not None else ""
+    secure_storage_status, master_key = _probe_roboflow_secure_storage()
+    api_token = ""
+    storage_mode = "none"
+    usable = False
+
+    encrypted_token_exists = (
+        row is not None
+        and (row["api_token_nonce"] is not None or row["api_token_ciphertext"] is not None)
+    )
+    if encrypted_token_exists:
+        storage_mode = "encrypted_unavailable"
+        if secure_storage_status == "available":
+            try:
+                api_token = _decrypt_roboflow_token(row, master_key)
+                storage_mode = "encrypted"
+                usable = bool(api_token)
+            except RoboflowStorageError:
+                pass
+    else:
+        try:
+            plaintext_settings = _read_plaintext_roboflow_settings()
+        except RoboflowStorageError:
+            plaintext_settings = None
+            storage_mode = "plaintext_file_unavailable"
+
+        if plaintext_settings is not None:
+            project_name = project_name or plaintext_settings["project_name"]
+            api_token = plaintext_settings["api_token"]
+            storage_mode = (
+                "plaintext_file"
+                if plaintext_settings["plaintext_storage_confirmed"]
+                else "plaintext_file_unconfirmed"
+            )
+            usable = bool(api_token) and plaintext_settings["plaintext_storage_confirmed"]
+        elif _roboflow_memory_api_token:
+            api_token = _roboflow_memory_api_token
+            storage_mode = "memory"
+            usable = True
+
+    configured = encrypted_token_exists or bool(api_token) or storage_mode == "plaintext_file_unavailable"
+    return {
+        "project_name": project_name,
+        "api_token": api_token,
+        "api_token_configured": configured,
+        "api_token_usable": usable,
+        "secure_storage_status": secure_storage_status,
+        "secure_storage_available": secure_storage_status == "available",
+        "api_token_storage": storage_mode,
+        "api_token_persistent": storage_mode in ("encrypted", "plaintext_file"),
+    }
+
+
+def get_roboflow_settings(*, include_api_token=False):
+    with _roboflow_settings_lock:
+        connection = _connect()
+        try:
+            settings = _inspect_roboflow_settings(connection)
+        finally:
+            connection.close()
+
+    result = {
+        key: value
+        for key, value in settings.items()
+        if key != "api_token"
+    }
+    if include_api_token:
+        if settings["api_token_storage"] == "encrypted_unavailable":
+            raise RoboflowStorageError(
+                "The encrypted Roboflow token is unavailable; enter a replacement token."
+            )
+        if settings["api_token_storage"] == "plaintext_file_unconfirmed":
+            raise RoboflowStorageError(
+                "Confirm plaintext token storage or move the token to memory."
+            )
+        if settings["api_token_storage"] == "plaintext_file_unavailable":
+            raise RoboflowStorageError(
+                "The plaintext Roboflow token cannot be read; enter a replacement token."
+            )
+        result["api_token"] = settings["api_token"]
+    return result
+
+
+def update_roboflow_settings(payload):
+    global _roboflow_memory_api_token
+
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid Roboflow settings payload.")
+
+    confirmation_supplied = "allow_insecure_file_storage" in payload
+    allow_insecure_file_storage = payload.get("allow_insecure_file_storage", False)
+    if confirmation_supplied and not isinstance(allow_insecure_file_storage, bool):
+        raise ValueError("Plaintext storage confirmation must be a boolean.")
+
+    with _roboflow_settings_lock:
+        connection = _connect()
+        try:
+            current = _inspect_roboflow_settings(connection)
+            project_name = current["project_name"]
+            if "project_name" in payload:
+                project_name = _validate_roboflow_project_name(payload.get("project_name"))
+            else:
+                project_name = _validate_roboflow_project_name(project_name)
+
+            replacement_token = ""
+            if "api_token" in payload:
+                raw_api_token = payload.get("api_token")
+                if not isinstance(raw_api_token, str):
+                    raise ValueError("Roboflow API token must be a string.")
+                replacement_token = raw_api_token.strip()
+
+            api_token = replacement_token or current["api_token"]
+            if not api_token:
+                if current["api_token_storage"] == "encrypted_unavailable":
+                    raise RoboflowStorageError(
+                        "Secure storage is unavailable; enter a replacement Roboflow token."
+                    )
+                if current["api_token_storage"] == "plaintext_file_unavailable":
+                    raise RoboflowStorageError(
+                        "The plaintext Roboflow token cannot be read; enter a replacement token."
+                    )
+                raise ValueError("Roboflow API token is required.")
+
+            secure_storage_status, master_key = _probe_roboflow_secure_storage()
+            if secure_storage_status == "available":
+                nonce, ciphertext = _encrypt_roboflow_token(
+                    api_token,
+                    project_name,
+                    master_key,
+                )
+                _upsert_roboflow_settings_row(
+                    connection,
+                    project_name,
+                    nonce,
+                    ciphertext,
+                )
+                connection.commit()
+                _roboflow_memory_api_token = ""
+                _delete_plaintext_roboflow_settings()
+            else:
+                store_in_plaintext_file = (
+                    allow_insecure_file_storage
+                    if confirmation_supplied
+                    else current["api_token_storage"] == "plaintext_file"
+                )
+                if store_in_plaintext_file:
+                    _write_plaintext_roboflow_settings(project_name, api_token)
+                    _upsert_roboflow_settings_row(connection, project_name, None, None)
+                    connection.commit()
+                    _roboflow_memory_api_token = ""
+                else:
+                    _upsert_roboflow_settings_row(connection, project_name, None, None)
+                    connection.commit()
+                    _roboflow_memory_api_token = api_token
+                    _delete_plaintext_roboflow_settings()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    return get_roboflow_settings()
+
+
+def _initialize_roboflow_token_storage():
+    global _roboflow_memory_api_token
+
+    with _roboflow_settings_lock:
+        connection = _connect()
+        try:
+            row = _get_roboflow_settings_row(connection)
+            encrypted_token_exists = (
+                row is not None
+                and (
+                    row["api_token_nonce"] is not None
+                    or row["api_token_ciphertext"] is not None
+                )
+            )
+            secure_storage_status, master_key = _probe_roboflow_secure_storage()
+
+            if encrypted_token_exists:
+                if secure_storage_status == "available":
+                    try:
+                        _decrypt_roboflow_token(row, master_key)
+                    except RoboflowStorageError:
+                        return
+                    try:
+                        _delete_plaintext_roboflow_settings()
+                    except RoboflowStorageError:
+                        LOGGER.warning(
+                            "Could not remove an obsolete Roboflow plaintext settings path."
+                        )
+                return
+
+            try:
+                plaintext_settings = _read_plaintext_roboflow_settings()
+                if plaintext_settings is None:
+                    return
+                project_name = _validate_roboflow_project_name(
+                    plaintext_settings["project_name"]
+                    or (row["project_name"] if row is not None else "")
+                )
+            except (RoboflowStorageError, ValueError):
+                return
+            api_token = plaintext_settings["api_token"]
+            if not api_token:
+                _upsert_roboflow_settings_row(connection, project_name, None, None)
+                connection.commit()
+                _delete_plaintext_roboflow_settings()
+                return
+
+            if secure_storage_status == "available":
+                nonce, ciphertext = _encrypt_roboflow_token(
+                    api_token,
+                    project_name,
+                    master_key,
+                )
+                _upsert_roboflow_settings_row(
+                    connection,
+                    project_name,
+                    nonce,
+                    ciphertext,
+                )
+                connection.commit()
+                migrated_row = _get_roboflow_settings_row(connection)
+                if _decrypt_roboflow_token(migrated_row, master_key) != api_token:
+                    raise RoboflowStorageError("Roboflow token migration verification failed.")
+                _roboflow_memory_api_token = ""
+                _delete_plaintext_roboflow_settings()
+            elif plaintext_settings["plaintext_storage_confirmed"]:
+                _upsert_roboflow_settings_row(connection, project_name, None, None)
+                connection.commit()
+                _roboflow_memory_api_token = ""
+            else:
+                _upsert_roboflow_settings_row(connection, project_name, None, None)
+                connection.commit()
+                _roboflow_memory_api_token = api_token
+                _delete_plaintext_roboflow_settings()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
 
 def get_model_owner_username(model_type, model_name):
@@ -427,6 +919,18 @@ def init_auth_storage():
                     ask_manual_spore_count INTEGER NOT NULL DEFAULT 1,
                     updated_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS roboflow_settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    project_name TEXT NOT NULL DEFAULT '',
+                    api_token_nonce BLOB,
+                    api_token_ciphertext BLOB,
+                    key_version INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL,
+                    CHECK (
+                        (api_token_nonce IS NULL) = (api_token_ciphertext IS NULL)
+                    )
+                );
                 """
             )
 
@@ -510,6 +1014,8 @@ def init_auth_storage():
             connection.commit()
         finally:
             connection.close()
+
+        _initialize_roboflow_token_storage()
 
 
 def is_admin(user):

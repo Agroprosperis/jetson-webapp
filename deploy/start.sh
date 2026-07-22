@@ -8,6 +8,14 @@ MEDIAMTX_CONFIG="/etc/tilletia-app/mediamtx.yml"
 LOCAL_MEDIAMTX_CONFIG="$APP_DIR/config/mediamtx.yml"
 LOCAL_DATA_ROOT="$APP_DIR/data"
 LOCAL_CONFIG_ROOT="$LOCAL_DATA_ROOT/config"
+SYSTEM_SECRET_ROOT="/run/tilletia/secrets"
+if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+  LOCAL_RUNTIME_ROOT="$XDG_RUNTIME_DIR/tilletia-app"
+else
+  LOCAL_RUNTIME_ROOT="/tmp/tilletia-app-runtime-${UID}"
+fi
+LOCAL_SECRET_ROOT="$LOCAL_RUNTIME_ROOT/secrets"
+STANDALONE_MODE=0
 TIMEZONE_SYNC_SCRIPT="$SCRIPT_DIR/tilletia-app-timezone-sync.sh"
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -19,11 +27,32 @@ if [[ -f "$MEDIAMTX_CONFIG" ]]; then
   export MEDIAMTX_CONFIG_PATH="$MEDIAMTX_CONFIG"
   export TILLETIA_DATA_ROOT="/var/lib/tilletia-app"
   export TILLETIA_CONFIG_ROOT="/etc/tilletia-app"
+  export TILLETIA_SECRET_ROOT="$SYSTEM_SECRET_ROOT"
 else
   echo "No system config found at $MEDIAMTX_CONFIG. Starting in standalone mode."
+  STANDALONE_MODE=1
   export MEDIAMTX_CONFIG_PATH="$LOCAL_MEDIAMTX_CONFIG"
   export TILLETIA_DATA_ROOT="$LOCAL_DATA_ROOT"
   export TILLETIA_CONFIG_ROOT="$LOCAL_CONFIG_ROOT"
+  export TILLETIA_SECRET_ROOT="$LOCAL_SECRET_ROOT"
+fi
+
+if [[ -L "$TILLETIA_SECRET_ROOT" ]]; then
+  echo "Refusing symlinked runtime secrets directory: $TILLETIA_SECRET_ROOT"
+  exit 1
+fi
+install -d -m 0700 "$TILLETIA_SECRET_ROOT"
+
+runtime_secret_fs=""
+if command -v findmnt >/dev/null 2>&1; then
+  runtime_secret_fs="$(findmnt -n -o FSTYPE --target "$TILLETIA_SECRET_ROOT" 2>/dev/null || true)"
+fi
+if [[ "$STANDALONE_MODE" -eq 1 || "$runtime_secret_fs" != "ramfs" ]]; then
+  if [[ "$STANDALONE_MODE" -eq 0 ]]; then
+    echo "Roboflow secure storage unavailable: $TILLETIA_SECRET_ROOT is not mounted as ramfs."
+  fi
+  # Never accept a master key from standalone or non-volatile storage.
+  rm -f -- "$TILLETIA_SECRET_ROOT/roboflow-master-key"
 fi
 
 if [[ ! -f "$MEDIAMTX_CONFIG_PATH" ]]; then

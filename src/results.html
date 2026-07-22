@@ -52,6 +52,16 @@ a:hover { text-decoration: underline; }
 .gallery-row.is-visible { display: table-row; }
 .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; padding: 8px 0; }
 .gallery img { width: 100%; height: 90px; object-fit: cover; border-radius: 4px; border: 1px solid #333; }
+.gallery-item { position: relative; min-width: 0; }
+.gallery-link { display: block; }
+.gallery-item.is-selected img { border-color: #22c55e; box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.4); }
+.image-select-control {
+    position: absolute; z-index: 3; top: 6px; left: 6px;
+    width: 24px; height: 24px; display: grid; place-items: center;
+    background: rgba(17, 17, 17, 0.85); border: 1px solid #555; border-radius: 5px;
+    cursor: pointer;
+}
+.image-select-control input { width: 16px; height: 16px; margin: 0; accent-color: #22c55e; cursor: pointer; }
 .gallery-empty { color: #777; font-style: italic; padding: 8px 0; }
 .folder-toggle { cursor: pointer; }
 .folder-caret { color: #888; margin-right: 8px; }
@@ -95,6 +105,9 @@ a:hover { text-decoration: underline; }
     <button id="applyFilters" type="button">Застосувати</button>
     <button id="clearFilters" type="button">Очистити</button>
     <button id="toggleAllBtn" type="button" style="display:none;">Розгорнути все</button>
+    {% if can_manage_roboflow %}
+    <button id="uploadToRoboflowBtn" type="button" hidden>Upload to Roboflow</button>
+    {% endif %}
     <span id="resultsCount" class="results-count"></span>
 </div>
 
@@ -123,7 +136,9 @@ a:hover { text-decoration: underline; }
 <script>
 const CAN_DELETE_RESULTS = {{ 'true' if can_delete_results else 'false' }};
 const CAN_CONFIGURE_DASHBOARD = {{ 'true' if can_configure_dashboard else 'false' }};
+const CAN_MANAGE_ROBOFLOW = {{ 'true' if can_manage_roboflow else 'false' }};
 const SHOW_OWNER_COLUMN = {{ 'true' if can_view_result_owners else 'false' }};
+const selectedImagePaths = new Set();
 
 function formatIntegerMetric(value) {
     return value === null || value === undefined || value === '' ? '-' : value;
@@ -169,6 +184,14 @@ function updateResultsCount(count) {
     toggleBtn.textContent = 'Розгорнути все';
 }
 
+function updateRoboflowUploadButton() {
+    const uploadButton = document.getElementById('uploadToRoboflowBtn');
+    if (!uploadButton) return;
+    const selectedCount = selectedImagePaths.size;
+    uploadButton.hidden = selectedCount === 0;
+    uploadButton.textContent = `Upload to Roboflow (${selectedCount})`;
+}
+
 function setAllFoldersExpanded(expanded) {
     document.querySelectorAll('.file-row, .gallery-row').forEach(row => {
         row.classList.toggle('is-visible', expanded);
@@ -189,6 +212,8 @@ function buildResultsUrl() {
 }
 
 async function loadResults() {
+    selectedImagePaths.clear();
+    updateRoboflowUploadButton();
     try {
         const loading = document.getElementById('loading');
         const table = document.getElementById('resultsTable');
@@ -278,10 +303,31 @@ async function loadResults() {
                 ? '<div class="gallery-empty">Немає знімків</div>'
                 : imageFiles.map(file => {
                     const fileUrl = `/download/${encodeURI(file.path)}`;
-                    return `<a class="gallery-link" href="${fileUrl}" data-gallery="run-${item.id}"><img src="${fileUrl}" loading="lazy" alt="${file.name}" /></a>`;
+                    const selectionControl = CAN_MANAGE_ROBOFLOW
+                        ? `<label class="image-select-control" title="Select image"><input type="checkbox" class="rf-image-checkbox" data-image-path="${escapeHtml(file.path)}" aria-label="Select ${escapeHtml(file.name)}" /></label>`
+                        : '';
+                    return `
+                        <div class="gallery-item">
+                            ${selectionControl}
+                            <a class="gallery-link" href="${escapeHtml(fileUrl)}" data-gallery="run-${escapeHtml(item.id)}">
+                                <img src="${escapeHtml(fileUrl)}" loading="lazy" alt="${escapeHtml(file.name)}" />
+                            </a>
+                        </div>
+                    `;
                 }).join('');
             galleryRow.innerHTML = `<td colspan="${SHOW_OWNER_COLUMN ? 9 : 8}"><div class="gallery">${galleryItems}</div></td>`;
             tbody.appendChild(galleryRow);
+
+            galleryRow.querySelectorAll('.rf-image-checkbox').forEach(checkbox => {
+                checkbox.addEventListener('click', event => event.stopPropagation());
+                checkbox.addEventListener('change', () => {
+                    const imagePath = checkbox.dataset.imagePath;
+                    if (checkbox.checked) selectedImagePaths.add(imagePath);
+                    else selectedImagePaths.delete(imagePath);
+                    checkbox.closest('.gallery-item').classList.toggle('is-selected', checkbox.checked);
+                    updateRoboflowUploadButton();
+                });
+            });
 
             (item.files || []).forEach(file => {
                 const tr = document.createElement('tr');
@@ -339,6 +385,80 @@ async function loadResults() {
     }
 }
 
+async function uploadSelectedImagesToRoboflow() {
+    const uploadButton = document.getElementById('uploadToRoboflowBtn');
+    const imagePaths = Array.from(selectedImagePaths);
+    if (!uploadButton || imagePaths.length === 0) return;
+
+    uploadButton.disabled = true;
+    if (window.Swal) {
+        Swal.fire({
+            title: 'Uploading to Roboflow',
+            text: `Uploading ${imagePaths.length} selected image(s)...`,
+            allowOutsideClick: false,
+            didOpen: () => Swal.showLoading(),
+        });
+    }
+
+    try {
+        const response = await fetch('/api/roboflow/upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_paths: imagePaths }),
+        });
+        const data = await response.json().catch(() => ({}));
+        const completedPaths = new Set(
+            (data.results || [])
+                .filter(item => item.status === 'uploaded' || item.status === 'duplicate')
+                .map(item => item.path)
+        );
+
+        completedPaths.forEach(path => selectedImagePaths.delete(path));
+        document.querySelectorAll('.rf-image-checkbox').forEach(checkbox => {
+            if (!completedPaths.has(checkbox.dataset.imagePath)) return;
+            checkbox.checked = false;
+            checkbox.closest('.gallery-item').classList.remove('is-selected');
+        });
+        updateRoboflowUploadButton();
+
+        if (!response.ok) {
+            const completedCount = Number(data.uploaded_count || 0) + Number(data.duplicate_count || 0);
+            const failedItems = (data.results || []).filter(item => item.status === 'failed');
+            const failureDetails = failedItems.slice(0, 5).map(item => {
+                const filename = String(item.path || 'image').split('/').pop();
+                return `${filename}: ${item.error || 'upload failed'}`;
+            }).join(' ');
+            const omittedCount = Math.max(0, failedItems.length - 5);
+            throw new Error([
+                data.error || 'Roboflow upload failed.',
+                completedCount > 0 ? `${completedCount} image(s) completed successfully.` : '',
+                failureDetails,
+                omittedCount > 0 ? `And ${omittedCount} more failure(s).` : '',
+                failedItems.length > 0 ? 'Failed images remain selected for retry.' : '',
+            ].filter(Boolean).join(' '));
+        }
+
+        const successText = [
+            `Uploaded: ${data.uploaded_count || 0}.`,
+            `Already present: ${data.duplicate_count || 0}.`,
+        ].join(' ');
+        if (window.Swal) {
+            Swal.fire({ icon: 'success', title: 'Roboflow upload complete', text: successText });
+        } else {
+            alert(successText);
+        }
+    } catch (error) {
+        if (window.Swal) {
+            Swal.fire({ icon: 'error', title: 'Roboflow upload failed', text: error.message });
+        } else {
+            alert(error.message || 'Roboflow upload failed.');
+        }
+    } finally {
+        uploadButton.disabled = false;
+    }
+}
+
+
 async function processResultVideo(pid, filePath) {
     try {
         if (window.Swal) {
@@ -393,6 +513,10 @@ async function deleteResult(pid) {
         if (j.success) {
             const rows = document.querySelectorAll(`[data-folder="${pid}"]`);
             rows.forEach(row => row.remove());
+            Array.from(selectedImagePaths)
+                .filter(path => path.startsWith(`${pid}/`))
+                .forEach(path => selectedImagePaths.delete(path));
+            updateRoboflowUploadButton();
 
             const tbody = document.getElementById('resultsBody');
             if (tbody.children.length === 0) location.reload();
@@ -513,6 +637,11 @@ async function editManualSporeCount(pid, aiCounts, manualCounts) {
         console.error(e);
         Swal.fire({ icon: 'error', title: 'Помилка збереження', text: String(e.message || e) });
     }
+}
+
+const uploadToRoboflowBtn = document.getElementById('uploadToRoboflowBtn');
+if (uploadToRoboflowBtn) {
+    uploadToRoboflowBtn.addEventListener('click', uploadSelectedImagesToRoboflow);
 }
 
 document.getElementById('applyFilters').addEventListener('click', loadResults);

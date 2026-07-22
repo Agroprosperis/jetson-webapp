@@ -32,6 +32,15 @@ button:hover { background:#2a2a2a; }
 .message { min-height:18px; margin-top:10px; font-size:13px; }
 .message.error { color:#f87171; }
 .message.success { color:#86efac; }
+.storage-notice { border:1px solid; border-radius:8px; padding:10px 12px; margin:12px 0; font-size:13px; line-height:1.4; }
+.storage-notice.secure { color:#bbf7d0; background:#122117; border-color:#166534; }
+.storage-notice.warning { color:#fde68a; background:#2a2110; border-color:#92400e; }
+.storage-confirmation {
+  display:flex; align-items:flex-start; gap:9px; margin:0 0 12px;
+  color:#f5d58a; font-size:13px; line-height:1.4; cursor:pointer;
+}
+.storage-confirmation[hidden] { display:none; }
+.storage-confirmation input { margin-top:2px; }
 </style>
 </head>
 <body>
@@ -83,6 +92,70 @@ button:hover { background:#2a2a2a; }
   </label>
   <div class="hint">Після натискання «Зупинити» зʼявиться вікно для введення кількості спор, порахованої вручну.</div>
   <div id="analysisSettingsMessage" class="message"></div>
+</div>
+{% endif %}
+
+{% if can_manage_roboflow %}
+<div class="card">
+  <h2 style="margin:0 0 12px; font-weight:300; font-size:18px;">Roboflow dataset upload</h2>
+  <div class="password-fields">
+    <div class="field">
+      <label for="roboflowProjectName">Project ID</label>
+      <input
+        id="roboflowProjectName"
+        type="text"
+        value="{{ roboflow_settings.project_name }}"
+        placeholder="my-project"
+        autocomplete="off"
+      />
+    </div>
+  </div>
+  <div
+    id="roboflowStorageNotice"
+    class="storage-notice {% if roboflow_settings.secure_storage_available %}secure{% else %}warning{% endif %}"
+  >
+    {% if roboflow_settings.secure_storage_available %}
+    Secure persistent storage is available. The token will be encrypted and remain usable after service restarts.
+    {% else %}
+    The token could not be stored securely on this server. Check the option below to save it to an unencrypted owner-only file. Otherwise, it will be kept only in memory and lost when the service restarts.
+    {% endif %}
+  </div>
+  <label
+    id="roboflowStorageConfirmation"
+    class="storage-confirmation"
+    {% if roboflow_settings.secure_storage_available %}hidden{% endif %}
+  >
+    <input
+      id="allowInsecureFileStorage"
+      type="checkbox"
+      {% if roboflow_settings.api_token_storage == "plaintext_file" %}checked{% endif %}
+    />
+    <span>I understand that this token will be stored unencrypted in an owner-only server file.</span>
+  </label>
+  <div class="password-fields">
+    <div class="field">
+      <label for="roboflowApiToken">Private API token</label>
+      <input
+        id="roboflowApiToken"
+        type="password"
+        placeholder="{% if roboflow_settings.api_token_usable %}Token configured — leave blank to keep it{% else %}Enter a private API token{% endif %}"
+        autocomplete="new-password"
+      />
+    </div>
+  </div>
+  <button id="saveRoboflowSettingsBtn" type="button" style="margin-top:12px;">Save Roboflow settings</button>
+  <div class="hint">The project ID is the last part of the Roboflow project URL and is also the dataset name used by the upload API. Images upload to the train split.</div>
+  <div id="roboflowTokenStatus" class="hint">
+    {% if roboflow_settings.api_token_storage == "encrypted" %}Encrypted token configured; it will remain usable after restart.
+    {% elif roboflow_settings.api_token_storage == "memory" %}Token configured in memory; it will be lost after restart.
+    {% elif roboflow_settings.api_token_storage == "plaintext_file" %}Token configured in an unencrypted owner-only file.
+    {% elif roboflow_settings.api_token_storage == "encrypted_unavailable" %}An encrypted token exists, but secure storage is unavailable. Restore secure storage or enter a replacement token.
+    {% elif roboflow_settings.api_token_storage == "plaintext_file_unavailable" %}The existing plaintext token file cannot be read. Enter a replacement token.
+    {% elif roboflow_settings.api_token_storage == "plaintext_file_unconfirmed" %}Confirm plaintext storage or save the token in memory.
+    {% else %}No private token is configured.
+    {% endif %}
+  </div>
+  <div id="roboflowSettingsMessage" class="message"></div>
 </div>
 {% endif %}
 
@@ -156,6 +229,83 @@ if (askManualSporeCountEl) {
     }
   });
 }
+
+{% if can_manage_roboflow %}
+const saveRoboflowSettingsBtn = document.getElementById('saveRoboflowSettingsBtn');
+if (saveRoboflowSettingsBtn) {
+  const storageNoticeEl = document.getElementById('roboflowStorageNotice');
+  const storageConfirmationEl = document.getElementById('roboflowStorageConfirmation');
+  const allowInsecureFileStorageEl = document.getElementById('allowInsecureFileStorage');
+  const tokenStatusEl = document.getElementById('roboflowTokenStatus');
+  let secureStorageAvailable = {{ roboflow_settings.secure_storage_available | tojson }};
+
+  const updateRoboflowStorageState = (settings) => {
+    secureStorageAvailable = settings.secure_storage_available;
+    storageNoticeEl.className = 'storage-notice ' + (secureStorageAvailable ? 'secure' : 'warning');
+    storageNoticeEl.textContent = secureStorageAvailable
+      ? 'Secure persistent storage is available. The token will be encrypted and remain usable after service restarts.'
+      : 'The token could not be stored securely on this server. Check the option below to save it to an unencrypted owner-only file. Otherwise, it will be kept only in memory and lost when the service restarts.';
+    storageConfirmationEl.hidden = secureStorageAvailable;
+    if (secureStorageAvailable) {
+      allowInsecureFileStorageEl.checked = false;
+    } else {
+      allowInsecureFileStorageEl.checked = settings.api_token_storage === 'plaintext_file';
+    }
+
+    const statusMessages = {
+      encrypted: 'Encrypted token configured; it will remain usable after restart.',
+      memory: 'Token configured in memory; it will be lost after restart.',
+      plaintext_file: 'Token configured in an unencrypted owner-only file.',
+      encrypted_unavailable: 'An encrypted token exists, but secure storage is unavailable. Restore secure storage or enter a replacement token.',
+      plaintext_file_unavailable: 'The existing plaintext token file cannot be read. Enter a replacement token.',
+      plaintext_file_unconfirmed: 'Confirm plaintext storage or save the token in memory.',
+      none: 'No private token is configured.',
+    };
+    tokenStatusEl.textContent =
+      statusMessages[settings.api_token_storage] || 'No private token is configured.';
+  };
+
+  saveRoboflowSettingsBtn.addEventListener('click', async () => {
+    const projectNameEl = document.getElementById('roboflowProjectName');
+    const apiTokenEl = document.getElementById('roboflowApiToken');
+    const messageEl = document.getElementById('roboflowSettingsMessage');
+    const payload = { project_name: projectNameEl.value.trim() };
+    const replacementToken = apiTokenEl.value.trim();
+    if (replacementToken) {
+      payload.api_token = replacementToken;
+    }
+    if (!secureStorageAvailable) {
+      payload.allow_insecure_file_storage = allowInsecureFileStorageEl.checked;
+    }
+
+    messageEl.textContent = '';
+    messageEl.className = 'message';
+    saveRoboflowSettingsBtn.disabled = true;
+    try {
+      const response = await fetch('/api/roboflow/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || 'Could not save Roboflow settings.');
+      }
+
+      apiTokenEl.value = '';
+      updateRoboflowStorageState(data);
+      messageEl.textContent = 'Roboflow settings saved.';
+      messageEl.classList.add('success');
+    } catch (error) {
+      messageEl.textContent = error.message || 'Could not save Roboflow settings.';
+      messageEl.classList.add('error');
+    } finally {
+      saveRoboflowSettingsBtn.disabled = false;
+    }
+  });
+}
+{% endif %}
+
 </script>
 
 </body>

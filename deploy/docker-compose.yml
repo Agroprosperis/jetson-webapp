@@ -28,5 +28,11 @@ services:
       - ${TILLETIA_DATA_ROOT:-/var/lib/tilletia-app}/model:/app/model
       - ${TILLETIA_DATA_ROOT:-/var/lib/tilletia-app}/output_hq:/app/output_hq
       - ${TILLETIA_DATA_ROOT:-/var/lib/tilletia-app}/runs:/app/runs
+      - type: bind
+        source: ${TILLETIA_SECRET_ROOT:-/run/tilletia/secrets}
+        target: /run/secrets
+        read_only: true
+        bind:
+          create_host_path: false
       - ${TILLETIA_CONFIG_ROOT:-/etc/tilletia-app}/localtime:/etc/localtime:ro
       - ${TILLETIA_CONFIG_ROOT:-/etc/tilletia-app}/timezone:/etc/timezone:ro
