@@ -24,6 +24,9 @@ ROBOFLOW_SETTINGS_PATH = "/app/runs/roboflow.json"
 ROBOFLOW_MASTER_KEY_PATH = "/run/secrets/roboflow-master-key"
 ROBOFLOW_KEY_VERSION = 1
 ROBOFLOW_TOKEN_NONCE_BYTES = 12
+SMTP_KEY_VERSION = 1
+SMTP_TLS_MODES = ("starttls", "ssl", "none")
+DEFAULT_SMTP_PORT = 587
 PASSWORD_HASH_ITERATIONS = 200_000
 VALID_ROLES = ("admin", "user")
 
@@ -42,6 +45,7 @@ ROLE_PERMISSIONS = {
         "results:download",
         "results:inspect",
         "results:view",
+        "smtp:manage",
         "status:view",
         "swagger:view",
         "upload:video",
@@ -82,33 +86,9 @@ DEFAULT_DASHBOARD_SETTINGS = {
 _init_lock = threading.Lock()
 _roboflow_settings_lock = threading.Lock()
 _roboflow_memory_api_token = ""
+_smtp_settings_lock = threading.Lock()
+_smtp_memory_password = ""
 LOGGER = logging.getLogger(__name__)
-
-
-def get_smtp_settings():
-    host = (os.environ.get("TILLETIA_SMTP_HOST") or "").strip()
-    sender = (os.environ.get("TILLETIA_SMTP_FROM") or "").strip()
-    user = (os.environ.get("TILLETIA_SMTP_USER") or "").strip()
-
-    try:
-        port = int(os.environ.get("TILLETIA_SMTP_PORT") or "587")
-    except (TypeError, ValueError):
-        port = 587
-
-    use_tls = (os.environ.get("TILLETIA_SMTP_TLS") or "starttls").strip().lower()
-    return {
-        "host": host,
-        "port": port,
-        "user": user,
-        "password": os.environ.get("TILLETIA_SMTP_PASSWORD") or "",
-        "sender": sender or user,
-        "tls_mode": use_tls,
-    }
-
-
-def smtp_configured():
-    settings = get_smtp_settings()
-    return bool(settings["host"] and settings["sender"])
 
 
 class RoboflowStorageError(RuntimeError):
@@ -215,6 +195,7 @@ def build_page_context(user, **extra_context):
         "can_view_models": user_has_permission(user, "models:view"),
         "can_manage_users": user_has_permission(user, "users:manage"),
         "can_manage_roboflow": user_has_permission(user, "roboflow:manage"),
+        "can_manage_smtp": user_has_permission(user, "smtp:manage"),
         "can_email_results": smtp_configured() and user_has_permission(user, "results:inspect"),
         "can_view_result_owners": is_admin(user),
         "can_view_model_owners": is_admin(user),
@@ -790,6 +771,245 @@ def _initialize_roboflow_token_storage():
             connection.close()
 
 
+def _smtp_password_aad():
+    return b"tilletia-app:smtp-settings:v1"
+
+
+def _encrypt_smtp_password(password, master_key):
+    nonce = os.urandom(ROBOFLOW_TOKEN_NONCE_BYTES)
+    ciphertext = AESGCM(master_key).encrypt(
+        nonce,
+        password.encode("utf-8"),
+        _smtp_password_aad(),
+    )
+    return nonce, ciphertext
+
+
+def _decrypt_smtp_password(row, master_key):
+    nonce = row["password_nonce"]
+    ciphertext = row["password_ciphertext"]
+    if nonce is None and ciphertext is None:
+        return ""
+    if nonce is None or ciphertext is None:
+        raise RoboflowStorageError("The encrypted SMTP password is invalid.")
+
+    nonce = bytes(nonce)
+    ciphertext = bytes(ciphertext)
+    if (
+        row["key_version"] != SMTP_KEY_VERSION
+        or len(nonce) != ROBOFLOW_TOKEN_NONCE_BYTES
+        or len(ciphertext) < 16
+    ):
+        raise RoboflowStorageError("The encrypted SMTP password is invalid.")
+
+    try:
+        plaintext = AESGCM(master_key).decrypt(nonce, ciphertext, _smtp_password_aad())
+        return plaintext.decode("utf-8")
+    except (InvalidTag, UnicodeDecodeError, ValueError):
+        raise RoboflowStorageError("The encrypted SMTP password could not be decrypted.") from None
+
+
+def _normalize_smtp_tls_mode(value):
+    mode = str(value or "").strip().lower()
+    return mode if mode in SMTP_TLS_MODES else "starttls"
+
+
+def _coerce_smtp_port(value):
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_SMTP_PORT
+    return port if 1 <= port <= 65535 else DEFAULT_SMTP_PORT
+
+
+def _get_smtp_settings_row(connection):
+    return connection.execute(
+        """
+        SELECT host, port, username, sender, tls_mode,
+               password_nonce, password_ciphertext, key_version
+        FROM smtp_settings
+        WHERE id = 1
+        """
+    ).fetchone()
+
+
+def _upsert_smtp_settings_row(connection, host, port, username, sender, tls_mode, nonce, ciphertext):
+    connection.execute(
+        """
+        INSERT INTO smtp_settings (
+            id, host, port, username, sender, tls_mode,
+            password_nonce, password_ciphertext, key_version, updated_at
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            host = excluded.host,
+            port = excluded.port,
+            username = excluded.username,
+            sender = excluded.sender,
+            tls_mode = excluded.tls_mode,
+            password_nonce = excluded.password_nonce,
+            password_ciphertext = excluded.password_ciphertext,
+            key_version = excluded.key_version,
+            updated_at = excluded.updated_at
+        """,
+        (
+            host,
+            port,
+            username,
+            sender,
+            tls_mode,
+            nonce,
+            ciphertext,
+            SMTP_KEY_VERSION,
+            _utcnow_text(),
+        ),
+    )
+
+
+def _smtp_env_settings():
+    host = (os.environ.get("TILLETIA_SMTP_HOST") or "").strip()
+    username = (os.environ.get("TILLETIA_SMTP_USER") or "").strip()
+    sender = (os.environ.get("TILLETIA_SMTP_FROM") or "").strip()
+    return {
+        "host": host,
+        "port": _coerce_smtp_port(os.environ.get("TILLETIA_SMTP_PORT")),
+        "username": username,
+        "sender": sender or username,
+        "tls_mode": _normalize_smtp_tls_mode(os.environ.get("TILLETIA_SMTP_TLS")),
+        "password": os.environ.get("TILLETIA_SMTP_PASSWORD") or "",
+    }
+
+
+def _inspect_smtp_settings(connection):
+    global _smtp_memory_password
+
+    row = _get_smtp_settings_row(connection)
+    env_settings = _smtp_env_settings()
+
+    if row is None or not (row["host"] or "").strip():
+        password = env_settings["password"]
+        return {
+            "source": "env" if env_settings["host"] else "none",
+            "host": env_settings["host"],
+            "port": env_settings["port"],
+            "username": env_settings["username"],
+            "sender": env_settings["sender"],
+            "tls_mode": env_settings["tls_mode"],
+            "password": password,
+            "password_configured": bool(password),
+            "password_storage": "env" if password else "none",
+            "secure_storage_available": _probe_roboflow_secure_storage()[0] == "available",
+        }
+
+    secure_storage_status, master_key = _probe_roboflow_secure_storage()
+    encrypted_password_exists = (
+        row["password_nonce"] is not None or row["password_ciphertext"] is not None
+    )
+
+    password = ""
+    password_storage = "none"
+    if encrypted_password_exists:
+        password_storage = "encrypted_unavailable"
+        if secure_storage_status == "available":
+            try:
+                password = _decrypt_smtp_password(row, master_key)
+                password_storage = "encrypted"
+            except RoboflowStorageError:
+                password = ""
+                password_storage = "encrypted_unavailable"
+    elif _smtp_memory_password:
+        password = _smtp_memory_password
+        password_storage = "memory"
+
+    return {
+        "source": "db",
+        "host": (row["host"] or "").strip(),
+        "port": _coerce_smtp_port(row["port"]),
+        "username": (row["username"] or "").strip(),
+        "sender": (row["sender"] or "").strip(),
+        "tls_mode": _normalize_smtp_tls_mode(row["tls_mode"]),
+        "password": password,
+        "password_configured": bool(password) or encrypted_password_exists,
+        "password_storage": password_storage,
+        "secure_storage_available": secure_storage_status == "available",
+    }
+
+
+def get_smtp_settings(*, include_password=False):
+    with _smtp_settings_lock:
+        connection = _connect()
+        try:
+            settings = _inspect_smtp_settings(connection)
+        finally:
+            connection.close()
+
+    result = {key: value for key, value in settings.items() if key != "password"}
+    if include_password:
+        result["password"] = settings["password"]
+    return result
+
+
+def smtp_configured():
+    settings = get_smtp_settings()
+    return bool(settings["host"] and settings["sender"])
+
+
+def update_smtp_settings(payload):
+    global _smtp_memory_password
+
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid SMTP settings payload.")
+
+    with _smtp_settings_lock:
+        connection = _connect()
+        try:
+            current = _inspect_smtp_settings(connection)
+
+            host = str(payload.get("host", current["host"]) or "").strip()
+            if not host:
+                raise ValueError("SMTP host is required.")
+
+            sender_raw = payload.get("sender", current["sender"])
+            sender = str(sender_raw or "").strip()
+            if not sender:
+                raise ValueError("Sender address is required.")
+
+            username = str(payload.get("username", current["username"]) or "").strip()
+            port = _coerce_smtp_port(payload.get("port", current["port"]))
+            tls_mode = _normalize_smtp_tls_mode(payload.get("tls_mode", current["tls_mode"]))
+
+            replacement_password = ""
+            if "password" in payload:
+                raw_password = payload.get("password")
+                if not isinstance(raw_password, str):
+                    raise ValueError("SMTP password must be a string.")
+                replacement_password = raw_password
+            password = replacement_password or current["password"]
+
+            nonce = None
+            ciphertext = None
+            if password:
+                secure_storage_status, master_key = _probe_roboflow_secure_storage()
+                if secure_storage_status == "available":
+                    nonce, ciphertext = _encrypt_smtp_password(password, master_key)
+                    _smtp_memory_password = ""
+                else:
+                    _smtp_memory_password = password
+            else:
+                _smtp_memory_password = ""
+
+            _upsert_smtp_settings_row(
+                connection, host, port, username, sender, tls_mode, nonce, ciphertext
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    return get_smtp_settings()
+
+
 def get_model_owner_username(model_type, model_name):
     connection = _connect()
     try:
@@ -956,6 +1176,22 @@ def init_auth_storage():
                     updated_at TEXT NOT NULL,
                     CHECK (
                         (api_token_nonce IS NULL) = (api_token_ciphertext IS NULL)
+                    )
+                );
+
+                CREATE TABLE IF NOT EXISTS smtp_settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    host TEXT NOT NULL DEFAULT '',
+                    port INTEGER NOT NULL DEFAULT 587,
+                    username TEXT NOT NULL DEFAULT '',
+                    sender TEXT NOT NULL DEFAULT '',
+                    tls_mode TEXT NOT NULL DEFAULT 'starttls',
+                    password_nonce BLOB,
+                    password_ciphertext BLOB,
+                    key_version INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL,
+                    CHECK (
+                        (password_nonce IS NULL) = (password_ciphertext IS NULL)
                     )
                 );
                 """

@@ -694,7 +694,7 @@ def _build_result_email_content(metadata):
 
 
 def _send_result_images_email(recipient, subject, body, attachments):
-    settings = auth.get_smtp_settings()
+    settings = auth.get_smtp_settings(include_password=True)
 
     message = EmailMessage()
     message["Subject"] = subject
@@ -721,8 +721,8 @@ def _send_result_images_email(recipient, subject, body, attachments):
         with server:
             if tls_mode == "starttls":
                 server.starttls()
-            if settings["user"]:
-                server.login(settings["user"], settings["password"])
+            if settings["username"]:
+                server.login(settings["username"], settings["password"])
             server.send_message(message)
     except (smtplib.SMTPException, OSError) as exc:
         raise RuntimeError(f"Не вдалося надіслати лист: {exc}") from exc
@@ -1360,6 +1360,11 @@ def settings_page():
             if auth.user_has_permission(flask.g.current_user, "roboflow:manage")
             else None
         ),
+        smtp_settings=(
+            auth.get_smtp_settings()
+            if auth.user_has_permission(flask.g.current_user, "smtp:manage")
+            else None
+        ),
         **auth.build_page_context(flask.g.current_user),
     )
 
@@ -1653,6 +1658,97 @@ def api_put_roboflow_settings():
     payload = flask.request.get_json(silent=True)
     try:
         settings = auth.update_roboflow_settings(payload)
+    except auth.RoboflowStorageError as exc:
+        return flask.jsonify({"error": str(exc)}), 503
+    except (TypeError, ValueError) as exc:
+        return flask.jsonify({"error": str(exc)}), 400
+    return flask.jsonify(settings)
+
+
+@app.route("/api/smtp/settings", methods=["GET"])
+@auth.require_permission("smtp:manage")
+def api_get_smtp_settings():
+    """
+    Get the server-side SMTP configuration without exposing the password.
+    ---
+    tags:
+      - Email
+    responses:
+      200:
+        description: Safe SMTP configuration status.
+        schema:
+          type: object
+          properties:
+            host:
+              type: string
+            port:
+              type: integer
+            username:
+              type: string
+            sender:
+              type: string
+            tls_mode:
+              type: string
+              enum: [starttls, ssl, none]
+            password_configured:
+              type: boolean
+            password_storage:
+              type: string
+              enum: [none, env, memory, encrypted, encrypted_unavailable]
+            secure_storage_available:
+              type: boolean
+            source:
+              type: string
+              enum: [none, env, db]
+      403:
+        description: Authenticated user cannot manage SMTP settings.
+    """
+    return flask.jsonify(auth.get_smtp_settings())
+
+
+@app.route("/api/smtp/settings", methods=["PUT"])
+@auth.require_permission("smtp:manage")
+def api_put_smtp_settings():
+    """
+    Save the server-side SMTP configuration.
+    ---
+    tags:
+      - Email
+    consumes:
+      - application/json
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          properties:
+            host:
+              type: string
+            port:
+              type: integer
+            username:
+              type: string
+            sender:
+              type: string
+              description: From address used for outgoing mail.
+            tls_mode:
+              type: string
+              enum: [starttls, ssl, none]
+            password:
+              type: string
+              description: Replacement password. A blank or omitted value preserves the current password.
+    responses:
+      200:
+        description: Safe SMTP configuration status.
+      400:
+        description: Invalid or incomplete configuration.
+      403:
+        description: Authenticated user cannot manage SMTP settings.
+    """
+    payload = flask.request.get_json(silent=True)
+    try:
+        settings = auth.update_smtp_settings(payload)
     except auth.RoboflowStorageError as exc:
         return flask.jsonify({"error": str(exc)}), 503
     except (TypeError, ValueError) as exc:
