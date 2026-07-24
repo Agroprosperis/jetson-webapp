@@ -234,7 +234,7 @@ def visualize_frame_with_supervision(
 
     if len(detections) > 0:
         vis = BOX_ANNOTATOR.annotate(vis, detections)
-        if getattr(args, "captions_enabled", False):
+        if getattr(args, "captions_enabled", True):
             labels = build_labels_from_tracks(detections, args)
             vis = LABEL_ANNOTATOR.annotate(vis, detections, labels=labels)
 
