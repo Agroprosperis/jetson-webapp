@@ -12,6 +12,7 @@ import os
 import re
 import requests
 import shutil
+import smtplib
 import socket
 import struct
 import threading
@@ -22,6 +23,7 @@ import zipfile
 
 from camera_manager import CameraManager
 from datetime import datetime
+from email.message import EmailMessage
 from flasgger import Swagger
 from inference_pipeline import StreamPipeline
 from model_manager import (
@@ -47,6 +49,9 @@ RESULT_VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".mov")
 ROBOFLOW_UPLOAD_URL = "https://api.roboflow.com/dataset/{project_name}/upload"
 ROBOFLOW_UPLOAD_TIMEOUT = (10, 120)
 MAX_ROBOFLOW_UPLOAD_IMAGES = 100
+MAX_EMAIL_IMAGES = 20
+EMAIL_ADDRESS_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+SMTP_TIMEOUT = 30
 
 app = flask.Flask(__name__, template_folder=".")
 
@@ -663,6 +668,64 @@ def _upload_result_image_to_roboflow(image_path, settings):
     if isinstance(response_data, dict) and response_data.get("success") is True:
         return "uploaded"
     raise RuntimeError("Roboflow returned an invalid upload response.")
+
+
+def _format_per_class_counts(per_class):
+    if not isinstance(per_class, dict) or not per_class:
+        return "не вказано"
+    return ", ".join(f"{name} {value}" for name, value in per_class.items())
+
+
+def _build_result_email_content(metadata):
+    analysis_id = metadata.get("id") or "-"
+    timestamp = metadata.get("timestamp") or "-"
+    plan = _format_per_class_counts(metadata.get("detected_objects_per_class"))
+    fact = _format_per_class_counts(metadata.get("manual_spore_count_per_class"))
+
+    subject = f"Аналіз {analysis_id} | {timestamp} | план: {plan} | факт: {fact}"
+    body = (
+        f"Номер аналізу: {analysis_id}\n"
+        f"Дата: {timestamp}\n"
+        f"Кількість спор (ШІ, план): {plan}\n"
+        f"Кількість спор (факт): {fact}\n\n"
+        "Вибрані знімки додані до листа як вкладення."
+    )
+    return subject, body
+
+
+def _send_result_images_email(recipient, subject, body, attachments):
+    settings = auth.get_smtp_settings()
+
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = settings["sender"]
+    message["To"] = recipient
+    message.set_content(body)
+
+    for filename, payload in attachments:
+        message.add_attachment(
+            payload,
+            maintype="image",
+            subtype=os.path.splitext(filename)[1].lstrip(".").lower() or "jpeg",
+            filename=filename,
+        )
+
+    host = settings["host"]
+    port = settings["port"]
+    tls_mode = settings["tls_mode"]
+    try:
+        if tls_mode == "ssl":
+            server = smtplib.SMTP_SSL(host, port, timeout=SMTP_TIMEOUT)
+        else:
+            server = smtplib.SMTP(host, port, timeout=SMTP_TIMEOUT)
+        with server:
+            if tls_mode == "starttls":
+                server.starttls()
+            if settings["user"]:
+                server.login(settings["user"], settings["password"])
+            server.send_message(message)
+    except (smtplib.SMTPException, OSError) as exc:
+        raise RuntimeError(f"Не вдалося надіслати лист: {exc}") from exc
 
 
 def _is_result_image(filename):
@@ -2643,6 +2706,107 @@ def api_upload_results_to_roboflow():
         )
         return flask.jsonify(response_data), 502
     return flask.jsonify(response_data)
+
+
+@app.route("/api/results/email", methods=["POST"])
+@auth.require_permission("results:inspect")
+def api_email_result_images():
+    """
+    Email selected result images as attachments to a recipient.
+    ---
+    tags:
+      - Results
+    consumes:
+      - application/json
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - to
+            - image_paths
+          properties:
+            to:
+              type: string
+              description: Recipient email address.
+            image_paths:
+              type: array
+              maxItems: 20
+              items:
+                type: string
+              description: Result-relative image paths from a single analysis.
+    responses:
+      200:
+        description: Email sent successfully.
+      400:
+        description: Invalid email, paths, or images from multiple analyses.
+      403:
+        description: Authenticated user cannot access this result.
+      503:
+        description: SMTP is not configured or unavailable.
+    """
+    if not auth.smtp_configured():
+        return flask.jsonify({"error": "Надсилання пошти не налаштоване."}), 503
+
+    payload = flask.request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return flask.jsonify({"error": "A JSON request body is required."}), 400
+
+    recipient = str(payload.get("to") or "").strip()
+    if not EMAIL_ADDRESS_RE.match(recipient):
+        return flask.jsonify({"error": "Вкажіть коректну email-адресу."}), 400
+
+    image_paths = payload.get("image_paths")
+    if not isinstance(image_paths, list) or not image_paths:
+        return flask.jsonify({"error": "Оберіть хоча б один знімок."}), 400
+
+    if len(image_paths) > MAX_EMAIL_IMAGES:
+        return flask.jsonify({
+            "error": f"Оберіть не більше {MAX_EMAIL_IMAGES} знімків за раз.",
+        }), 400
+
+    resolved_images = []
+    seen_paths = set()
+    run_ids = set()
+    try:
+        for requested_path in image_paths:
+            image_path, normalized_path = _resolve_result_image_path(requested_path)
+            if normalized_path in seen_paths:
+                continue
+            seen_paths.add(normalized_path)
+            run_ids.add(normalized_path.split("/")[0])
+            resolved_images.append((image_path, normalized_path))
+    except (FileNotFoundError, ValueError) as exc:
+        return flask.jsonify({"error": str(exc)}), 400
+
+    if len(run_ids) != 1:
+        return flask.jsonify({"error": "Оберіть знімки з одного аналізу."}), 400
+
+    run_id = next(iter(run_ids))
+    if not auth.user_can_access_result(flask.g.current_user, HQ_OUTPUT_DIR, run_id):
+        return flask.jsonify({"error": "Forbidden"}), 403
+
+    metadata = _build_result_metadata(run_id)
+    if metadata is None:
+        return flask.jsonify({"error": "Аналіз не знайдено."}), 404
+
+    attachments = []
+    try:
+        for image_path, normalized_path in resolved_images:
+            with open(image_path, "rb") as image_input:
+                attachments.append((os.path.basename(normalized_path), image_input.read()))
+    except OSError:
+        return flask.jsonify({"error": "Не вдалося прочитати вибрані знімки."}), 400
+
+    subject, body = _build_result_email_content(metadata)
+    try:
+        _send_result_images_email(recipient, subject, body, attachments)
+    except RuntimeError as exc:
+        return flask.jsonify({"error": str(exc)}), 503
+
+    return flask.jsonify({"success": True, "sent_count": len(attachments)})
 
 
 @app.route("/api/results/search")

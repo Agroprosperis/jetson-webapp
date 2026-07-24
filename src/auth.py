@@ -85,6 +85,32 @@ _roboflow_memory_api_token = ""
 LOGGER = logging.getLogger(__name__)
 
 
+def get_smtp_settings():
+    host = (os.environ.get("TILLETIA_SMTP_HOST") or "").strip()
+    sender = (os.environ.get("TILLETIA_SMTP_FROM") or "").strip()
+    user = (os.environ.get("TILLETIA_SMTP_USER") or "").strip()
+
+    try:
+        port = int(os.environ.get("TILLETIA_SMTP_PORT") or "587")
+    except (TypeError, ValueError):
+        port = 587
+
+    use_tls = (os.environ.get("TILLETIA_SMTP_TLS") or "starttls").strip().lower()
+    return {
+        "host": host,
+        "port": port,
+        "user": user,
+        "password": os.environ.get("TILLETIA_SMTP_PASSWORD") or "",
+        "sender": sender or user,
+        "tls_mode": use_tls,
+    }
+
+
+def smtp_configured():
+    settings = get_smtp_settings()
+    return bool(settings["host"] and settings["sender"])
+
+
 class RoboflowStorageError(RuntimeError):
     pass
 
@@ -189,6 +215,7 @@ def build_page_context(user, **extra_context):
         "can_view_models": user_has_permission(user, "models:view"),
         "can_manage_users": user_has_permission(user, "users:manage"),
         "can_manage_roboflow": user_has_permission(user, "roboflow:manage"),
+        "can_email_results": smtp_configured() and user_has_permission(user, "results:inspect"),
         "can_view_result_owners": is_admin(user),
         "can_view_model_owners": is_admin(user),
     }
