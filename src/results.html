@@ -141,6 +141,7 @@ const CAN_DELETE_RESULTS = {{ 'true' if can_delete_results else 'false' }};
 const CAN_CONFIGURE_DASHBOARD = {{ 'true' if can_configure_dashboard else 'false' }};
 const CAN_UPLOAD_ROBOFLOW = {{ 'true' if can_upload_roboflow else 'false' }};
 const CAN_EMAIL_RESULTS = {{ 'true' if can_email_results else 'false' }};
+const CAN_SELECT_RESULT_IMAGES = {{ 'true' if can_select_result_images else 'false' }};
 const SHOW_OWNER_COLUMN = {{ 'true' if can_view_result_owners else 'false' }};
 const selectedImagePaths = new Set();
 
@@ -324,7 +325,7 @@ async function loadResults() {
                 ? '<div class="gallery-empty">Немає знімків</div>'
                 : imageFiles.map(file => {
                     const fileUrl = `/download/${encodeURI(file.path)}`;
-                    const selectionControl = (CAN_UPLOAD_ROBOFLOW || CAN_EMAIL_RESULTS)
+                    const selectionControl = CAN_SELECT_RESULT_IMAGES
                         ? `<label class="image-select-control" title="Обрати знімок"><input type="checkbox" class="rf-image-checkbox" data-image-path="${escapeHtml(file.path)}" aria-label="Обрати ${escapeHtml(file.name)}" /></label>`
                         : '';
                     return `

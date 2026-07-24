@@ -200,6 +200,10 @@ def build_page_context(user, **extra_context):
         ),
         "can_manage_smtp": user_has_permission(user, "smtp:manage"),
         "can_email_results": smtp_configured() and user_has_permission(user, "results:inspect"),
+        "can_select_result_images": (
+            user_has_permission(user, "roboflow:manage")
+            or user_has_permission(user, "results:inspect")
+        ),
         "can_view_result_owners": is_admin(user),
         "can_view_model_owners": is_admin(user),
     }
