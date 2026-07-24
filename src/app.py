@@ -1756,6 +1756,58 @@ def api_put_smtp_settings():
     return flask.jsonify(settings)
 
 
+@app.route("/api/smtp/test", methods=["POST"])
+@auth.require_permission("smtp:manage")
+def api_test_smtp_settings():
+    """
+    Send a short test email using the saved SMTP settings.
+    ---
+    tags:
+      - Email
+    consumes:
+      - application/json
+    parameters:
+      - name: body
+        in: body
+        required: false
+        schema:
+          type: object
+          properties:
+            to:
+              type: string
+              description: Optional recipient. Defaults to the configured sender address.
+    responses:
+      200:
+        description: Test email sent successfully.
+      400:
+        description: Invalid recipient or incomplete SMTP configuration.
+      403:
+        description: Authenticated user cannot manage SMTP settings.
+      503:
+        description: SMTP is not configured or the test send failed.
+    """
+    if not auth.smtp_configured():
+        return flask.jsonify({"error": "Спочатку збережіть налаштування SMTP."}), 400
+
+    settings = auth.get_smtp_settings()
+    payload = flask.request.get_json(silent=True) or {}
+    recipient = str(payload.get("to") or settings.get("sender") or "").strip()
+    if not EMAIL_ADDRESS_RE.match(recipient):
+        return flask.jsonify({"error": "Вкажіть коректну email-адресу для перевірки."}), 400
+
+    subject = "Tilletia: перевірка SMTP"
+    body = (
+        "Це тестовий лист від Tilletia.\n"
+        "Якщо ви його отримали, налаштування пошти працюють."
+    )
+    try:
+        _send_result_images_email(recipient, subject, body, attachments=[])
+    except RuntimeError as exc:
+        return flask.jsonify({"error": str(exc)}), 503
+
+    return flask.jsonify({"success": True, "to": recipient})
+
+
 @app.route("/api/grid", methods=["GET"])
 @auth.require_permission("dashboard:view")
 def api_get_grid():

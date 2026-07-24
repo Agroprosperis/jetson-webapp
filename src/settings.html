@@ -143,7 +143,7 @@ button:hover { background:#2a2a2a; }
       />
     </div>
   </div>
-  <button id="saveRoboflowSettingsBtn" type="button" style="margin-top:12px;">Save Roboflow settings</button>
+  <button id="saveRoboflowSettingsBtn" type="button" style="margin-top:12px;">💾 Зберегти налаштування Roboflow</button>
   <div class="hint">The project ID is the last part of the Roboflow project URL and is also the dataset name used by the upload API. Images upload to the train split.</div>
   <div id="roboflowTokenStatus" class="hint">
     {% if roboflow_settings.api_token_storage == "encrypted" %}Encrypted token configured; it will remain usable after restart.
@@ -191,9 +191,16 @@ button:hover { background:#2a2a2a; }
       <label for="smtpPassword">Пароль</label>
       <input id="smtpPassword" type="password" placeholder="{% if smtp_settings.password_configured %}Пароль збережено — залиште порожнім, щоб не змінювати{% else %}Введіть пароль{% endif %}" autocomplete="new-password" />
     </div>
+    <div class="field">
+      <label for="smtpTestTo">Email для перевірки</label>
+      <input id="smtpTestTo" type="email" value="{{ smtp_settings.sender }}" placeholder="you@example.com" autocomplete="off" />
+    </div>
   </div>
-  <button id="saveSmtpSettingsBtn" type="button" style="margin-top:12px;">Зберегти налаштування пошти</button>
-  <div class="hint">Ці дані використовуються для надсилання вибраних знімків результатів на пошту. Порожнє поле пароля зберігає поточний пароль.</div>
+  <div style="display:flex; gap:10px; margin-top:12px; flex-wrap:wrap;">
+    <button id="saveSmtpSettingsBtn" type="button">💾 Зберегти налаштування пошти</button>
+    <button id="testSmtpSettingsBtn" type="button">✉ Перевірити</button>
+  </div>
+  <div class="hint">Спочатку збережіть налаштування, потім натисніть «Перевірити» — буде надіслано тестовий лист. Порожнє поле пароля зберігає поточний пароль.</div>
   <div id="smtpPasswordStatus" class="hint">
     {% if smtp_settings.password_storage == "encrypted" %}Пароль збережено в зашифрованому вигляді.
     {% elif smtp_settings.password_storage == "memory" %}Пароль у памʼяті; буде втрачений після перезапуску (немає захищеного сховища).
@@ -355,6 +362,7 @@ if (saveRoboflowSettingsBtn) {
 
 {% if can_manage_smtp %}
 const saveSmtpSettingsBtn = document.getElementById('saveSmtpSettingsBtn');
+const testSmtpSettingsBtn = document.getElementById('testSmtpSettingsBtn');
 if (saveSmtpSettingsBtn) {
   const smtpStatusEl = document.getElementById('smtpPasswordStatus');
   const smtpStatusMessages = {
@@ -398,6 +406,10 @@ if (saveSmtpSettingsBtn) {
       if (smtpStatusEl) {
         smtpStatusEl.textContent = smtpStatusMessages[data.password_storage] || 'Пароль не налаштовано.';
       }
+      const testToEl = document.getElementById('smtpTestTo');
+      if (testToEl && !testToEl.value.trim() && payload.sender) {
+        testToEl.value = payload.sender;
+      }
       messageEl.textContent = 'Налаштування пошти збережено.';
       messageEl.classList.add('success');
     } catch (error) {
@@ -405,6 +417,34 @@ if (saveSmtpSettingsBtn) {
       messageEl.classList.add('error');
     } finally {
       saveSmtpSettingsBtn.disabled = false;
+    }
+  });
+}
+
+if (testSmtpSettingsBtn) {
+  testSmtpSettingsBtn.addEventListener('click', async () => {
+    const messageEl = document.getElementById('smtpSettingsMessage');
+    const recipient = document.getElementById('smtpTestTo').value.trim();
+    messageEl.textContent = '';
+    messageEl.className = 'message';
+    testSmtpSettingsBtn.disabled = true;
+    try {
+      const response = await fetch('/api/smtp/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to: recipient }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || 'Не вдалося надіслати тестовий лист.');
+      }
+      messageEl.textContent = `Тестовий лист надіслано на ${data.to || recipient}.`;
+      messageEl.classList.add('success');
+    } catch (error) {
+      messageEl.textContent = error.message || 'Не вдалося надіслати тестовий лист.';
+      messageEl.classList.add('error');
+    } finally {
+      testSmtpSettingsBtn.disabled = false;
     }
   });
 }

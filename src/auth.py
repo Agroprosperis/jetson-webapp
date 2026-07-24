@@ -195,6 +195,9 @@ def build_page_context(user, **extra_context):
         "can_view_models": user_has_permission(user, "models:view"),
         "can_manage_users": user_has_permission(user, "users:manage"),
         "can_manage_roboflow": user_has_permission(user, "roboflow:manage"),
+        "can_upload_roboflow": (
+            roboflow_configured() and user_has_permission(user, "roboflow:manage")
+        ),
         "can_manage_smtp": user_has_permission(user, "smtp:manage"),
         "can_email_results": smtp_configured() and user_has_permission(user, "results:inspect"),
         "can_view_result_owners": is_admin(user),
@@ -607,6 +610,11 @@ def get_roboflow_settings(*, include_api_token=False):
             )
         result["api_token"] = settings["api_token"]
     return result
+
+
+def roboflow_configured():
+    settings = get_roboflow_settings()
+    return bool(settings.get("project_name") and settings.get("api_token_usable"))
 
 
 def update_roboflow_settings(payload):
