@@ -65,6 +65,7 @@ ROLE_PERMISSIONS = {
 }
 
 DEFAULT_DASHBOARD_SETTINGS = {
+    "site_name": "",
     "analysis_number": "",
     "source_type": "camera",
     "camera_device": "",
@@ -278,6 +279,7 @@ def get_dashboard_settings():
         if row is None:
             return DEFAULT_DASHBOARD_SETTINGS.copy()
         return {
+            "site_name": row["site_name"],
             "analysis_number": row["analysis_number"],
             "source_type": row["source_type"],
             "camera_device": row["camera_device"],
@@ -1310,6 +1312,7 @@ def init_auth_storage():
 
                 CREATE TABLE IF NOT EXISTS dashboard_settings (
                     id INTEGER PRIMARY KEY CHECK (id = 1),
+                    site_name TEXT NOT NULL DEFAULT '',
                     analysis_number TEXT NOT NULL DEFAULT '',
                     source_type TEXT NOT NULL DEFAULT 'camera',
                     camera_device TEXT NOT NULL DEFAULT '',
@@ -1373,11 +1376,17 @@ def init_auth_storage():
                     "ALTER TABLE dashboard_settings ADD COLUMN captions_enabled INTEGER NOT NULL DEFAULT 1"
                 )
 
+            if not _has_column(connection, "dashboard_settings", "site_name"):
+                connection.execute(
+                    "ALTER TABLE dashboard_settings ADD COLUMN site_name TEXT NOT NULL DEFAULT ''"
+                )
+
             if connection.execute("SELECT id FROM dashboard_settings WHERE id = 1").fetchone() is None:
                 connection.execute(
                     """
                     INSERT INTO dashboard_settings (
                         id,
+                        site_name,
                         analysis_number,
                         source_type,
                         camera_device,
@@ -1394,10 +1403,11 @@ def init_auth_storage():
                         grid_score_threshold,
                         ask_manual_spore_count,
                         updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         1,
+                        DEFAULT_DASHBOARD_SETTINGS["site_name"],
                         DEFAULT_DASHBOARD_SETTINGS["analysis_number"],
                         DEFAULT_DASHBOARD_SETTINGS["source_type"],
                         DEFAULT_DASHBOARD_SETTINGS["camera_device"],
@@ -1729,6 +1739,7 @@ def unauthorized_response(*, html_redirect=False):
 def update_dashboard_settings(payload):
     current = get_dashboard_settings()
     updated = {
+        "site_name": current["site_name"],
         "analysis_number": current["analysis_number"],
         "source_type": current["source_type"],
         "camera_device": current["camera_device"],
@@ -1743,6 +1754,8 @@ def update_dashboard_settings(payload):
         "ask_manual_spore_count": current["ask_manual_spore_count"],
     }
 
+    if "site_name" in payload:
+        updated["site_name"] = str(payload.get("site_name") or "").strip()[:120]
     if "analysis_number" in payload:
         updated["analysis_number"] = str(payload.get("analysis_number") or "")
     if "source_type" in payload:
@@ -1782,7 +1795,8 @@ def update_dashboard_settings(payload):
         connection.execute(
             """
             UPDATE dashboard_settings
-            SET analysis_number = ?,
+            SET site_name = ?,
+                analysis_number = ?,
                 source_type = ?,
                 camera_device = ?,
                 camera_width = ?,
@@ -1801,6 +1815,7 @@ def update_dashboard_settings(payload):
             WHERE id = 1
             """,
             (
+                updated["site_name"],
                 updated["analysis_number"],
                 updated["source_type"],
                 updated["camera_device"],

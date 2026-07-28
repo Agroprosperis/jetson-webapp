@@ -9,6 +9,7 @@ body { margin:0; background:#111; color:#eee; font-family:system-ui, Segoe UI, R
 h1 { margin:0 0 16px; font-weight:300; }
 .back-link { display:inline-block; margin-bottom:16px; color:#888; text-decoration:none; font-size:14px; }
 .back-link:hover { color:#eee; }
+.site-name { color:#bbb; font-size:13px; font-weight:600; margin-bottom:8px; }
 .card { background:#1b1b1b; border:1px solid #333; border-radius:10px; padding:16px; margin-bottom:18px; max-width:520px; }
 .field-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px; }
 .password-fields { display:flex; flex-direction:column; gap:12px; max-width:320px; }
@@ -50,6 +51,8 @@ button:hover { background:#2a2a2a; }
 
 <a href="/" class="back-link">Back to Dashboard</a>
 
+<div class="site-name"{% if not dashboard_settings.site_name %} hidden{% endif %}>{{ dashboard_settings.site_name }}</div>
+
 <h1>User Settings</h1>
 
 <div class="card">
@@ -87,6 +90,17 @@ button:hover { background:#2a2a2a; }
 </div>
 
 {% if can_configure_dashboard %}
+<div class="card">
+  <h2 style="margin:0 0 12px; font-weight:300; font-size:18px;">Підприємство</h2>
+  <div class="field">
+    <label for="siteName">Назва підприємства (елеватора)</label>
+    <input id="siteName" type="text" maxlength="120" value="{{ dashboard_settings.site_name }}" placeholder="Наприклад, Кременчуцький елеватор" autocomplete="off" />
+  </div>
+  <button id="saveSiteNameBtn" type="button" style="margin-top:12px;">💾 Зберегти</button>
+  <div class="hint">Назва показується в шапці всіх сторінок застосунку.</div>
+  <div id="siteNameMessage" class="message"></div>
+</div>
+
 <div class="card">
   <h2 style="margin:0 0 12px; font-weight:300; font-size:18px;">Налаштування аналізу</h2>
   <label style="display:flex; align-items:center; gap:10px; color:#eee; font-size:14px; cursor:pointer;">
@@ -286,6 +300,40 @@ document.getElementById('changePasswordBtn').addEventListener('click', async () 
     messageEl.classList.add('error');
   }
 });
+
+const saveSiteNameBtn = document.getElementById('saveSiteNameBtn');
+if (saveSiteNameBtn) {
+  saveSiteNameBtn.addEventListener('click', async () => {
+    const siteNameEl = document.getElementById('siteName');
+    const messageEl = document.getElementById('siteNameMessage');
+    messageEl.textContent = '';
+    messageEl.className = 'message';
+    saveSiteNameBtn.disabled = true;
+    try {
+      const response = await fetch('/api/dashboard-settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ site_name: siteNameEl.value.trim() }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || 'Не вдалося зберегти назву підприємства.');
+      }
+      siteNameEl.value = data.site_name || '';
+      document.querySelectorAll('.site-name').forEach((element) => {
+        element.textContent = siteNameEl.value;
+        element.hidden = !siteNameEl.value;
+      });
+      messageEl.textContent = 'Збережено.';
+      messageEl.classList.add('success');
+    } catch (error) {
+      messageEl.textContent = error.message || 'Не вдалося зберегти назву підприємства.';
+      messageEl.classList.add('error');
+    } finally {
+      saveSiteNameBtn.disabled = false;
+    }
+  });
+}
 
 const askManualSporeCountEl = document.getElementById('askManualSporeCount');
 if (askManualSporeCountEl) {

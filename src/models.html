@@ -40,6 +40,7 @@ tr:hover { background: #2a2a2a; }
 .empty { padding: 20px; text-align: center; color: #777; font-style: italic; }
 .back-link { display: inline-block; margin-bottom: 16px; color: #888; text-decoration: none; font-size: 14px; }
 .back-link:hover { color: #eee; }
+.site-name { color: #bbb; font-size: 13px; font-weight: 600; margin-bottom: 8px; }
 .overlay {
   position: fixed;
   inset: 0;
@@ -109,6 +110,8 @@ tr:hover { background: #2a2a2a; }
 <body>
 
 <a href="/" class="back-link">Back to Dashboard</a>
+
+<div class="site-name"{% if not dashboard_settings.site_name %} hidden{% endif %}>{{ dashboard_settings.site_name }}</div>
 
 <div class="page-head">
   <h1 style="margin:0;">Model Catalog</h1>

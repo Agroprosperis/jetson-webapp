@@ -42,6 +42,7 @@ a:hover { text-decoration: underline; }
 .empty { padding: 20px; text-align: center; color: #777; font-style: italic; }
 .back-link { display: inline-block; margin-bottom: 20px; color: #888; text-decoration: none; font-size: 14px;}
 .back-link:hover { color: #eee; }
+.site-name { color: #bbb; font-size: 13px; font-weight: 600; margin-bottom: 8px; }
 .folder-row td { background: #191919; font-weight: 600; color: #cfcfcf; }
 .folder-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .folder-meta { color: #888; font-weight: 400; font-size: 12px; }
@@ -90,6 +91,8 @@ a:hover { text-decoration: underline; }
 <body>
 
 <a href="/" class="back-link">← Назад до панелі</a>
+
+<div class="site-name"{% if not dashboard_settings.site_name %} hidden{% endif %}>{{ dashboard_settings.site_name }}</div>
 
 <h1>Результати аналізів</h1>
 
@@ -481,6 +484,57 @@ async function uploadSelectedImagesToRoboflow() {
 }
 
 
+const RECENT_EMAILS_KEY = 'tilletia.recent_emails';
+const MAX_RECENT_EMAILS = 10;
+const MAX_EMAIL_RECIPIENTS = 10;
+const EMAIL_ADDRESS_RE = /^[^@\s,]+@[^@\s,]+\.[^@\s,]+$/;
+
+function loadRecentEmails() {
+    try {
+        const stored = JSON.parse(localStorage.getItem(RECENT_EMAILS_KEY) || '[]');
+        if (!Array.isArray(stored)) return [];
+        return stored.filter(email => typeof email === 'string' && EMAIL_ADDRESS_RE.test(email));
+    } catch (error) {
+        return [];
+    }
+}
+
+function rememberRecentEmails(emails) {
+    const merged = [...emails];
+    loadRecentEmails().forEach(email => {
+        if (!merged.some(item => item.toLowerCase() === email.toLowerCase())) merged.push(email);
+    });
+    try {
+        localStorage.setItem(RECENT_EMAILS_KEY, JSON.stringify(merged.slice(0, MAX_RECENT_EMAILS)));
+    } catch (error) {
+        // localStorage can be unavailable or full; the history is optional
+    }
+}
+
+function parseEmailList(raw) {
+    const emails = [];
+    String(raw || '').split(',').forEach(part => {
+        const email = part.trim();
+        if (email && !emails.some(item => item.toLowerCase() === email.toLowerCase())) emails.push(email);
+    });
+    return emails;
+}
+
+function renderRecentEmailOptions() {
+    let datalist = document.getElementById('recentEmailsList');
+    if (!datalist) {
+        datalist = document.createElement('datalist');
+        datalist.id = 'recentEmailsList';
+        document.body.appendChild(datalist);
+    }
+    datalist.textContent = '';
+    loadRecentEmails().forEach(email => {
+        const option = document.createElement('option');
+        option.value = email;
+        datalist.appendChild(option);
+    });
+}
+
 async function sendSelectedImagesByEmail() {
     const emailButton = document.getElementById('emailImagesBtn');
     const imagePaths = Array.from(selectedImagePaths);
@@ -493,30 +547,41 @@ async function sendSelectedImagesByEmail() {
         return;
     }
 
-    let recipient = '';
+    const recentEmails = loadRecentEmails();
+    let recipients = [];
     if (window.Swal) {
+        renderRecentEmailOptions();
         const { value, isConfirmed } = await Swal.fire({
             title: 'Надіслати знімки на пошту',
-            input: 'email',
-            inputLabel: `Буде надіслано ${imagePaths.length} знімк(ів)`,
-            inputPlaceholder: 'email@example.com',
+            input: 'text',
+            inputLabel: `Буде надіслано ${imagePaths.length} знімк(ів). Кілька адрес — через кому.`,
+            inputPlaceholder: 'email@example.com, email2@example.com',
+            inputValue: recentEmails[0] || '',
+            inputAttributes: { list: 'recentEmailsList', autocomplete: 'off' },
             showCancelButton: true,
             confirmButtonText: 'Надіслати',
             cancelButtonText: 'Скасувати',
-            inputValidator: (val) => (!val || !val.trim()) ? 'Вкажіть email-адресу.' : undefined,
+            inputValidator: (val) => {
+                const parsed = parseEmailList(val);
+                if (!parsed.length) return 'Вкажіть email-адресу.';
+                const invalid = parsed.filter(email => !EMAIL_ADDRESS_RE.test(email));
+                if (invalid.length) return `Некоректна адреса: ${invalid.join(', ')}`;
+                if (parsed.length > MAX_EMAIL_RECIPIENTS) return `Вкажіть не більше ${MAX_EMAIL_RECIPIENTS} адрес за раз.`;
+                return undefined;
+            },
         });
         if (!isConfirmed) return;
-        recipient = String(value || '').trim();
+        recipients = parseEmailList(value);
     } else {
-        recipient = (prompt('Вкажіть email-адресу отримувача:') || '').trim();
-        if (!recipient) return;
+        recipients = parseEmailList(prompt('Вкажіть email-адреси отримувачів (через кому):') || '');
+        if (!recipients.length) return;
     }
 
     emailButton.disabled = true;
     if (window.Swal) {
         Swal.fire({
             title: 'Надсилання...',
-            text: `Надсилаємо ${imagePaths.length} знімк(ів) на ${recipient}`,
+            text: `Надсилаємо ${imagePaths.length} знімк(ів) на ${recipients.join(', ')}`,
             allowOutsideClick: false,
             didOpen: () => Swal.showLoading(),
         });
@@ -526,13 +591,14 @@ async function sendSelectedImagesByEmail() {
         const response = await fetch('/api/results/email', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ to: recipient, image_paths: imagePaths }),
+            body: JSON.stringify({ to: recipients, image_paths: imagePaths }),
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) {
             throw new Error(data.error || 'Не вдалося надіслати лист.');
         }
 
+        rememberRecentEmails(data.recipients || recipients);
         selectedImagePaths.clear();
         document.querySelectorAll('.rf-image-checkbox').forEach(checkbox => {
             checkbox.checked = false;
@@ -540,7 +606,7 @@ async function sendSelectedImagesByEmail() {
         });
         updateSelectionButtons();
 
-        const successText = `Надіслано ${data.sent_count || imagePaths.length} знімк(ів) на ${recipient}.`;
+        const successText = `Надіслано ${data.sent_count || imagePaths.length} знімк(ів) на ${(data.recipients || recipients).join(', ')}.`;
         if (window.Swal) Swal.fire({ icon: 'success', title: 'Лист надіслано', text: successText });
         else alert(successText);
     } catch (error) {

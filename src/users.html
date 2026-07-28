@@ -9,6 +9,7 @@ body { margin:0; background:#111; color:#eee; font-family:system-ui, Segoe UI, R
 h1 { margin:0 0 16px; font-weight:300; }
 .back-link { display:inline-block; margin-bottom:16px; color:#888; text-decoration:none; font-size:14px; }
 .back-link:hover { color:#eee; }
+.site-name { color:#bbb; font-size:13px; font-weight:600; margin-bottom:8px; }
 .card { background:#1b1b1b; border:1px solid #333; border-radius:10px; padding:16px; margin-bottom:18px; }
 .form-row { display:flex; gap:12px; flex-wrap:wrap; align-items:end; }
 .field { display:flex; flex-direction:column; gap:6px; min-width:180px; }
@@ -27,6 +28,8 @@ tr:last-child td { border-bottom:none; }
 <body>
 
 <a href="/" class="back-link">Back to Dashboard</a>
+
+<div class="site-name"{% if not dashboard_settings.site_name %} hidden{% endif %}>{{ dashboard_settings.site_name }}</div>
 
 <h1>User Management</h1>
 

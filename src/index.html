@@ -65,6 +65,15 @@ header {
   background: #3a3a3a;
 }
 
+.site-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #ddd;
+  white-space: nowrap;
+  padding-right: 12px;
+  border-right: 1px solid #3a3a3a;
+}
+
 .menu-dropdown { position: relative; }
 .menu-dropdown > summary {
   list-style: none;
@@ -219,6 +228,8 @@ select { border: 1px solid #444; }
 
 <header>
   <div class="control-row toolbar-main">
+    <span class="site-name"{% if not dashboard_settings.site_name %} hidden{% endif %}>{{ dashboard_settings.site_name }}</span>
+
     <select id="sourceType" style="font-weight:bold;"{% if not can_configure_dashboard %} disabled hidden{% endif %}>
       <option value="camera"{% if dashboard_settings.source_type == "camera" %} selected{% endif %}>Camera Source</option>
       <option value="file"{% if dashboard_settings.source_type == "file" %} selected{% endif %}>File Upload</option>

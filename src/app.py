@@ -50,6 +50,7 @@ ROBOFLOW_UPLOAD_URL = "https://api.roboflow.com/dataset/{project_name}/upload"
 ROBOFLOW_UPLOAD_TIMEOUT = (10, 120)
 MAX_ROBOFLOW_UPLOAD_IMAGES = 100
 MAX_EMAIL_IMAGES = 20
+MAX_EMAIL_RECIPIENTS = 10
 EMAIL_ADDRESS_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 SMTP_TIMEOUT = 30
 
@@ -693,11 +694,33 @@ def _build_result_email_content(metadata):
     return subject, body
 
 
-def _send_email(settings, recipient, subject, body, attachments):
+def _parse_email_recipients(raw):
+    candidates = raw.split(",") if isinstance(raw, str) else raw
+    if not isinstance(candidates, list):
+        raise ValueError("Вкажіть коректну email-адресу.")
+
+    recipients = []
+    for candidate in candidates:
+        recipient = str(candidate or "").strip()
+        if not recipient:
+            continue
+        if not EMAIL_ADDRESS_RE.match(recipient):
+            raise ValueError(f"Некоректна email-адреса: {recipient}")
+        if recipient.lower() not in {existing.lower() for existing in recipients}:
+            recipients.append(recipient)
+
+    if not recipients:
+        raise ValueError("Вкажіть коректну email-адресу.")
+    if len(recipients) > MAX_EMAIL_RECIPIENTS:
+        raise ValueError(f"Вкажіть не більше {MAX_EMAIL_RECIPIENTS} адрес за раз.")
+    return recipients
+
+
+def _send_email(settings, recipients, subject, body, attachments):
     message = EmailMessage()
     message["Subject"] = subject
     message["From"] = settings["sender"]
-    message["To"] = recipient
+    message["To"] = ", ".join(recipients)
     message.set_content(body)
 
     for filename, payload in attachments:
@@ -726,9 +749,9 @@ def _send_email(settings, recipient, subject, body, attachments):
         raise RuntimeError(f"Не вдалося надіслати лист: {exc}") from exc
 
 
-def _send_result_images_email(recipient, subject, body, attachments):
+def _send_result_images_email(recipients, subject, body, attachments):
     settings = auth.get_smtp_settings(include_password=True)
-    _send_email(settings, recipient, subject, body, attachments)
+    _send_email(settings, recipients, subject, body, attachments)
 
 
 def _is_result_image(filename):
@@ -1469,6 +1492,9 @@ def api_get_dashboard_settings():
         schema:
           type: object
           properties:
+            site_name:
+              type: string
+              description: Enterprise (elevator) name shown in the page header.
             analysis_number:
               type: string
             source_type:
@@ -1529,6 +1555,9 @@ def api_put_dashboard_settings():
         schema:
           type: object
           properties:
+            site_name:
+              type: string
+              description: Enterprise (elevator) name shown in the page header.
             analysis_number:
               type: string
             source_type:
@@ -1837,7 +1866,7 @@ def api_test_smtp_settings():
         "Якщо ви його отримали, налаштування пошти працюють."
     )
     try:
-        _send_email(settings, recipient, subject, body, attachments=[])
+        _send_email(settings, [recipient], subject, body, attachments=[])
     except RuntimeError as exc:
         return flask.jsonify({"error": str(exc)}), 503
 
@@ -2914,7 +2943,7 @@ def api_email_result_images():
           properties:
             to:
               type: string
-              description: Recipient email address.
+              description: Recipient email addresses, either an array or a comma-separated string (up to 10).
             image_paths:
               type: array
               maxItems: 20
@@ -2938,9 +2967,10 @@ def api_email_result_images():
     if not isinstance(payload, dict):
         return flask.jsonify({"error": "A JSON request body is required."}), 400
 
-    recipient = str(payload.get("to") or "").strip()
-    if not EMAIL_ADDRESS_RE.match(recipient):
-        return flask.jsonify({"error": "Вкажіть коректну email-адресу."}), 400
+    try:
+        recipients = _parse_email_recipients(payload.get("to"))
+    except ValueError as exc:
+        return flask.jsonify({"error": str(exc)}), 400
 
     image_paths = payload.get("image_paths")
     if not isinstance(image_paths, list) or not image_paths:
@@ -2986,11 +3016,15 @@ def api_email_result_images():
 
     subject, body = _build_result_email_content(metadata)
     try:
-        _send_result_images_email(recipient, subject, body, attachments)
+        _send_result_images_email(recipients, subject, body, attachments)
     except RuntimeError as exc:
         return flask.jsonify({"error": str(exc)}), 503
 
-    return flask.jsonify({"success": True, "sent_count": len(attachments)})
+    return flask.jsonify({
+        "success": True,
+        "sent_count": len(attachments),
+        "recipients": recipients,
+    })
 
 
 @app.route("/api/results/search")
