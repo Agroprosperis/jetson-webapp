@@ -24,6 +24,7 @@ ROBOFLOW_SETTINGS_PATH = "/app/runs/roboflow.json"
 ROBOFLOW_MASTER_KEY_PATH = "/run/secrets/roboflow-master-key"
 ROBOFLOW_KEY_VERSION = 1
 ROBOFLOW_TOKEN_NONCE_BYTES = 12
+SMTP_SETTINGS_PATH = "/app/runs/smtp.json"
 SMTP_KEY_VERSION = 1
 SMTP_TLS_MODES = ("starttls", "ssl", "none")
 DEFAULT_SMTP_PORT = 587
@@ -821,6 +822,96 @@ def _decrypt_smtp_password(row, master_key):
         raise RoboflowStorageError("The encrypted SMTP password could not be decrypted.") from None
 
 
+def _read_plaintext_smtp_password():
+    try:
+        settings_stat = os.lstat(SMTP_SETTINGS_PATH)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise RoboflowStorageError("The plaintext SMTP password file could not be read.") from None
+
+    if not stat.S_ISREG(settings_stat.st_mode):
+        raise RoboflowStorageError("The plaintext SMTP password path is invalid.")
+
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    file_descriptor = None
+    try:
+        file_descriptor = os.open(SMTP_SETTINGS_PATH, flags)
+        opened_stat = os.fstat(file_descriptor)
+        if not stat.S_ISREG(opened_stat.st_mode):
+            raise OSError("Not a regular file")
+        os.fchmod(file_descriptor, 0o600)
+        with os.fdopen(file_descriptor, "r", encoding="utf-8") as settings_input:
+            file_descriptor = None
+            serialized_settings = settings_input.read(65_537)
+    except (OSError, UnicodeDecodeError):
+        raise RoboflowStorageError("The plaintext SMTP password file could not be read.") from None
+    finally:
+        if file_descriptor is not None:
+            os.close(file_descriptor)
+
+    if len(serialized_settings) > 65_536:
+        raise RoboflowStorageError("The plaintext SMTP password file is invalid.")
+    try:
+        settings = json.loads(serialized_settings)
+    except ValueError:
+        raise RoboflowStorageError("The plaintext SMTP password file is invalid.") from None
+    if not isinstance(settings, dict):
+        raise RoboflowStorageError("The plaintext SMTP password file is invalid.")
+
+    password = settings.get("password", "")
+    if not isinstance(password, str):
+        raise RoboflowStorageError("The plaintext SMTP password file is invalid.")
+    return {
+        "password": password,
+        "plaintext_storage_confirmed": settings.get("plaintext_storage_confirmed") is True,
+    }
+
+
+def _write_plaintext_smtp_password(password):
+    settings_dir = os.path.dirname(SMTP_SETTINGS_PATH)
+    os.makedirs(settings_dir, exist_ok=True)
+    file_descriptor, temporary_path = tempfile.mkstemp(prefix=".smtp-", dir=settings_dir)
+    try:
+        os.fchmod(file_descriptor, 0o600)
+        with os.fdopen(file_descriptor, "w", encoding="utf-8") as settings_output:
+            file_descriptor = None
+            json.dump(
+                {
+                    "schema_version": 1,
+                    "password": password,
+                    "plaintext_storage_confirmed": True,
+                },
+                settings_output,
+            )
+            settings_output.flush()
+            os.fsync(settings_output.fileno())
+        os.replace(temporary_path, SMTP_SETTINGS_PATH)
+    finally:
+        if file_descriptor is not None:
+            os.close(file_descriptor)
+        if os.path.exists(temporary_path):
+            os.unlink(temporary_path)
+
+
+def _delete_plaintext_smtp_password():
+    try:
+        settings_stat = os.lstat(SMTP_SETTINGS_PATH)
+    except FileNotFoundError:
+        return
+    if not stat.S_ISREG(settings_stat.st_mode):
+        raise RoboflowStorageError("The plaintext SMTP password path is invalid.")
+    try:
+        os.unlink(SMTP_SETTINGS_PATH)
+    except OSError:
+        raise RoboflowStorageError("The plaintext SMTP password file could not be removed.") from None
+
+
 def _normalize_smtp_tls_mode(value):
     mode = str(value or "").strip().lower()
     return mode if mode in SMTP_TLS_MODES else "starttls"
@@ -909,6 +1000,7 @@ def _inspect_smtp_settings(connection):
             "password": password,
             "password_configured": bool(password),
             "password_storage": "env" if password else "none",
+            "password_persistent": bool(password),
             "secure_storage_available": _probe_roboflow_secure_storage()[0] == "available",
         }
 
@@ -928,9 +1020,23 @@ def _inspect_smtp_settings(connection):
             except RoboflowStorageError:
                 password = ""
                 password_storage = "encrypted_unavailable"
-    elif _smtp_memory_password:
-        password = _smtp_memory_password
-        password_storage = "memory"
+    else:
+        try:
+            plaintext_settings = _read_plaintext_smtp_password()
+        except RoboflowStorageError:
+            plaintext_settings = None
+            password_storage = "plaintext_file_unavailable"
+
+        if plaintext_settings is not None:
+            password = plaintext_settings["password"]
+            password_storage = (
+                "plaintext_file"
+                if plaintext_settings["plaintext_storage_confirmed"]
+                else "plaintext_file_unconfirmed"
+            )
+        elif _smtp_memory_password:
+            password = _smtp_memory_password
+            password_storage = "memory"
 
     return {
         "source": "db",
@@ -940,8 +1046,13 @@ def _inspect_smtp_settings(connection):
         "sender": (row["sender"] or "").strip(),
         "tls_mode": _normalize_smtp_tls_mode(row["tls_mode"]),
         "password": password,
-        "password_configured": bool(password) or encrypted_password_exists,
+        "password_configured": (
+            bool(password)
+            or encrypted_password_exists
+            or password_storage == "plaintext_file_unavailable"
+        ),
         "password_storage": password_storage,
+        "password_persistent": password_storage in ("encrypted", "plaintext_file"),
         "secure_storage_available": secure_storage_status == "available",
     }
 
@@ -956,6 +1067,12 @@ def get_smtp_settings(*, include_password=False):
 
     result = {key: value for key, value in settings.items() if key != "password"}
     if include_password:
+        if settings["password_storage"] in (
+            "encrypted_unavailable",
+            "plaintext_file_unconfirmed",
+            "plaintext_file_unavailable",
+        ):
+            raise RoboflowStorageError("The stored SMTP password is not available.")
         result["password"] = settings["password"]
     return result
 
@@ -965,11 +1082,31 @@ def smtp_configured():
     return bool(settings["host"] and settings["sender"])
 
 
+def resolve_smtp_settings(overrides=None):
+    """Merge the saved SMTP settings with per-request overrides."""
+    overrides = overrides if isinstance(overrides, dict) else {}
+    override_password = str(overrides.get("password") or "")
+    saved = get_smtp_settings(include_password=not override_password)
+    return {
+        "host": str(overrides.get("host", saved["host"]) or "").strip(),
+        "port": _coerce_smtp_port(overrides.get("port", saved["port"])),
+        "username": str(overrides.get("username", saved["username"]) or "").strip(),
+        "sender": str(overrides.get("sender", saved["sender"]) or "").strip(),
+        "tls_mode": _normalize_smtp_tls_mode(overrides.get("tls_mode", saved["tls_mode"])),
+        "password": override_password or saved.get("password", ""),
+    }
+
+
 def update_smtp_settings(payload):
     global _smtp_memory_password
 
     if not isinstance(payload, dict):
         raise ValueError("Invalid SMTP settings payload.")
+
+    confirmation_supplied = "allow_insecure_file_storage" in payload
+    allow_insecure_file_storage = payload.get("allow_insecure_file_storage", False)
+    if confirmation_supplied and not isinstance(allow_insecure_file_storage, bool):
+        raise ValueError("Plaintext storage confirmation must be a boolean.")
 
     with _smtp_settings_lock:
         connection = _connect()
@@ -999,20 +1136,32 @@ def update_smtp_settings(payload):
 
             nonce = None
             ciphertext = None
+            store_in_plaintext_file = False
             if password:
                 secure_storage_status, master_key = _probe_roboflow_secure_storage()
                 if secure_storage_status == "available":
                     nonce, ciphertext = _encrypt_smtp_password(password, master_key)
-                    _smtp_memory_password = ""
                 else:
-                    _smtp_memory_password = password
-            else:
-                _smtp_memory_password = ""
+                    store_in_plaintext_file = (
+                        allow_insecure_file_storage
+                        if confirmation_supplied
+                        else current["password_storage"] == "plaintext_file"
+                    )
 
             _upsert_smtp_settings_row(
                 connection, host, port, username, sender, tls_mode, nonce, ciphertext
             )
             connection.commit()
+
+            if not password or ciphertext is not None:
+                _smtp_memory_password = ""
+                _delete_plaintext_smtp_password()
+            elif store_in_plaintext_file:
+                _write_plaintext_smtp_password(password)
+                _smtp_memory_password = ""
+            else:
+                _smtp_memory_password = password
+                _delete_plaintext_smtp_password()
         except Exception:
             connection.rollback()
             raise

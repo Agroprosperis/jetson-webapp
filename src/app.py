@@ -693,9 +693,7 @@ def _build_result_email_content(metadata):
     return subject, body
 
 
-def _send_result_images_email(recipient, subject, body, attachments):
-    settings = auth.get_smtp_settings(include_password=True)
-
+def _send_email(settings, recipient, subject, body, attachments):
     message = EmailMessage()
     message["Subject"] = subject
     message["From"] = settings["sender"]
@@ -726,6 +724,11 @@ def _send_result_images_email(recipient, subject, body, attachments):
             server.send_message(message)
     except (smtplib.SMTPException, OSError) as exc:
         raise RuntimeError(f"Не вдалося надіслати лист: {exc}") from exc
+
+
+def _send_result_images_email(recipient, subject, body, attachments):
+    settings = auth.get_smtp_settings(include_password=True)
+    _send_email(settings, recipient, subject, body, attachments)
 
 
 def _is_result_image(filename):
@@ -1694,7 +1697,9 @@ def api_get_smtp_settings():
               type: boolean
             password_storage:
               type: string
-              enum: [none, env, memory, encrypted, encrypted_unavailable]
+              enum: [none, env, memory, encrypted, encrypted_unavailable, plaintext_file, plaintext_file_unconfirmed, plaintext_file_unavailable]
+            password_persistent:
+              type: boolean
             secure_storage_available:
               type: boolean
             source:
@@ -1738,6 +1743,9 @@ def api_put_smtp_settings():
             password:
               type: string
               description: Replacement password. A blank or omitted value preserves the current password.
+            allow_insecure_file_storage:
+              type: boolean
+              description: Allow storing the password in an owner-only plaintext file when no secure storage is available.
     responses:
       200:
         description: Safe SMTP configuration status.
@@ -1760,7 +1768,7 @@ def api_put_smtp_settings():
 @auth.require_permission("smtp:manage")
 def api_test_smtp_settings():
     """
-    Send a short test email using the saved SMTP settings.
+    Send a short test email using the supplied settings, falling back to the saved ones.
     ---
     tags:
       - Email
@@ -1775,7 +1783,26 @@ def api_test_smtp_settings():
           properties:
             to:
               type: string
-              description: Optional recipient. Defaults to the configured sender address.
+              description: Optional recipient. Defaults to the effective sender address.
+            host:
+              type: string
+              description: Overrides the saved SMTP host for this test only.
+            port:
+              type: integer
+              description: Overrides the saved port for this test only.
+            username:
+              type: string
+              description: Overrides the saved login for this test only.
+            sender:
+              type: string
+              description: Overrides the saved From address for this test only.
+            tls_mode:
+              type: string
+              enum: [starttls, ssl, none]
+              description: Overrides the saved encryption mode for this test only.
+            password:
+              type: string
+              description: Password used for this test. A blank value reuses the saved password.
     responses:
       200:
         description: Test email sent successfully.
@@ -1784,14 +1811,23 @@ def api_test_smtp_settings():
       403:
         description: Authenticated user cannot manage SMTP settings.
       503:
-        description: SMTP is not configured or the test send failed.
+        description: The stored password is unavailable or the test send failed.
     """
-    if not auth.smtp_configured():
-        return flask.jsonify({"error": "Спочатку збережіть налаштування SMTP."}), 400
-
-    settings = auth.get_smtp_settings()
     payload = flask.request.get_json(silent=True) or {}
-    recipient = str(payload.get("to") or settings.get("sender") or "").strip()
+
+    try:
+        settings = auth.resolve_smtp_settings(payload)
+    except auth.RoboflowStorageError as exc:
+        return flask.jsonify({"error": str(exc)}), 503
+    except (TypeError, ValueError) as exc:
+        return flask.jsonify({"error": str(exc)}), 400
+
+    if not settings["host"]:
+        return flask.jsonify({"error": "Вкажіть SMTP-сервер."}), 400
+    if not EMAIL_ADDRESS_RE.match(settings["sender"]):
+        return flask.jsonify({"error": "Вкажіть коректну адресу відправника."}), 400
+
+    recipient = str(payload.get("to") or settings["sender"]).strip()
     if not EMAIL_ADDRESS_RE.match(recipient):
         return flask.jsonify({"error": "Вкажіть коректну email-адресу для перевірки."}), 400
 
@@ -1801,7 +1837,7 @@ def api_test_smtp_settings():
         "Якщо ви його отримали, налаштування пошти працюють."
     )
     try:
-        _send_result_images_email(recipient, subject, body, attachments=[])
+        _send_email(settings, recipient, subject, body, attachments=[])
     except RuntimeError as exc:
         return flask.jsonify({"error": str(exc)}), 503
 

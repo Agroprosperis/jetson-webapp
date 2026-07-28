@@ -14,7 +14,7 @@ h1 { margin:0 0 16px; font-weight:300; }
 .password-fields { display:flex; flex-direction:column; gap:12px; max-width:320px; }
 .field { display:flex; flex-direction:column; gap:6px; }
 label { color:#aaa; font-size:12px; }
-input, button {
+input, select, button {
   background:#222;
   color:#eee;
   border:1px solid #333;
@@ -41,6 +41,9 @@ button:hover { background:#2a2a2a; }
 }
 .storage-confirmation[hidden] { display:none; }
 .storage-confirmation input { margin-top:2px; }
+.input-with-button { display:flex; gap:8px; }
+.input-with-button input { flex:1; min-width:0; }
+.test-block { border-top:1px solid #333; margin-top:16px; padding-top:14px; }
 </style>
 </head>
 <body>
@@ -162,14 +165,10 @@ button:hover { background:#2a2a2a; }
 {% if can_manage_smtp %}
 <div class="card">
   <h2 style="margin:0 0 12px; font-weight:300; font-size:18px;">Пошта (SMTP)</h2>
-  <div class="password-fields">
+  <div class="field-grid">
     <div class="field">
       <label for="smtpHost">SMTP-сервер</label>
       <input id="smtpHost" type="text" value="{{ smtp_settings.host }}" placeholder="smtp.example.com" autocomplete="off" />
-    </div>
-    <div class="field">
-      <label for="smtpPort">Порт</label>
-      <input id="smtpPort" type="number" min="1" max="65535" value="{{ smtp_settings.port }}" placeholder="587" autocomplete="off" />
     </div>
     <div class="field">
       <label for="smtpTlsMode">Шифрування</label>
@@ -178,6 +177,10 @@ button:hover { background:#2a2a2a; }
         <option value="ssl"{% if smtp_settings.tls_mode == "ssl" %} selected{% endif %}>SSL/TLS</option>
         <option value="none"{% if smtp_settings.tls_mode == "none" %} selected{% endif %}>Без шифрування</option>
       </select>
+    </div>
+    <div class="field">
+      <label for="smtpPort">Порт</label>
+      <input id="smtpPort" type="number" min="1" max="65535" value="{{ smtp_settings.port }}" placeholder="587" autocomplete="off" />
     </div>
     <div class="field">
       <label for="smtpSender">Адреса відправника (From)</label>
@@ -189,27 +192,53 @@ button:hover { background:#2a2a2a; }
     </div>
     <div class="field">
       <label for="smtpPassword">Пароль</label>
-      <input id="smtpPassword" type="password" placeholder="{% if smtp_settings.password_configured %}Пароль збережено — залиште порожнім, щоб не змінювати{% else %}Введіть пароль{% endif %}" autocomplete="new-password" />
-    </div>
-    <div class="field">
-      <label for="smtpTestTo">Email для перевірки</label>
-      <input id="smtpTestTo" type="email" value="{{ smtp_settings.sender }}" placeholder="you@example.com" autocomplete="off" />
+      <div class="input-with-button">
+        <input id="smtpPassword" type="password" placeholder="{% if smtp_settings.password_configured %}Пароль збережено — залиште порожнім, щоб не змінювати{% else %}Введіть пароль{% endif %}" autocomplete="new-password" />
+        <button id="smtpPasswordToggle" type="button" title="Показати пароль" aria-label="Показати пароль">👁</button>
+      </div>
     </div>
   </div>
-  <div style="display:flex; gap:10px; margin-top:12px; flex-wrap:wrap;">
-    <button id="saveSmtpSettingsBtn" type="button">💾 Зберегти налаштування пошти</button>
-    <button id="testSmtpSettingsBtn" type="button">✉ Перевірити</button>
-  </div>
-  <div class="hint">Спочатку збережіть налаштування, потім натисніть «Перевірити» — буде надіслано тестовий лист. Порожнє поле пароля зберігає поточний пароль.</div>
-  <div id="smtpPasswordStatus" class="hint">
-    {% if smtp_settings.password_storage == "encrypted" %}Пароль збережено в зашифрованому вигляді.
-    {% elif smtp_settings.password_storage == "memory" %}Пароль у памʼяті; буде втрачений після перезапуску (немає захищеного сховища).
+  <div
+    id="smtpStorageNotice"
+    class="storage-notice {% if smtp_settings.password_persistent %}secure{% else %}warning{% endif %}"
+  >
+    {% if smtp_settings.password_storage == "encrypted" %}Пароль зашифрований у захищеному сховищі — працює після перезапуску.
+    {% elif smtp_settings.password_storage == "plaintext_file" %}Пароль збережений у файлі лише для власника (без шифрування) — працює після перезапуску.
     {% elif smtp_settings.password_storage == "env" %}Пароль заданий через змінні середовища.
-    {% elif smtp_settings.password_storage == "encrypted_unavailable" %}Пароль зашифровано, але захищене сховище недоступне. Введіть пароль повторно.
-    {% else %}Пароль не налаштовано.
+    {% elif smtp_settings.password_storage == "encrypted_unavailable" %}Пароль зашифрований, але захищене сховище недоступне. Введіть пароль повторно.
+    {% elif smtp_settings.password_storage == "plaintext_file_unavailable" %}Файл з паролем не читається. Введіть пароль повторно.
+    {% elif smtp_settings.password_storage == "plaintext_file_unconfirmed" %}Підтвердьте зберігання у файл нижче, інакше пароль зникне після перезапуску.
+    {% elif smtp_settings.password_storage == "memory" %}Пароль лише в памʼяті — він зникне після перезапуску сервісу. Позначте опцію нижче, щоб зберігати його у файлі лише для власника.
+    {% else %}Пароль ще не налаштований.
     {% endif %}
   </div>
+  <label
+    id="smtpStorageConfirmation"
+    class="storage-confirmation"
+    {% if smtp_settings.secure_storage_available %}hidden{% endif %}
+  >
+    <input
+      id="smtpAllowInsecureFileStorage"
+      type="checkbox"
+      {% if smtp_settings.password_storage == "plaintext_file" %}checked{% endif %}
+    />
+    <span>Розумію, що пароль зберігатиметься без шифрування у файлі на сервері, доступному лише власнику.</span>
+  </label>
+  <button id="saveSmtpSettingsBtn" type="button">💾 Зберегти налаштування пошти</button>
+  <div class="hint">Порожнє поле пароля зберігає поточний пароль.</div>
   <div id="smtpSettingsMessage" class="message"></div>
+
+  <div class="test-block">
+    <div class="field">
+      <label for="smtpTestTo">Email для перевірки</label>
+      <div class="input-with-button">
+        <input id="smtpTestTo" type="email" value="{{ smtp_settings.sender }}" placeholder="you@example.com" autocomplete="off" />
+        <button id="testSmtpSettingsBtn" type="button">✉ Перевірити</button>
+      </div>
+    </div>
+    <div class="hint">Перевірка використовує значення з форми вище, тому її можна виконати ще до збереження.</div>
+    <div id="smtpTestMessage" class="message"></div>
+  </div>
 </div>
 {% endif %}
 
@@ -363,33 +392,107 @@ if (saveRoboflowSettingsBtn) {
 {% if can_manage_smtp %}
 const saveSmtpSettingsBtn = document.getElementById('saveSmtpSettingsBtn');
 const testSmtpSettingsBtn = document.getElementById('testSmtpSettingsBtn');
-if (saveSmtpSettingsBtn) {
-  const smtpStatusEl = document.getElementById('smtpPasswordStatus');
-  const smtpStatusMessages = {
-    encrypted: 'Пароль збережено в зашифрованому вигляді.',
-    memory: 'Пароль у памʼяті; буде втрачений після перезапуску (немає захищеного сховища).',
+if (saveSmtpSettingsBtn && testSmtpSettingsBtn) {
+  const SMTP_DEFAULT_PORTS = { starttls: 587, ssl: 465, none: 25 };
+  const SMTP_EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+  const smtpHostEl = document.getElementById('smtpHost');
+  const smtpPortEl = document.getElementById('smtpPort');
+  const smtpTlsModeEl = document.getElementById('smtpTlsMode');
+  const smtpSenderEl = document.getElementById('smtpSender');
+  const smtpUsernameEl = document.getElementById('smtpUsername');
+  const smtpPasswordEl = document.getElementById('smtpPassword');
+  const smtpPasswordToggleEl = document.getElementById('smtpPasswordToggle');
+  const smtpTestToEl = document.getElementById('smtpTestTo');
+  const smtpNoticeEl = document.getElementById('smtpStorageNotice');
+  const smtpConfirmationEl = document.getElementById('smtpStorageConfirmation');
+  const smtpAllowInsecureEl = document.getElementById('smtpAllowInsecureFileStorage');
+  const smtpMessageEl = document.getElementById('smtpSettingsMessage');
+  const smtpTestMessageEl = document.getElementById('smtpTestMessage');
+  const smtpStorageMessages = {
+    encrypted: 'Пароль зашифрований у захищеному сховищі — працює після перезапуску.',
+    plaintext_file: 'Пароль збережений у файлі лише для власника (без шифрування) — працює після перезапуску.',
     env: 'Пароль заданий через змінні середовища.',
-    encrypted_unavailable: 'Пароль зашифровано, але захищене сховище недоступне. Введіть пароль повторно.',
-    none: 'Пароль не налаштовано.',
+    encrypted_unavailable: 'Пароль зашифрований, але захищене сховище недоступне. Введіть пароль повторно.',
+    plaintext_file_unavailable: 'Файл з паролем не читається. Введіть пароль повторно.',
+    plaintext_file_unconfirmed: 'Підтвердьте зберігання у файл нижче, інакше пароль зникне після перезапуску.',
+    memory: 'Пароль лише в памʼяті — він зникне після перезапуску сервісу. Позначте опцію нижче, щоб зберігати його у файлі лише для власника.',
+    none: 'Пароль ще не налаштований.',
+  };
+  let smtpSecureStorageAvailable = {{ smtp_settings.secure_storage_available | tojson }};
+  let smtpPortDirty = !Object.values(SMTP_DEFAULT_PORTS).includes(
+    parseInt(smtpPortEl.value, 10)
+  );
+
+  const showMessage = (element, text, isError) => {
+    element.textContent = text;
+    element.className = 'message ' + (isError ? 'error' : 'success');
+  };
+
+  const clearMessages = () => {
+    smtpMessageEl.textContent = '';
+    smtpMessageEl.className = 'message';
+    smtpTestMessageEl.textContent = '';
+    smtpTestMessageEl.className = 'message';
+  };
+
+  const updateSmtpStorageState = (settings) => {
+    smtpSecureStorageAvailable = settings.secure_storage_available;
+    smtpNoticeEl.className = 'storage-notice ' + (settings.password_persistent ? 'secure' : 'warning');
+    smtpNoticeEl.textContent = smtpStorageMessages[settings.password_storage] || smtpStorageMessages.none;
+    smtpConfirmationEl.hidden = smtpSecureStorageAvailable;
+    smtpAllowInsecureEl.checked =
+      !smtpSecureStorageAvailable && settings.password_storage === 'plaintext_file';
+  };
+
+  smtpPortEl.addEventListener('input', () => { smtpPortDirty = true; });
+  smtpTlsModeEl.addEventListener('change', () => {
+    if (!smtpPortDirty) {
+      smtpPortEl.value = SMTP_DEFAULT_PORTS[smtpTlsModeEl.value] || SMTP_DEFAULT_PORTS.starttls;
+    }
+  });
+
+  smtpPasswordToggleEl.addEventListener('click', () => {
+    const revealed = smtpPasswordEl.type === 'text';
+    smtpPasswordEl.type = revealed ? 'password' : 'text';
+    const title = revealed ? 'Показати пароль' : 'Приховати пароль';
+    smtpPasswordToggleEl.title = title;
+    smtpPasswordToggleEl.setAttribute('aria-label', title);
+  });
+
+  const collectSmtpFormValues = () => {
+    const values = {
+      host: smtpHostEl.value.trim(),
+      port: parseInt(smtpPortEl.value, 10) || SMTP_DEFAULT_PORTS[smtpTlsModeEl.value] || 587,
+      tls_mode: smtpTlsModeEl.value,
+      sender: smtpSenderEl.value.trim(),
+      username: smtpUsernameEl.value.trim(),
+    };
+    if (smtpPasswordEl.value) {
+      values.password = smtpPasswordEl.value;
+    }
+    return values;
+  };
+
+  const validateSmtpForm = () => {
+    const values = collectSmtpFormValues();
+    if (!values.host) return 'Вкажіть SMTP-сервер.';
+    if (!SMTP_EMAIL_RE.test(values.sender)) return 'Вкажіть коректну адресу відправника.';
+    return '';
   };
 
   saveSmtpSettingsBtn.addEventListener('click', async () => {
-    const passwordEl = document.getElementById('smtpPassword');
-    const messageEl = document.getElementById('smtpSettingsMessage');
-    const payload = {
-      host: document.getElementById('smtpHost').value.trim(),
-      port: parseInt(document.getElementById('smtpPort').value, 10) || 587,
-      tls_mode: document.getElementById('smtpTlsMode').value,
-      sender: document.getElementById('smtpSender').value.trim(),
-      username: document.getElementById('smtpUsername').value.trim(),
-    };
-    const replacementPassword = passwordEl.value;
-    if (replacementPassword) {
-      payload.password = replacementPassword;
+    clearMessages();
+    const validationError = validateSmtpForm();
+    if (validationError) {
+      showMessage(smtpMessageEl, validationError, true);
+      return;
     }
 
-    messageEl.textContent = '';
-    messageEl.className = 'message';
+    const payload = collectSmtpFormValues();
+    if (!smtpSecureStorageAvailable) {
+      payload.allow_insecure_file_storage = smtpAllowInsecureEl.checked;
+    }
+
     saveSmtpSettingsBtn.disabled = true;
     try {
       const response = await fetch('/api/smtp/settings', {
@@ -402,47 +505,47 @@ if (saveSmtpSettingsBtn) {
         throw new Error(data.error || 'Не вдалося зберегти налаштування пошти.');
       }
 
-      passwordEl.value = '';
-      if (smtpStatusEl) {
-        smtpStatusEl.textContent = smtpStatusMessages[data.password_storage] || 'Пароль не налаштовано.';
+      smtpPasswordEl.value = '';
+      updateSmtpStorageState(data);
+      if (!smtpTestToEl.value.trim() && payload.sender) {
+        smtpTestToEl.value = payload.sender;
       }
-      const testToEl = document.getElementById('smtpTestTo');
-      if (testToEl && !testToEl.value.trim() && payload.sender) {
-        testToEl.value = payload.sender;
-      }
-      messageEl.textContent = 'Налаштування пошти збережено.';
-      messageEl.classList.add('success');
+      showMessage(smtpMessageEl, 'Налаштування пошти збережено.', false);
     } catch (error) {
-      messageEl.textContent = error.message || 'Не вдалося зберегти налаштування пошти.';
-      messageEl.classList.add('error');
+      showMessage(smtpMessageEl, error.message || 'Не вдалося зберегти налаштування пошти.', true);
     } finally {
       saveSmtpSettingsBtn.disabled = false;
     }
   });
-}
 
-if (testSmtpSettingsBtn) {
   testSmtpSettingsBtn.addEventListener('click', async () => {
-    const messageEl = document.getElementById('smtpSettingsMessage');
-    const recipient = document.getElementById('smtpTestTo').value.trim();
-    messageEl.textContent = '';
-    messageEl.className = 'message';
+    clearMessages();
+    const validationError = validateSmtpForm();
+    if (validationError) {
+      showMessage(smtpTestMessageEl, validationError, true);
+      return;
+    }
+
+    const recipient = smtpTestToEl.value.trim() || smtpSenderEl.value.trim();
+    if (!SMTP_EMAIL_RE.test(recipient)) {
+      showMessage(smtpTestMessageEl, 'Вкажіть коректну email-адресу для перевірки.', true);
+      return;
+    }
+
     testSmtpSettingsBtn.disabled = true;
     try {
       const response = await fetch('/api/smtp/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to: recipient }),
+        body: JSON.stringify({ ...collectSmtpFormValues(), to: recipient }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(data.error || 'Не вдалося надіслати тестовий лист.');
       }
-      messageEl.textContent = `Тестовий лист надіслано на ${data.to || recipient}.`;
-      messageEl.classList.add('success');
+      showMessage(smtpTestMessageEl, `Тестовий лист надіслано на ${data.to || recipient}.`, false);
     } catch (error) {
-      messageEl.textContent = error.message || 'Не вдалося надіслати тестовий лист.';
-      messageEl.classList.add('error');
+      showMessage(smtpTestMessageEl, error.message || 'Не вдалося надіслати тестовий лист.', true);
     } finally {
       testSmtpSettingsBtn.disabled = false;
     }
