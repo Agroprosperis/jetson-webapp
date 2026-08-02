@@ -98,6 +98,12 @@ def _resolve_video_input_path(video):
 
     return os.path.join(UPLOAD_DIR, os.path.basename(video))
 pipeline_id = None  # type: str | None
+pipeline_started_at = None  # type: float | None
+pipeline_state_lock = threading.Lock()
+last_stop_reason = None  # type: str | None
+last_stopped_pipeline_id = None  # type: str | None
+run_limit_watchdog_thread = None  # type: threading.Thread | None
+RUN_LIMIT_CHECK_INTERVAL_SECONDS = 10
 runtime_options = {
     "grid_count_enabled": False,
     "grid_debug_enabled": False,
@@ -261,6 +267,61 @@ def pipeline_thread_states():
         label = fallback_names[idx] if idx < len(fallback_names) else f"thread_{idx}"
         states.append((label, thread.is_alive()))
     return states
+
+
+def _stop_pipeline_locked(reason):
+    """Tear down the current run and reset global state. Call under pipeline_state_lock."""
+    global pipeline, pipeline_id, current_config, pipeline_started_at
+    global last_stop_reason, last_stopped_pipeline_id
+
+    stopped_id = pipeline_id
+    if pipeline is not None:
+        pipeline.__exit__(None, None, None)
+
+    pipeline, pipeline_id, pipeline_started_at = None, None, None
+    current_config = {}
+    if stopped_id:
+        last_stopped_pipeline_id, last_stop_reason = stopped_id, reason
+    return stopped_id
+
+
+def _run_limit_seconds():
+    try:
+        minutes = int(auth.get_dashboard_settings().get("max_run_minutes") or 0)
+    except Exception:
+        minutes = 0
+    if minutes <= 0:
+        minutes = 30
+    return minutes * 60
+
+
+def _run_limit_watchdog_loop():
+    while True:
+        time.sleep(RUN_LIMIT_CHECK_INTERVAL_SECONDS)
+        try:
+            with pipeline_state_lock:
+                if pipeline is None or pipeline_started_at is None:
+                    continue
+                if time.monotonic() - pipeline_started_at < _run_limit_seconds():
+                    continue
+                stopped_id = _stop_pipeline_locked("time_limit")
+            LOGGER.warning("Auto-stopped run %s after reaching the time limit", stopped_id)
+            auth.update_dashboard_settings({"analysis_number": ""})
+        except Exception:
+            LOGGER.exception("Run limit watchdog failed")
+
+
+def _ensure_run_limit_watchdog():
+    global run_limit_watchdog_thread
+    with pipeline_state_lock:
+        if run_limit_watchdog_thread is not None and run_limit_watchdog_thread.is_alive():
+            return
+        run_limit_watchdog_thread = threading.Thread(
+            target=_run_limit_watchdog_loop,
+            name="run-limit-watchdog",
+            daemon=True,
+        )
+        run_limit_watchdog_thread.start()
 
 
 def extract_id_or_date(filename):
@@ -1530,6 +1591,9 @@ def api_get_dashboard_settings():
               type: number
             ask_manual_spore_count:
               type: boolean
+            max_run_minutes:
+              type: integer
+              description: Run duration limit in minutes after which a run is stopped automatically. Defaults to 30.
       401:
         description: Missing or invalid access token.
       403:
@@ -1593,6 +1657,9 @@ def api_put_dashboard_settings():
               type: number
             ask_manual_spore_count:
               type: boolean
+            max_run_minutes:
+              type: integer
+              description: Run duration limit in minutes (1-480) after which a run is stopped automatically. Invalid or empty values fall back to 30.
     responses:
       200:
         description: Updated dashboard settings.
@@ -2628,6 +2695,19 @@ def api_status():
               type: array
               items:
                 type: string
+            elapsed_seconds:
+              type: integer
+              description: Seconds since the current run started, or null when idle.
+            time_limit_seconds:
+              type: integer
+              description: Run duration limit after which the run is stopped automatically.
+            stopped_reason:
+              type: string
+              enum: ['manual', 'time_limit']
+              description: Why the last run was stopped, or null when unknown.
+            stopped_pipeline_id:
+              type: string
+              description: Pipeline id of the last stopped run.
             last_error:
               type: string
     """
@@ -2643,6 +2723,9 @@ def api_status():
     mtx_whep = check_port("127.0.0.1", 8889)
     mtx_rtsp = check_port("127.0.0.1", 8554)
 
+    started_at = pipeline_started_at
+    elapsed_seconds = int(time.monotonic() - started_at) if (pipeline and started_at) else None
+
     return flask.jsonify({
         "state": state,
         "pipeline_id": pid_value,
@@ -2655,6 +2738,10 @@ def api_status():
             "model_task": current_config.get("model_task"),
         },
         "threads": live_threads,
+        "elapsed_seconds": elapsed_seconds,
+        "time_limit_seconds": _run_limit_seconds(),
+        "stopped_reason": last_stop_reason,
+        "stopped_pipeline_id": last_stopped_pipeline_id,
     })
 
 
@@ -3807,7 +3894,8 @@ def api_start():
       500:
         description: Pipeline start failed.
     """
-    global pipeline, last_error, current_config, pipeline_id
+    global pipeline, last_error, current_config, pipeline_id, pipeline_started_at
+    global last_stop_reason, last_stopped_pipeline_id
 
     if is_pipeline_running():
         return flask.jsonify({"error": "already running"}), 400
@@ -3819,6 +3907,7 @@ def api_start():
             LOGGER.exception("Error cleaning up stale pipeline")
         finally:
             pipeline = None
+            pipeline_started_at = None
 
     last_error = None
     tmp_pipeline = None
@@ -3964,15 +4053,19 @@ def api_start():
         LOGGER.info(f"Starting pipeline: {args}")
         tmp_pipeline = StreamPipeline(reader, args)
         tmp_pipeline.__enter__()
-        pipeline = tmp_pipeline
 
-        current_config = {
-            "video_description": video_desc,
-            "model_path": model_path,
-            "model_task": resolved_model_task,
-            "model_inference_width": runtime_model_settings.get("inference_width"),
-            "model_inference_height": runtime_model_settings.get("inference_height"),
-        }
+        with pipeline_state_lock:
+            pipeline = tmp_pipeline
+            pipeline_started_at = time.monotonic()
+            last_stop_reason, last_stopped_pipeline_id = None, None
+            current_config = {
+                "video_description": video_desc,
+                "model_path": model_path,
+                "model_task": resolved_model_task,
+                "model_inference_width": runtime_model_settings.get("inference_width"),
+                "model_inference_height": runtime_model_settings.get("inference_height"),
+            }
+        _ensure_run_limit_watchdog()
         auth.store_result_owner(pipeline_id, flask.g.current_user["id"])
 
         if auth.user_has_permission(flask.g.current_user, "dashboard:configure"):
@@ -4029,18 +4122,15 @@ def api_stop():
       500:
         description: Pipeline stop failed.
     """
-    global pipeline, last_error, current_config, pipeline_id
+    global last_error, current_config
 
     if pipeline is None and not is_pipeline_running():
         current_config = {}
         return flask.jsonify({"success": True})
 
     try:
-        if pipeline is not None:
-            pipeline.__exit__(None, None, None)
-
-        pipeline, pipeline_id = None, None
-        current_config = {}
+        with pipeline_state_lock:
+            _stop_pipeline_locked("manual")
 
         return flask.jsonify({"success": True})
     except Exception as e:

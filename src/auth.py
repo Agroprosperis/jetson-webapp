@@ -83,6 +83,7 @@ DEFAULT_DASHBOARD_SETTINGS = {
     "grid_debug_enabled": False,
     "grid_score_threshold": 0.30,
     "ask_manual_spore_count": True,
+    "max_run_minutes": 30,
 }
 
 _init_lock = threading.Lock()
@@ -297,6 +298,7 @@ def get_dashboard_settings():
             "grid_debug_enabled": bool(row["grid_debug_enabled"]),
             "grid_score_threshold": float(row["grid_score_threshold"]),
             "ask_manual_spore_count": bool(row["ask_manual_spore_count"]),
+            "max_run_minutes": int(row["max_run_minutes"]),
         }
     finally:
         connection.close()
@@ -1328,6 +1330,7 @@ def init_auth_storage():
                     grid_debug_enabled INTEGER NOT NULL DEFAULT 0,
                     grid_score_threshold REAL NOT NULL DEFAULT 0.30,
                     ask_manual_spore_count INTEGER NOT NULL DEFAULT 1,
+                    max_run_minutes INTEGER NOT NULL DEFAULT 30,
                     updated_at TEXT NOT NULL
                 );
 
@@ -1381,6 +1384,11 @@ def init_auth_storage():
                     "ALTER TABLE dashboard_settings ADD COLUMN site_name TEXT NOT NULL DEFAULT ''"
                 )
 
+            if not _has_column(connection, "dashboard_settings", "max_run_minutes"):
+                connection.execute(
+                    "ALTER TABLE dashboard_settings ADD COLUMN max_run_minutes INTEGER NOT NULL DEFAULT 30"
+                )
+
             if connection.execute("SELECT id FROM dashboard_settings WHERE id = 1").fetchone() is None:
                 connection.execute(
                     """
@@ -1402,8 +1410,9 @@ def init_auth_storage():
                         grid_debug_enabled,
                         grid_score_threshold,
                         ask_manual_spore_count,
+                        max_run_minutes,
                         updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         1,
@@ -1423,6 +1432,7 @@ def init_auth_storage():
                         int(DEFAULT_DASHBOARD_SETTINGS["grid_debug_enabled"]),
                         DEFAULT_DASHBOARD_SETTINGS["grid_score_threshold"],
                         int(DEFAULT_DASHBOARD_SETTINGS["ask_manual_spore_count"]),
+                        int(DEFAULT_DASHBOARD_SETTINGS["max_run_minutes"]),
                         _utcnow_text(),
                     ),
                 )
@@ -1752,6 +1762,7 @@ def update_dashboard_settings(payload):
         "grid_debug_enabled": current["grid_debug_enabled"],
         "grid_score_threshold": current["grid_score_threshold"],
         "ask_manual_spore_count": current["ask_manual_spore_count"],
+        "max_run_minutes": current["max_run_minutes"],
     }
 
     if "site_name" in payload:
@@ -1789,6 +1800,14 @@ def update_dashboard_settings(payload):
         updated["grid_score_threshold"] = float(payload.get("grid_score_threshold"))
     if "ask_manual_spore_count" in payload:
         updated["ask_manual_spore_count"] = bool(payload.get("ask_manual_spore_count"))
+    if "max_run_minutes" in payload:
+        try:
+            minutes = int(payload.get("max_run_minutes") or 0)
+        except (TypeError, ValueError):
+            minutes = DEFAULT_DASHBOARD_SETTINGS["max_run_minutes"]
+        if minutes <= 0:
+            minutes = DEFAULT_DASHBOARD_SETTINGS["max_run_minutes"]
+        updated["max_run_minutes"] = max(1, min(480, minutes))
 
     connection = _connect()
     try:
@@ -1811,6 +1830,7 @@ def update_dashboard_settings(payload):
                 grid_debug_enabled = ?,
                 grid_score_threshold = ?,
                 ask_manual_spore_count = ?,
+                max_run_minutes = ?,
                 updated_at = ?
             WHERE id = 1
             """,
@@ -1831,6 +1851,7 @@ def update_dashboard_settings(payload):
                 int(updated["grid_debug_enabled"]),
                 updated["grid_score_threshold"],
                 int(updated["ask_manual_spore_count"]),
+                int(updated["max_run_minutes"]),
                 _utcnow_text(),
             ),
         )

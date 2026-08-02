@@ -108,6 +108,11 @@ button:hover { background:#2a2a2a; }
     Запитувати фактичну кількість спор після зупинки
   </label>
   <div class="hint">Після натискання «Зупинити» зʼявиться вікно для введення кількості спор, порахованої вручну.</div>
+  <div class="field" style="margin-top:16px; max-width:220px;">
+    <label for="maxRunMinutes">Автоматично зупиняти аналіз через (хв)</label>
+    <input id="maxRunMinutes" type="number" min="1" max="480" step="1" value="{{ dashboard_settings.max_run_minutes }}" />
+  </div>
+  <div class="hint">Захист від забутого стріму: аналіз зупиниться сам, навіть якщо браузер закритий. Порожнє або некоректне значення — 30 хв.</div>
   <div id="analysisSettingsMessage" class="message"></div>
 </div>
 {% endif %}
@@ -355,6 +360,32 @@ if (askManualSporeCountEl) {
       messageEl.classList.add('success');
     } catch (error) {
       askManualSporeCountEl.checked = !askManualSporeCountEl.checked;
+      messageEl.textContent = error.message || 'Не вдалося зберегти налаштування.';
+      messageEl.classList.add('error');
+    }
+  });
+}
+
+const maxRunMinutesEl = document.getElementById('maxRunMinutes');
+if (maxRunMinutesEl) {
+  maxRunMinutesEl.addEventListener('change', async () => {
+    const messageEl = document.getElementById('analysisSettingsMessage');
+    messageEl.textContent = '';
+    messageEl.className = 'message';
+    try {
+      const response = await fetch('/api/dashboard-settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ max_run_minutes: parseInt(maxRunMinutesEl.value, 10) || 0 }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || 'Не вдалося зберегти налаштування.');
+      }
+      maxRunMinutesEl.value = data.max_run_minutes;
+      messageEl.textContent = 'Збережено.';
+      messageEl.classList.add('success');
+    } catch (error) {
       messageEl.textContent = error.message || 'Не вдалося зберегти налаштування.';
       messageEl.classList.add('error');
     }

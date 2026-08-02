@@ -348,6 +348,9 @@ let uploadProgress = 0;
 let cameraList = [];
 let modelThresholdByPath = {};
 let currentPipelineId = null;
+const AUTO_STOP_HANDLED_KEY = 'tilletia.auto_stop_handled_id';
+let autoStopHandledId = null;
+try { autoStopHandledId = localStorage.getItem(AUTO_STOP_HANDLED_KEY); } catch (e) {}
 
 const statusEl = document.getElementById('status');
 const statusBoxEl = statusEl.parentElement;
@@ -856,6 +859,11 @@ function applyState(j) {
 
   if (state !== 'running') {
     disconnectWHEP_wf();
+    if (j && j.stopped_reason === 'time_limit' && j.stopped_pipeline_id && j.stopped_pipeline_id !== autoStopHandledId) {
+      autoStopHandledId = j.stopped_pipeline_id;
+      try { localStorage.setItem(AUTO_STOP_HANDLED_KEY, autoStopHandledId); } catch (e) {}
+      handleAutoStoppedRun(j.stopped_pipeline_id, j.time_limit_seconds);
+    }
   }
 }
 
@@ -1093,6 +1101,27 @@ async function promptManualSporeCount(pid) {
   } catch (e) {
     console.error(e);
     Swal.fire({ icon: 'error', title: 'Помилка збереження', text: String(e.message || e) });
+  }
+}
+
+async function handleAutoStoppedRun(pid, timeLimitSeconds) {
+  currentPipelineId = null;
+  if (CAN_CONFIGURE_DASHBOARD) {
+    analysisNumEl.value = '';
+  }
+
+  const minutes = Math.round((timeLimitSeconds || 1800) / 60);
+  if (window.Swal) {
+    await Swal.fire({
+      icon: 'info',
+      title: 'Аналіз зупинено автоматично',
+      text: `Перевищено ліміт тривалості аналізу (${minutes} хв).`,
+    });
+  }
+
+  const askManualCount = !INITIAL_DASHBOARD_SETTINGS || INITIAL_DASHBOARD_SETTINGS.ask_manual_spore_count !== false;
+  if (CAN_CONFIGURE_DASHBOARD && askManualCount) {
+    await promptManualSporeCount(pid);
   }
 }
 
