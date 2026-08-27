@@ -819,7 +819,7 @@ def _is_result_image(filename):
     return os.path.splitext(filename)[1].lower() in RESULT_IMAGE_EXTENSIONS
 
 
-def _collect_results_metadata(*, analysis_prefix="", selected_date=None):
+def _collect_results_metadata(*, analysis_prefix="", selected_date=None, exact_analysis_match=False):
     if not os.path.exists(HQ_OUTPUT_DIR):
         return []
 
@@ -830,8 +830,12 @@ def _collect_results_metadata(*, analysis_prefix="", selected_date=None):
     ]
 
     for run_id in run_dirs:
-        if analysis_prefix and analysis_prefix not in run_id:
-            continue
+        if analysis_prefix:
+            if exact_analysis_match:
+                if run_id != analysis_prefix:
+                    continue
+            elif analysis_prefix not in run_id:
+                continue
 
         metadata = _build_result_metadata(run_id)
         if metadata is None:
@@ -3127,7 +3131,7 @@ def api_search_results():
         in: query
         type: string
         required: false
-        description: The Analysis ID or Timestamp to filter by
+        description: Exact Analysis ID (run id) to match
       - name: date
         in: query
         type: string
@@ -3174,6 +3178,7 @@ def api_search_results():
             _collect_results_metadata(
                 analysis_prefix=analysis_id,
                 selected_date=selected_date,
+                exact_analysis_match=True,
             ),
         )
 

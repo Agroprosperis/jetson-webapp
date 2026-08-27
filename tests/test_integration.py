@@ -897,11 +897,16 @@ class UserResultsVisibilityTests(unittest.TestCase):
         self.assertNotIn("detected_objects", own_result)
 
     def test_user_search_sees_only_own_results(self):
+        status, _, body = request("GET", f"/api/results/search?analysis_id={self.user_run}", token=self.token)
+        self.assertEqual(status, 200)
+        result_ids = [item["analysis_id"] for item in json.loads(body)["results"]]
+        self.assertEqual(result_ids, [self.user_run])
+
         status, _, body = request("GET", f"/api/results/search?analysis_id=run-", token=self.token)
         self.assertEqual(status, 200)
         result_ids = [item["analysis_id"] for item in json.loads(body)["results"]]
-        self.assertIn(self.user_run, result_ids)
         self.assertNotIn(self.admin_run, result_ids)
+        self.assertNotIn(self.user_run, result_ids)
 
     def test_user_can_read_last_row_for_own_result(self):
         status, _, body = request("GET", f"/api/results/{self.user_run}/last-row", token=self.token)
