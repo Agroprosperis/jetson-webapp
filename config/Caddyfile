@@ -1,0 +1,8 @@
+{
+	auto_https off
+}
+
+https://{$TILLETIA_IDS_HOST}:8443 {
+	tls /etc/tilletia-app/tls/fullchain.pem /etc/tilletia-app/tls/key.pem
+	reverse_proxy 127.0.0.1:8000
+}

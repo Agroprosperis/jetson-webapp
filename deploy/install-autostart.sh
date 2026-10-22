@@ -63,7 +63,7 @@ EOF
     export TILLETIA_CONFIG_ROOT="${TILLETIA_CONFIG_ROOT:-$APP_DIR/data/config}"
   fi
   export TILLETIA_SECRET_ROOT="$SYSTEM_SECRET_ROOT"
-  docker compose -f "$COMPOSE_FILE" down --remove-orphans || true
+  COMPOSE_PROFILES=tls docker compose -f "$COMPOSE_FILE" down --remove-orphans || true
 
   systemctl disable --now tilletia-app-timezone-sync.path >/dev/null 2>&1 || true
 
@@ -149,6 +149,24 @@ mkdir -p "$ENV_DIR"
 if [[ ! -f "$MEDIAMTX_CONFIG" ]]; then
   cp "$MEDIAMTX_TEMPLATE" "$MEDIAMTX_CONFIG"
   chmod 0644 "$MEDIAMTX_CONFIG"
+fi
+
+CADDYFILE_TEMPLATE="$APP_DIR/config/Caddyfile"
+CADDYFILE_CONFIG="$ENV_DIR/Caddyfile"
+if [[ -f "$CADDYFILE_TEMPLATE" ]]; then
+  cp "$CADDYFILE_TEMPLATE" "$CADDYFILE_CONFIG"
+  chmod 0644 "$CADDYFILE_CONFIG"
+fi
+
+install -d -m 0700 "$ENV_DIR/tls"
+if [[ -n "${TILLETIA_IDS_HOST:-}" ]]; then
+  printf '%s\n' "$TILLETIA_IDS_HOST" > "$ENV_DIR/ids-host"
+  chmod 0644 "$ENV_DIR/ids-host"
+  echo "Wrote IDS host: $TILLETIA_IDS_HOST"
+elif [[ -f "$ENV_DIR/ids-host" ]]; then
+  echo "Keeping existing IDS host: $(tr -d '[:space:]' < "$ENV_DIR/ids-host")"
+else
+  echo "NOTE: /etc/tilletia-app/ids-host not set. HTTPS :8443 stays off until configured (see deploy/TLS.md)."
 fi
 
 mkdir -p \

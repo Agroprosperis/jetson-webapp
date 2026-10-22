@@ -36,3 +36,19 @@ services:
           create_host_path: false
       - ${TILLETIA_CONFIG_ROOT:-/etc/tilletia-app}/localtime:/etc/localtime:ro
       - ${TILLETIA_CONFIG_ROOT:-/etc/tilletia-app}/timezone:/etc/timezone:ro
+
+  # Optional HTTPS front door on :8443 (enabled via COMPOSE_PROFILES=tls).
+  # Plain HTTP on :8000 remains available regardless.
+  tilletia-app-caddy:
+    profiles: ["tls"]
+    image: caddy:2-alpine
+    container_name: tilletia-app-caddy
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - TILLETIA_IDS_HOST=${TILLETIA_IDS_HOST:-}
+    volumes:
+      - ${TILLETIA_CADDYFILE:-/etc/tilletia-app/Caddyfile}:/etc/caddy/Caddyfile:ro
+      - ${TILLETIA_TLS_DIR:-/etc/tilletia-app/tls}:/etc/tilletia-app/tls:ro
+      - ${TILLETIA_CONFIG_ROOT:-/etc/tilletia-app}/localtime:/etc/localtime:ro
+      - ${TILLETIA_CONFIG_ROOT:-/etc/tilletia-app}/timezone:/etc/timezone:ro

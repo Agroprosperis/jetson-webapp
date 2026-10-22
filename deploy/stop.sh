@@ -59,6 +59,7 @@ cleanup_runtime_secrets() {
 }
 
 trap cleanup_runtime_secrets EXIT
-docker compose -f "$COMPOSE_FILE" down --remove-orphans
+# Include tls profile so Caddy (if previously started) is removed too.
+COMPOSE_PROFILES="${COMPOSE_PROFILES:-tls}" docker compose -f "$COMPOSE_FILE" down --remove-orphans
 trap - EXIT
 cleanup_runtime_secrets
