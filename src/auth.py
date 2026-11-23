@@ -527,7 +527,7 @@ def rotate_refresh_token(raw_token):
 
 def unauthorized_response(*, html_redirect=False):
     if html_redirect and _request_wants_html() and not tokens.get_authorization_access_token(flask.request):
-        response = flask.redirect(flask.url_for("login_page"))
+        response = flask.redirect(flask.url_for("accounts.login_page"))
     else:
         response = flask.make_response(flask.jsonify({"error": "Unauthorized"}), 401)
 
