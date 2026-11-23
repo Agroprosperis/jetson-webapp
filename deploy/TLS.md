@@ -1,7 +1,7 @@
-# HTTPS for IDS (port 8443)
+# HTTPS for IDS (port 9443)
 
 Tilletia listens on **HTTP `:8000`** as before. Optionally, **Caddy** terminates TLS on
-**`:8443`** and reverse-proxies to `127.0.0.1:8000`. There is no forced redirect from HTTP
+**`:9443`** and reverse-proxies to `127.0.0.1:8000`. There is no forced redirect from HTTP
 to HTTPS.
 
 Certificate: wildcard `*.agroprosperis.com` (PFX from IT: `ap_local_cert.7z`).
@@ -11,9 +11,9 @@ Certificate: wildcard `*.agroprosperis.com` (PFX from IT: `ap_local_cert.7z`).
 | Mode | URL |
 |---|---|
 | Legacy (no SSL) | `http://<host-ip>:8000/` |
-| IDS HTTPS | `https://<code>-ids.agroprosperis.com:8443/` |
+| IDS HTTPS | `https://<code>-ids.agroprosperis.com:9443/` |
 
-Examples: `https://zhe-ids.agroprosperis.com:8443/`, `https://adb-ids.agroprosperis.com:8443/`.
+Examples: `https://zhe-ids.agroprosperis.com:9443/`, `https://adb-ids.agroprosperis.com:9443/`.
 
 DNS: each `*-ids.agroprosperis.com` A-record must point at the elevator PC IP.
 `vlm-ai01` and `vlm-ai02` share hostname `vlm-ids.agroprosperis.com` — set the A-record to
@@ -58,8 +58,8 @@ sudo systemctl restart tilletia-app.service
 ```bash
 curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8000/login
 curl -fsSk -o /dev/null -w '%{http_code}\n' \
-  --resolve zhe-ids.agroprosperis.com:8443:127.0.0.1 \
-  https://zhe-ids.agroprosperis.com:8443/login
+  --resolve zhe-ids.agroprosperis.com:9443:127.0.0.1 \
+  https://zhe-ids.agroprosperis.com:9443/login
 ```
 
 If TLS files or `ids-host` are missing, `start.sh` skips Caddy and only serves `:8000`.

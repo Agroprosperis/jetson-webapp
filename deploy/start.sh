@@ -68,7 +68,7 @@ mkdir -p \
 
 "$TIMEZONE_SYNC_SCRIPT" --config-root "$TILLETIA_CONFIG_ROOT" --force
 
-# Optional Caddy HTTPS on :8443 when TLS material + IDS hostname are present.
+# Optional Caddy HTTPS on :9443 when TLS material + IDS hostname are present.
 # HTTP :8000 always stays up (legacy mode).
 TLS_DIR="${TILLETIA_TLS_DIR:-$TILLETIA_CONFIG_ROOT/tls}"
 CADDYFILE_SRC="$APP_DIR/config/Caddyfile"
@@ -103,7 +103,7 @@ if [[ "$ENABLE_TLS" -ne 1 ]]; then
   docker compose -f "$COMPOSE_FILE" --profile tls stop tilletia-app-caddy >/dev/null 2>&1 || true
   docker rm -f tilletia-app-caddy >/dev/null 2>&1 || true
 else
-  echo "TLS/Caddy enabled for https://${TILLETIA_IDS_HOST}:8443 -> 127.0.0.1:8000"
+  echo "TLS/Caddy enabled for https://${TILLETIA_IDS_HOST}:9443 -> 127.0.0.1:8000"
 fi
 
 docker compose -f "$COMPOSE_FILE" up --build --remove-orphans -d
@@ -132,21 +132,21 @@ if command -v curl >/dev/null 2>&1; then
   echo "Web app is healthy: http://127.0.0.1:8000/"
 
   if [[ "$ENABLE_TLS" -eq 1 ]]; then
-    echo "Checking HTTPS front door on :8443 ..."
+    echo "Checking HTTPS front door on :9443 ..."
     https_ok=0
     for _ in $(seq 1 20); do
       if curl -fsSk --max-time 2 \
-        --resolve "${TILLETIA_IDS_HOST}:8443:127.0.0.1" \
-        "https://${TILLETIA_IDS_HOST}:8443/login" >/dev/null 2>&1; then
+        --resolve "${TILLETIA_IDS_HOST}:9443:127.0.0.1" \
+        "https://${TILLETIA_IDS_HOST}:9443/login" >/dev/null 2>&1; then
         https_ok=1
         break
       fi
       sleep 1
     done
     if [[ "$https_ok" -eq 1 ]]; then
-      echo "HTTPS is healthy: https://${TILLETIA_IDS_HOST}:8443/"
+      echo "HTTPS is healthy: https://${TILLETIA_IDS_HOST}:9443/"
     else
-      echo "WARNING: HTTPS :8443 is not reachable yet. Check: docker logs tilletia-app-caddy"
+      echo "WARNING: HTTPS :9443 is not reachable yet. Check: docker logs tilletia-app-caddy"
       docker compose -f "$COMPOSE_FILE" logs --tail=80 tilletia-app-caddy || true
     fi
   fi

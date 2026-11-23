@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Convert Agroprosperis local PFX into PEM files for Caddy (HTTPS :8443).
+# Convert Agroprosperis local PFX into PEM files for Caddy (HTTPS :9443).
 set -euo pipefail
 
 if [[ "${EUID}" -ne 0 ]]; then
@@ -76,4 +76,4 @@ openssl x509 -in "$FULLCHAIN_PATH" -noout -subject -dates >/dev/null
 echo "Wrote:"
 echo "  $FULLCHAIN_PATH"
 echo "  $KEY_PATH"
-echo "TLS material is ready for Caddy on :8443."
+echo "TLS material is ready for Caddy on :9443."

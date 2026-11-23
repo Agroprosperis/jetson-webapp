@@ -166,7 +166,7 @@ if [[ -n "${TILLETIA_IDS_HOST:-}" ]]; then
 elif [[ -f "$ENV_DIR/ids-host" ]]; then
   echo "Keeping existing IDS host: $(tr -d '[:space:]' < "$ENV_DIR/ids-host")"
 else
-  echo "NOTE: /etc/tilletia-app/ids-host not set. HTTPS :8443 stays off until configured (see deploy/TLS.md)."
+  echo "NOTE: /etc/tilletia-app/ids-host not set. HTTPS :9443 stays off until configured (see deploy/TLS.md)."
 fi
 
 mkdir -p \

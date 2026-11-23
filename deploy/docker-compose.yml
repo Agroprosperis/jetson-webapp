@@ -37,7 +37,7 @@ services:
       - ${TILLETIA_CONFIG_ROOT:-/etc/tilletia-app}/localtime:/etc/localtime:ro
       - ${TILLETIA_CONFIG_ROOT:-/etc/tilletia-app}/timezone:/etc/timezone:ro
 
-  # Optional HTTPS front door on :8443 (enabled via COMPOSE_PROFILES=tls).
+  # Optional HTTPS front door on :9443 (enabled via COMPOSE_PROFILES=tls).
   # Plain HTTP on :8000 remains available regardless.
   tilletia-app-caddy:
     profiles: ["tls"]
