@@ -141,6 +141,7 @@ a:hover { text-decoration: underline; }
 <script src="/auth-client.js"></script>
 <script>
 const CAN_DELETE_RESULTS = {{ 'true' if can_delete_results else 'false' }};
+const CAN_ANNOTATE_RESULTS = {{ 'true' if can_annotate_results else 'false' }};
 const CAN_CONFIGURE_DASHBOARD = {{ 'true' if can_configure_dashboard else 'false' }};
 const CAN_UPLOAD_ROBOFLOW = {{ 'true' if can_upload_roboflow else 'false' }};
 const CAN_EMAIL_RESULTS = {{ 'true' if can_email_results else 'false' }};
@@ -281,6 +282,9 @@ async function loadResults() {
                 ? `<button class="btn-del" title="Видалити" aria-label="Видалити" onclick="deleteResult('${item.id}')">🗑</button>`
                 : '';
             const ownerCell = SHOW_OWNER_COLUMN ? `<td>${item.owner_username || '-'}</td>` : '';
+            const manualButtonHtml = CAN_ANNOTATE_RESULTS
+                ? `<button class="btn-manual" data-manual-id="${item.id}">Внести факт</button>`
+                : '';
             folderRow.innerHTML = `
                 <td>
                     <div class="folder-line folder-toggle">
@@ -297,7 +301,7 @@ async function loadResults() {
                 <td>-</td>
                 <td>
                     <div class="actions-cell">
-                        <button class="btn-manual" data-manual-id="${item.id}">Внести факт</button>
+                        ${manualButtonHtml}
                         <button class="btn-download" onclick="downloadResultZip('${item.id}')">Завантажити ZIP</button>
                         ${deleteButton}
                     </div>

@@ -289,9 +289,9 @@ select { border: 1px solid #444; }
       <label for="analysisNum" style="font-size:13px; font-weight:bold; color:#aaa; white-space:nowrap;">Analysis #:</label>
       <input id="analysisNum" type="text" placeholder="Auto" value="{{ dashboard_settings.analysis_number }}" style="width: 120px;" title="Manual Analysis Number"{% if not can_configure_dashboard %} disabled hidden{% endif %}/>
     </div>
-    <button id='run' class="btn-primary" style="min-width: 80px;">Запустити</button>
-    <button id='stop' type='button' class="btn-danger" style="min-width: 60px;">Зупинити<kbd>F10</kbd></button>
-    <button id='snapshotBtn' type='button' class="btn-secondary" style="min-width: 120px;" disabled>Зробити знімок<kbd>F4</kbd></button>
+    <button id='run' class="btn-primary" style="min-width: 80px;"{% if not can_run_pipeline %} disabled hidden{% endif %}>Запустити</button>
+    <button id='stop' type='button' class="btn-danger" style="min-width: 60px;"{% if not can_run_pipeline %} disabled hidden{% endif %}>Зупинити<kbd>F10</kbd></button>
+    <button id='snapshotBtn' type='button' class="btn-secondary" style="min-width: 120px;" disabled{% if not can_run_pipeline %} hidden{% endif %}>Зробити знімок<kbd>F4</kbd></button>
 
     <a href="/results" target="_blank" style="text-decoration:none;">
       <button type="button" class="btn-secondary">Результати</button>
@@ -315,7 +315,11 @@ select { border: 1px solid #444; }
     </div>
   </div>
 
-  {% if not can_configure_dashboard %}
+  {% if not can_run_pipeline %}
+  <div class="control-row">
+    <div class="user-note">Режим перегляду: доступні live-відео та результати аналізів.</div>
+  </div>
+  {% elif not can_configure_dashboard %}
   <div class="control-row">
     <div class="user-note">Ви можете запускати, зупиняти та переглядати власні результати. Налаштування панелі контролює адміністратор.</div>
   </div>
@@ -339,6 +343,7 @@ select { border: 1px solid #444; }
 <script src="/vendor/sweetalert2/sweetalert2.min.js"></script>
 <script>
 const CAN_CONFIGURE_DASHBOARD = {{ 'true' if can_configure_dashboard else 'false' }};
+const CAN_RUN_PIPELINE = {{ 'true' if can_run_pipeline else 'false' }};
 const INITIAL_DASHBOARD_SETTINGS = {{ dashboard_settings_json | safe }};
 
 let pc_wf = null;
@@ -785,11 +790,11 @@ function applyState(j) {
     currentPipelineId = j.pipeline_id;
   }
   const isRunning = state === 'starting' || state === 'running';
-  btnRun.disabled = isRunning;
+  btnRun.disabled = isRunning || !CAN_RUN_PIPELINE;
   btnRun.textContent = state === 'running' ? 'Працює' : (state === 'starting' ? 'Запуск...' : 'Запустити');
   btnRun.classList.toggle('btn-running', state === 'running');
-  btnStop.disabled = state === 'idle' || state === 'stopping';
-  snapshotBtn.disabled = state !== 'running';
+  btnStop.disabled = state === 'idle' || state === 'stopping' || !CAN_RUN_PIPELINE;
+  snapshotBtn.disabled = state !== 'running' || !CAN_RUN_PIPELINE;
 
   uploadBtn.disabled = isRunning || !CAN_CONFIGURE_DASHBOARD;
   sourceTypeEl.disabled = isRunning || !CAN_CONFIGURE_DASHBOARD;
@@ -1141,7 +1146,7 @@ snapshotBtn.onclick = async () => {
   } catch (e) {
     console.error(e);
   } finally {
-    if (state === 'running') {
+    if (state === 'running' && CAN_RUN_PIPELINE) {
       snapshotBtn.disabled = false;
     }
   }

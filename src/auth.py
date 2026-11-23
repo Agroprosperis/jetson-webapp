@@ -29,7 +29,7 @@ SMTP_KEY_VERSION = 1
 SMTP_TLS_MODES = ("starttls", "ssl", "none")
 DEFAULT_SMTP_PORT = 587
 PASSWORD_HASH_ITERATIONS = 200_000
-VALID_ROLES = ("admin", "user")
+VALID_ROLES = ("admin", "engineer", "user", "viewer")
 
 ROLE_PERMISSIONS = {
     "admin": {
@@ -39,9 +39,11 @@ ROLE_PERMISSIONS = {
         "dashboard_settings:view",
         "models:manage",
         "models:view",
+        "pipeline:snapshot",
         "pipeline:start",
         "pipeline:stop",
         "roboflow:manage",
+        "results:annotate",
         "results:delete",
         "results:download",
         "results:inspect",
@@ -53,14 +55,45 @@ ROLE_PERMISSIONS = {
         "upload:video",
         "users:manage",
     },
-    "user": {
+    "engineer": {
+        "cameras:view",
+        "dashboard:configure",
         "dashboard:view",
         "dashboard_settings:view",
+        "models:manage",
+        "models:view",
+        "pipeline:snapshot",
         "pipeline:start",
         "pipeline:stop",
+        "roboflow:manage",
+        "results:annotate",
         "results:download",
         "results:inspect",
         "results:view",
+        "results:view_all",
+        "status:view",
+        "swagger:view",
+        "upload:video",
+    },
+    "user": {
+        "dashboard:view",
+        "dashboard_settings:view",
+        "pipeline:snapshot",
+        "pipeline:start",
+        "pipeline:stop",
+        "results:annotate",
+        "results:download",
+        "results:inspect",
+        "results:view",
+        "status:view",
+    },
+    "viewer": {
+        "dashboard:view",
+        "dashboard_settings:view",
+        "results:download",
+        "results:inspect",
+        "results:view",
+        "results:view_all",
         "status:view",
     },
 }
@@ -201,6 +234,8 @@ def build_page_context(user, **extra_context):
         "dashboard_settings": settings,
         "dashboard_settings_json": json.dumps(settings),
         "can_configure_dashboard": user_has_permission(user, "dashboard:configure"),
+        "can_run_pipeline": user_has_permission(user, "pipeline:start"),
+        "can_annotate_results": user_has_permission(user, "results:annotate"),
         "can_delete_results": user_has_permission(user, "results:delete"),
         "can_view_models": user_has_permission(user, "models:view"),
         "can_manage_users": user_has_permission(user, "users:manage"),
@@ -221,6 +256,22 @@ def build_page_context(user, **extra_context):
     return context
 
 
+def _clean_roles(roles):
+    clean_roles = sorted(set((role or "").strip().lower() for role in (roles or [])))
+    if not clean_roles:
+        raise ValueError("At least one role is required.")
+    if any(role not in VALID_ROLES for role in clean_roles):
+        raise ValueError("Invalid roles.")
+    return clean_roles
+
+
+def _revoke_user_refresh_tokens(connection, user_id):
+    connection.execute(
+        "UPDATE refresh_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
+        (_utcnow_text(), user_id),
+    )
+
+
 def create_user(username, password, roles):
     username = (username or "").strip()
     if not username:
@@ -228,13 +279,7 @@ def create_user(username, password, roles):
     if not password:
         raise ValueError("Password is required.")
 
-    clean_roles = sorted(set((role or "").strip().lower() for role in (roles or [])))
-    if not clean_roles:
-        raise ValueError("At least one role is required.")
-
-    invalid_roles = [role for role in clean_roles if role not in VALID_ROLES]
-    if invalid_roles:
-        raise ValueError("Invalid roles.")
+    clean_roles = _clean_roles(roles)
 
     connection = _connect()
     try:
@@ -1618,6 +1663,25 @@ def require_permission(permission=None, *, html_redirect=False):
     return decorator
 
 
+def reset_user_password(user_id, new_password):
+    if not new_password:
+        raise ValueError("Password is required.")
+
+    connection = _connect()
+    try:
+        cursor = connection.execute(
+            "UPDATE users SET password_hash = ?, force_password_change = 1 WHERE id = ?",
+            (_hash_password(new_password), user_id),
+        )
+        if cursor.rowcount == 0:
+            return None
+        _revoke_user_refresh_tokens(connection, user_id)
+        connection.commit()
+        return get_user_by_id(user_id)
+    finally:
+        connection.close()
+
+
 def resolve_dashboard_start_payload(raw_payload, user):
     settings = get_dashboard_settings()
     raw_payload = raw_payload or {}
@@ -1872,6 +1936,35 @@ def update_dashboard_settings(payload):
     finally:
         connection.close()
     return updated
+
+
+def update_user(user_id, *, roles=None, active=None, acting_user_id=None):
+    clean_roles = _clean_roles(roles) if roles is not None else None
+    if active is not None and not isinstance(active, bool):
+        raise ValueError("Active must be a boolean.")
+    # The acting admin keeping their own admin role guarantees one active admin remains.
+    if user_id == acting_user_id and (active is False or (clean_roles is not None and "admin" not in clean_roles)):
+        raise ValueError("You cannot deactivate yourself or remove your own admin role.")
+
+    connection = _connect()
+    try:
+        if connection.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone() is None:
+            return None
+        if clean_roles is not None:
+            connection.execute("DELETE FROM user_roles WHERE user_id = ?", (user_id,))
+            for role in clean_roles:
+                connection.execute(
+                    "INSERT INTO user_roles (user_id, role) VALUES (?, ?)",
+                    (user_id, role),
+                )
+        if active is not None:
+            connection.execute("UPDATE users SET active = ? WHERE id = ?", (int(active), user_id))
+            if not active:
+                _revoke_user_refresh_tokens(connection, user_id)
+        connection.commit()
+        return get_user_by_id(user_id)
+    finally:
+        connection.close()
 
 
 def user_can_access_result(user, hq_output_dir, run_id):

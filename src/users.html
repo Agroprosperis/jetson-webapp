@@ -46,7 +46,9 @@ tr:last-child td { border-bottom:none; }
     <div class="field">
       <label for="newRole">Role</label>
       <select id="newRole">
-        <option value="user">User</option>
+        <option value="user">User (operator)</option>
+        <option value="viewer">Viewer (read-only)</option>
+        <option value="engineer">Engineer</option>
         <option value="admin">Admin</option>
       </select>
     </div>
@@ -56,20 +58,37 @@ tr:last-child td { border-bottom:none; }
   <div id="createUserError" class="error"></div>
 </div>
 
+<div id="usersError" class="error"></div>
 <table id="usersTable">
   <thead>
     <tr>
       <th>Username</th>
       <th>Role</th>
       <th>Status</th>
+      <th>Actions</th>
     </tr>
   </thead>
   <tbody>
     {% for user in users %}
+    {% set is_self = user.id == current_user.id %}
     <tr>
       <td>{{ user.username }}</td>
-      <td>{{ user.roles|join(', ') }}</td>
-      <td>{% if user.force_password_change %}Password change required{% else %}Ready{% endif %}</td>
+      <td>
+        <select class="role-select" data-user-id="{{ user.id }}"{% if is_self %} disabled title="You cannot change your own role"{% endif %}>
+          {% for role in ['user', 'viewer', 'engineer', 'admin'] %}
+          <option value="{{ role }}"{% if role in user.roles %} selected{% endif %}>{{ role }}</option>
+          {% endfor %}
+        </select>
+      </td>
+      <td>
+        {% if not user.active %}Disabled{% elif user.force_password_change %}Password change required{% else %}Ready{% endif %}
+      </td>
+      <td>
+        {% if not is_self %}
+        <button type="button" class="toggle-active-btn" data-user-id="{{ user.id }}" data-active="{{ 'true' if user.active else 'false' }}">{% if user.active %}Деактивувати{% else %}Активувати{% endif %}</button>
+        {% endif %}
+        <button type="button" class="reset-password-btn" data-user-id="{{ user.id }}" data-username="{{ user.username }}">Скинути пароль</button>
+      </td>
     </tr>
     {% endfor %}
   </tbody>
@@ -98,6 +117,52 @@ document.getElementById('createUserBtn').addEventListener('click', async () => {
   } catch (error) {
     errorEl.textContent = error.message || 'Failed to create user.';
   }
+});
+
+async function sendUserRequest(url, method, body) {
+  const errorEl = document.getElementById('usersError');
+  errorEl.textContent = '';
+  try {
+    const response = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.error || 'Request failed.');
+    }
+    return true;
+  } catch (error) {
+    errorEl.textContent = error.message || 'Request failed.';
+    return false;
+  }
+}
+
+document.querySelectorAll('.role-select').forEach((select) => {
+  select.addEventListener('change', async () => {
+    const ok = await sendUserRequest(`/users/${select.dataset.userId}`, 'PATCH', { roles: [select.value] });
+    if (!ok) window.location.reload();
+  });
+});
+
+document.querySelectorAll('.toggle-active-btn').forEach((button) => {
+  button.addEventListener('click', async () => {
+    const active = button.dataset.active !== 'true';
+    if (await sendUserRequest(`/users/${button.dataset.userId}`, 'PATCH', { active })) {
+      window.location.reload();
+    }
+  });
+});
+
+document.querySelectorAll('.reset-password-btn').forEach((button) => {
+  button.addEventListener('click', async () => {
+    const password = window.prompt(`Тимчасовий пароль для ${button.dataset.username} (користувач змінить його при вході):`);
+    if (!password) return;
+    if (await sendUserRequest(`/users/${button.dataset.userId}/reset-password`, 'POST', { password })) {
+      window.location.reload();
+    }
+  });
 });
 </script>
 

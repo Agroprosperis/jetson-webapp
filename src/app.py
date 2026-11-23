@@ -1362,7 +1362,7 @@ def create_user_route():
               type: array
               items:
                 type: string
-                enum: ['admin', 'user']
+                enum: ['admin', 'engineer', 'user', 'viewer']
     responses:
       201:
         description: Created user summary.
@@ -1403,6 +1403,116 @@ def create_user_route():
         ),
         201,
     )
+
+
+@app.route("/users/<int:user_id>", methods=["PATCH"])
+@auth.require_permission("users:manage")
+def update_user_route(user_id):
+    """
+    Change a user's roles and/or active status.
+    ---
+    tags:
+      - Auth
+    consumes:
+      - application/json
+    parameters:
+      - name: user_id
+        in: path
+        type: integer
+        required: true
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          properties:
+            roles:
+              type: array
+              items:
+                type: string
+                enum: ['admin', 'engineer', 'user', 'viewer']
+            active:
+              type: boolean
+              description: Deactivated users cannot log in and their sessions are revoked.
+    responses:
+      200:
+        description: Updated user summary.
+      400:
+        description: Invalid payload, or an admin tried to deactivate or demote themselves.
+      401:
+        description: Missing or invalid access token.
+      403:
+        description: Authenticated user lacks permission to manage users.
+      404:
+        description: User not found.
+    """
+    payload = flask.request.get_json(silent=True) or {}
+    try:
+        user = auth.update_user(
+            user_id,
+            roles=payload.get("roles"),
+            active=payload.get("active"),
+            acting_user_id=flask.g.current_user["id"],
+        )
+    except ValueError as exc:
+        return flask.jsonify({"error": str(exc)}), 400
+    if user is None:
+        return flask.jsonify({"error": "User not found."}), 404
+    return flask.jsonify(
+        {
+            "id": user["id"],
+            "username": user["username"],
+            "roles": user["roles"],
+            "active": user["active"],
+        }
+    )
+
+
+@app.route("/users/<int:user_id>/reset-password", methods=["POST"])
+@auth.require_permission("users:manage")
+def reset_user_password_route(user_id):
+    """
+    Set a temporary password that the user must change on next login.
+    ---
+    tags:
+      - Auth
+    consumes:
+      - application/json
+    parameters:
+      - name: user_id
+        in: path
+        type: integer
+        required: true
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - password
+          properties:
+            password:
+              type: string
+    responses:
+      200:
+        description: Password reset; existing sessions are revoked.
+      400:
+        description: Missing password.
+      401:
+        description: Missing or invalid access token.
+      403:
+        description: Authenticated user lacks permission to manage users.
+      404:
+        description: User not found.
+    """
+    payload = flask.request.get_json(silent=True) or {}
+    try:
+        user = auth.reset_user_password(user_id, payload.get("password"))
+    except ValueError as exc:
+        return flask.jsonify({"error": str(exc)}), 400
+    if user is None:
+        return flask.jsonify({"error": "User not found."}), 404
+    return flask.jsonify({"success": True})
 
 
 @app.route("/users")
@@ -3450,7 +3560,7 @@ def api_delete_result(pid):
 
 
 @app.route("/api/results/<pid>/manual-count", methods=["PUT"])
-@auth.require_permission("results:inspect")
+@auth.require_permission("results:annotate")
 def api_update_result_manual_count(pid):
     """
     Store the manually counted actual smut spore numbers for a result.
@@ -3725,7 +3835,7 @@ def snapshot_options_from_request():
 
 
 @app.route("/api/snapshot", methods=["POST"])
-@auth.require_permission("dashboard:view")
+@auth.require_permission("pipeline:snapshot")
 def api_snapshot():
     """
     Capture a manual snapshot from the active pipeline.

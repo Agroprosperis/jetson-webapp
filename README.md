@@ -49,10 +49,16 @@ every service start requires the change again.
 # Authentication and RBAC
 The application uses local authentication with bearer access tokens.
 
-- `admin`: full access to the dashboard configuration, models page, users page, Swagger, and all results.
-- `user`: can run and stop analysis, view REST status endpoints, and see only their own results.
+- `admin`: full access, including users, SMTP, and deleting results.
+- `engineer`: everything an admin can do except managing users, SMTP, and deleting results
+  (dashboard configuration, models, Roboflow, Swagger, all results).
+- `user` (operator): can run and stop analysis, take snapshots, enter manual spore counts,
+  and see only their own results.
+- `viewer`: read-only; watches the live stream and views/downloads all results, but cannot
+  start or stop analysis or enter manual spore counts.
 - New users are created by an admin and must change the initial password on first login.
-- Owner columns are shown only for admin views where ownership is relevant.
+  Admins can change roles, deactivate users, and reset passwords on the Users page.
+- Owner columns are shown only to roles that see all results.
 
 ## Upload result images to Roboflow
 

@@ -996,5 +996,160 @@ class AdminModelsOwnerColumnTests(unittest.TestCase):
         self.assertIn("owner_username", models[0])
 
 
+class ViewerPermissionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.token = user_token(role="viewer")
+
+    def assertForbidden(self, method, path, payload=None):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            request(method, path, token=self.token, payload=payload)
+        self.assertEqual(ctx.exception.code, 403)
+
+    def test_viewer_can_open_main_panel_in_read_only_mode(self):
+        status, _, body = request("GET", "/", token=self.token)
+        self.assertEqual(status, 200)
+        self.assertIn("Режим перегляду", body)
+
+    def test_viewer_can_view_status(self):
+        status, _, _ = request("GET", "/api/status", token=self.token)
+        self.assertEqual(status, 200)
+
+    def test_viewer_can_list_results(self):
+        status, _, _ = request("GET", "/api/v2/results", token=self.token)
+        self.assertEqual(status, 200)
+
+    def test_viewer_cannot_start_pipeline(self):
+        self.assertForbidden("POST", "/api/start", payload={})
+
+    def test_viewer_cannot_stop_pipeline(self):
+        self.assertForbidden("POST", "/api/stop", payload={})
+
+    def test_viewer_cannot_take_snapshot(self):
+        self.assertForbidden("POST", "/api/snapshot", payload={})
+
+    def test_viewer_cannot_enter_manual_count(self):
+        self.assertForbidden(
+            "PUT",
+            "/api/results/smoke-test-result/manual-count",
+            payload={"manual_spore_count_per_class": {"Tilletia": 1}},
+        )
+
+    def test_viewer_cannot_delete_results(self):
+        self.assertForbidden("DELETE", "/api/results/smoke-test-result")
+
+    def test_viewer_cannot_access_users_page(self):
+        self.assertForbidden("GET", "/users")
+
+
+class EngineerPermissionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.token = user_token(role="engineer")
+
+    def assertForbidden(self, method, path):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            request(method, path, token=self.token)
+        self.assertEqual(ctx.exception.code, 403)
+
+    def test_engineer_can_open_models_page(self):
+        status, _, _ = request("GET", "/models", token=self.token)
+        self.assertEqual(status, 200)
+
+    def test_engineer_can_access_swagger_spec(self):
+        status, _, _ = request("GET", "/apispec_1.json", token=self.token)
+        self.assertEqual(status, 200)
+
+    def test_engineer_cannot_access_users_page(self):
+        self.assertForbidden("GET", "/users")
+
+    def test_engineer_cannot_read_smtp_settings(self):
+        self.assertForbidden("GET", "/api/smtp/settings")
+
+    def test_engineer_cannot_delete_results(self):
+        self.assertForbidden("DELETE", "/api/results/smoke-test-result")
+
+
+class AdminUserManagementTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.admin_token = admin_tokens()["access_token"]
+        _, _, body = request("GET", "/auth/me", token=cls.admin_token)
+        cls.admin_id = json.loads(body)["id"]
+
+    def _user_id(self, username):
+        status, data = login(username, TEST_USER_NEW_PASSWORD)
+        self.assertEqual(status, 200)
+        _, _, body = request("GET", "/auth/me", token=data["access_token"])
+        return json.loads(body)["id"]
+
+    def test_admin_can_change_user_role(self):
+        username = create_user()
+        activate_user(username)
+        status, _, body = request(
+            "PATCH", f"/users/{self._user_id(username)}", token=self.admin_token, payload={"roles": ["viewer"]}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["roles"], ["viewer"])
+
+    def test_deactivated_user_cannot_log_in_or_use_token(self):
+        username = create_user()
+        token = activate_user(username)["access_token"]
+        status, _, _ = request(
+            "PATCH", f"/users/{self._user_id(username)}", token=self.admin_token, payload={"active": False}
+        )
+        self.assertEqual(status, 200)
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            login(username, TEST_USER_NEW_PASSWORD)
+        self.assertEqual(ctx.exception.code, 401)
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            request("GET", "/auth/me", token=token)
+        self.assertEqual(ctx.exception.code, 401)
+
+    def test_reset_password_forces_change_on_next_login(self):
+        username = create_user()
+        activate_user(username)
+        status, _, _ = request(
+            "POST",
+            f"/users/{self._user_id(username)}/reset-password",
+            token=self.admin_token,
+            payload={"password": TEST_USER_PASSWORD},
+        )
+        self.assertEqual(status, 200)
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            login(username, TEST_USER_PASSWORD)
+        self.assertEqual(ctx.exception.code, 403)
+        self.assertTrue(json.loads(ctx.exception.read().decode("utf-8"))["password_change_required"])
+
+    def test_admin_cannot_deactivate_self(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            request("PATCH", f"/users/{self.admin_id}", token=self.admin_token, payload={"active": False})
+        self.assertEqual(ctx.exception.code, 400)
+
+    def test_admin_cannot_remove_own_admin_role(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            request("PATCH", f"/users/{self.admin_id}", token=self.admin_token, payload={"roles": ["user"]})
+        self.assertEqual(ctx.exception.code, 400)
+
+    def test_invalid_role_is_rejected(self):
+        username = create_user()
+        activate_user(username)
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            request(
+                "PATCH", f"/users/{self._user_id(username)}", token=self.admin_token, payload={"roles": ["root"]}
+            )
+        self.assertEqual(ctx.exception.code, 400)
+
+    def test_unknown_user_returns_404(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            request("PATCH", "/users/999999999", token=self.admin_token, payload={"roles": ["user"]})
+        self.assertEqual(ctx.exception.code, 404)
+
+    def test_user_cannot_manage_users(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            request("PATCH", f"/users/{self.admin_id}", token=user_token(), payload={"roles": ["user"]})
+        self.assertEqual(ctx.exception.code, 403)
+
+
 if __name__ == "__main__":
     unittest.main()
