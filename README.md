@@ -43,6 +43,8 @@ Bootstrap local user:
 ```
 admin / admin
 ```
+The password must be changed on first login. While the admin password is still `admin`,
+every service start requires the change again.
 
 # Authentication and RBAC
 The application uses local authentication with bearer access tokens.
@@ -146,7 +148,7 @@ docker run --network host --runtime=nvidia --rm -it --device=/dev/video0 -v "$(p
 Run application as described in previous section, then execute:
 ```
 cd ${REPO_DIR}
-curl http://localhost:8000/apispec_1.json > auto_swagger.json
+curl -H "Authorization: Bearer <admin_access_token>" http://localhost:8000/apispec_1.json > auto_swagger.json
 python3 generate_docs.py
 ```
 
@@ -154,7 +156,8 @@ python3 generate_docs.py
 Start the app first, then run:
 ```
 cd ${REPO_DIR}
-python3 -m unittest discover -s tests
+TILLETIA_ADMIN_PASSWORD='<admin password>' python3 -m unittest discover -s tests
 ```
 
-The tests assume local auth exists, bearer access tokens are used, and the default admin user is `admin/admin`.
+The tests assume local auth exists, bearer access tokens are used, and the `admin` password
+has already been changed from the default and is passed via `TILLETIA_ADMIN_PASSWORD`.

@@ -37,6 +37,7 @@ from result_ids import generate_unique_result_run_id
 from s_value_model import calculate_s_value
 from stream_readers import FileReader, V4L2StreamReader
 from urllib.parse import quote
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 LOGGER = logging.getLogger("app")
 SRC_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -63,8 +64,11 @@ app.config['SWAGGER'] = {
     'specs_route': '/api/docs/'  # The URL where Swagger UI will be available
 }
 
+# Caddy terminates TLS on :9443 and forwards X-Forwarded-Proto.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1)
+
 # Initialize Flasgger
-swagger = Swagger(app)
+swagger = Swagger(app, decorators=[auth.require_permission("swagger:view", html_redirect=True)])
 auth.init_auth_storage()
 model_manager = ModelManager(auth_module=auth, logger=LOGGER)
 
@@ -2890,7 +2894,7 @@ def _api_list_results(*, version):
             item.pop("run_path", None)
             item.pop("csv_path", None)
             item.pop("video_path", None)
-            if auth.is_admin(flask.g.current_user):
+            if auth.can_view_all_results(flask.g.current_user):
                 item["owner_username"] = auth.get_result_owner_username(HQ_OUTPUT_DIR, item["id"])
 
         return _json_response({"results": results_list}, deprecated=version == 1)

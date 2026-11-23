@@ -46,6 +46,7 @@ ROLE_PERMISSIONS = {
         "results:download",
         "results:inspect",
         "results:view",
+        "results:view_all",
         "smtp:manage",
         "status:view",
         "swagger:view",
@@ -147,6 +148,12 @@ def _user_from_row(row, roles):
     }
 
 
+def _active_or_none(user):
+    if user is None or not user["active"]:
+        return None
+    return user
+
+
 def _utcnow():
     return datetime.utcnow()
 
@@ -207,8 +214,8 @@ def build_page_context(user, **extra_context):
             user_has_permission(user, "roboflow:manage")
             or user_has_permission(user, "results:inspect")
         ),
-        "can_view_result_owners": is_admin(user),
-        "can_view_model_owners": is_admin(user),
+        "can_view_result_owners": can_view_all_results(user),
+        "can_view_model_owners": user_has_permission(user, "models:manage"),
     }
     context.update(extra_context)
     return context
@@ -262,7 +269,7 @@ def delete_result_owner(run_id):
 
 
 def filter_results_for_user(user, hq_output_dir, results):
-    if is_admin(user):
+    if can_view_all_results(user):
         return results
     return [item for item in results if user_can_access_result(user, hq_output_dir, item["id"])]
 
@@ -1437,11 +1444,15 @@ def init_auth_storage():
                     ),
                 )
 
-            if connection.execute("SELECT id FROM users WHERE username = ?", ("admin",)).fetchone() is None:
+            admin_row = connection.execute(
+                "SELECT id, password_hash FROM users WHERE username = ?",
+                ("admin",),
+            ).fetchone()
+            if admin_row is None:
                 cursor = connection.execute(
                     """
                     INSERT INTO users (username, password_hash, active, force_password_change, created_at)
-                    VALUES (?, ?, 1, 0, ?)
+                    VALUES (?, ?, 1, 1, ?)
                     """,
                     ("admin", _hash_password("admin"), _utcnow_text()),
                 )
@@ -1449,10 +1460,10 @@ def init_auth_storage():
                     "INSERT INTO user_roles (user_id, role) VALUES (?, ?)",
                     (cursor.lastrowid, "admin"),
                 )
-            else:
+            elif verify_password("admin", admin_row["password_hash"]):
                 connection.execute(
-                    "UPDATE users SET force_password_change = 0 WHERE username = ?",
-                    ("admin",),
+                    "UPDATE users SET force_password_change = 1 WHERE id = ?",
+                    (admin_row["id"],),
                 )
 
             connection.commit()
@@ -1462,8 +1473,8 @@ def init_auth_storage():
         _initialize_roboflow_token_storage()
 
 
-def is_admin(user):
-    return user_has_permission(user, "results:delete")
+def can_view_all_results(user):
+    return user_has_permission(user, "results:view_all")
 
 
 def issue_refresh_token(user_id):
@@ -1512,7 +1523,7 @@ def authenticate_refresh_token(raw_token):
         if datetime.fromisoformat(expires_at) <= _utcnow():
             return None
 
-        return get_user_by_id(row["user_id"])
+        return _active_or_none(get_user_by_id(row["user_id"]))
     finally:
         connection.close()
 
@@ -1525,6 +1536,8 @@ def change_password(username, current_password, new_password):
         raise ValueError("Current password is required.")
     if not new_password:
         raise ValueError("New password is required.")
+    if new_password == current_password:
+        raise ValueError("New password must differ from the current password.")
 
     connection = _connect()
     try:
@@ -1558,7 +1571,7 @@ def load_request_user():
         user_id = tokens.verify_access_token(auth_header_token)
         if not user_id:
             return None
-        user = get_user_by_id(user_id)
+        user = _active_or_none(get_user_by_id(user_id))
         if user is not None:
             flask.g._current_user = user
         return user
@@ -1567,7 +1580,7 @@ def load_request_user():
     if cookie_access_token:
         user_id = tokens.verify_access_token(cookie_access_token)
         if user_id:
-            user = get_user_by_id(user_id)
+            user = _active_or_none(get_user_by_id(user_id))
             if user is not None:
                 flask.g._current_user = user
             return user
@@ -1673,7 +1686,7 @@ def rotate_refresh_token(raw_token):
         )
         connection.commit()
 
-        user = get_user_by_id(row["user_id"])
+        user = _active_or_none(get_user_by_id(row["user_id"]))
         if user is None:
             return None
         return {
@@ -1862,7 +1875,7 @@ def update_dashboard_settings(payload):
 
 
 def user_can_access_result(user, hq_output_dir, run_id):
-    if is_admin(user):
+    if can_view_all_results(user):
         return True
 
     owner_user_id = get_result_owner_user_id(run_id)

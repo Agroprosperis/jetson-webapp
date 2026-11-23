@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import shutil
 import unittest
@@ -9,7 +10,7 @@ import uuid
 
 BASE_URL = "http://127.0.0.1:8000"
 ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = "admin"
+ADMIN_PASSWORD = os.environ.get("TILLETIA_ADMIN_PASSWORD", "")
 TEST_USER_PASSWORD = "TestUser_Str0ng!Pass_2026"
 TEST_USER_NEW_PASSWORD = "TestUser_Str0ng!Pass_2026_Changed"
 OUTPUT_HQ_DIR = Path(__file__).resolve().parents[1] / "data" / "output_hq"
@@ -55,7 +56,7 @@ def change_password(
 def admin_tokens():
     status, data = login(ADMIN_USERNAME, ADMIN_PASSWORD)
     if status != 200:
-        raise AssertionError("admin/admin login must work for integration tests")
+        raise AssertionError("admin login with TILLETIA_ADMIN_PASSWORD must work for integration tests")
     return data
 
 
@@ -89,7 +90,7 @@ def user_token(role: str = "user"):
 
 class AuthIntegrationTests(unittest.TestCase):
     def test_login_success(self):
-        status, data = login("admin", "admin")
+        status, data = login(ADMIN_USERNAME, ADMIN_PASSWORD)
         self.assertEqual(status, 200)
         self.assertIn("access_token", data)
         self.assertIn("refresh_token", data)
@@ -100,7 +101,7 @@ class AuthIntegrationTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 401)
 
     def test_token_refresh(self):
-        _, login_data = login("admin", "admin")
+        _, login_data = login(ADMIN_USERNAME, ADMIN_PASSWORD)
         status, _, body = request(
             "POST",
             "/auth/refresh",
@@ -110,7 +111,7 @@ class AuthIntegrationTests(unittest.TestCase):
         self.assertIn("access_token", json.loads(body))
 
     def test_cookie_auth_auto_refreshes_from_refresh_cookie(self):
-        _, login_data = login("admin", "admin")
+        _, login_data = login(ADMIN_USERNAME, ADMIN_PASSWORD)
         status, _, body = request(
             "GET",
             "/auth/me",
@@ -348,14 +349,24 @@ class PermissionIntegrationTests(unittest.TestCase):
         status, _, _ = request("GET", "/api/status", token=user_token())
         self.assertEqual(status, 200)
 
-    def test_swagger_spec_is_public(self):
-        status, headers, body = request("GET", "/apispec_1.json")
+    def test_swagger_spec_requires_auth(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            request("GET", "/apispec_1.json")
+        self.assertEqual(ctx.exception.code, 401)
+
+    def test_user_cannot_access_swagger_spec(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            request("GET", "/apispec_1.json", token=user_token())
+        self.assertEqual(ctx.exception.code, 403)
+
+    def test_admin_can_access_swagger_spec(self):
+        status, headers, body = request("GET", "/apispec_1.json", token=admin_tokens()["access_token"])
         self.assertEqual(status, 200)
         self.assertIn("application/json", headers.get("Content-Type", ""))
         self.assertIn("/api/config", json.loads(body)["paths"])
 
-    def test_swagger_ui_is_public(self):
-        status, headers, body = request("GET", "/api/docs/")
+    def test_admin_can_access_swagger_ui(self):
+        status, headers, body = request("GET", "/api/docs/", token=admin_tokens()["access_token"])
         self.assertEqual(status, 200)
         self.assertIn("text/html", headers.get("Content-Type", ""))
         self.assertIn("swagger", body.lower())
