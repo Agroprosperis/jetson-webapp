@@ -3,17 +3,24 @@ import auth
 import cookies
 import csv
 import cv2
+import dashboard_settings
 import flask
 import io
 import json
 import logging
 import math
 import os
+import ownership
+import page_context
 import re
 import requests
+import roboflow_settings
+import secret_store
 import shutil
 import smtplib
+import smtp_settings
 import socket
+import storage
 import struct
 import threading
 import time
@@ -69,8 +76,8 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1)
 
 # Initialize Flasgger
 swagger = Swagger(app, decorators=[auth.require_permission("swagger:view", html_redirect=True)])
-auth.init_auth_storage()
-model_manager = ModelManager(auth_module=auth, logger=LOGGER)
+storage.init_storage()
+model_manager = ModelManager(auth_module=ownership, logger=LOGGER)
 
 
 @app.after_request
@@ -291,7 +298,7 @@ def _stop_pipeline_locked(reason):
 
 def _run_limit_seconds():
     try:
-        minutes = int(auth.get_dashboard_settings().get("max_run_minutes") or 0)
+        minutes = int(dashboard_settings.get_dashboard_settings().get("max_run_minutes") or 0)
     except Exception:
         minutes = 0
     if minutes <= 0:
@@ -310,7 +317,7 @@ def _run_limit_watchdog_loop():
                     continue
                 stopped_id = _stop_pipeline_locked("time_limit")
             LOGGER.warning("Auto-stopped run %s after reaching the time limit", stopped_id)
-            auth.update_dashboard_settings({"analysis_number": ""})
+            dashboard_settings.update_dashboard_settings({"analysis_number": ""})
         except Exception:
             LOGGER.exception("Run limit watchdog failed")
 
@@ -815,7 +822,7 @@ def _send_email(settings, recipients, subject, body, attachments):
 
 
 def _send_result_images_email(recipients, subject, body, attachments):
-    settings = auth.get_smtp_settings(include_password=True)
+    settings = smtp_settings.get_smtp_settings(include_password=True)
     _send_email(settings, recipients, subject, body, attachments)
 
 
@@ -1535,7 +1542,7 @@ def users_page():
     """
     return flask.render_template(
         "users.html",
-        **auth.build_page_context(flask.g.current_user, users=auth.list_users()),
+        **page_context.build_page_context(flask.g.current_user, users=auth.list_users()),
     )
 
 
@@ -1561,16 +1568,16 @@ def settings_page():
         "settings.html",
         role_label=", ".join(flask.g.current_user.get("roles", [])),
         roboflow_settings=(
-            auth.get_roboflow_settings()
+            roboflow_settings.get_roboflow_settings()
             if auth.user_has_permission(flask.g.current_user, "roboflow:manage")
             else None
         ),
         smtp_settings=(
-            auth.get_smtp_settings()
+            smtp_settings.get_smtp_settings()
             if auth.user_has_permission(flask.g.current_user, "smtp:manage")
             else None
         ),
-        **auth.build_page_context(flask.g.current_user),
+        **page_context.build_page_context(flask.g.current_user),
     )
 
 
@@ -1592,7 +1599,7 @@ def index():
       403:
         description: Authenticated user lacks permission to view the dashboard.
     """
-    return flask.render_template("index.html", **auth.build_page_context(flask.g.current_user))
+    return flask.render_template("index.html", **page_context.build_page_context(flask.g.current_user))
 
 
 @app.route("/results")
@@ -1613,7 +1620,7 @@ def results_page():
       403:
         description: Authenticated user lacks permission to view results.
     """
-    return flask.render_template("results.html", **auth.build_page_context(flask.g.current_user))
+    return flask.render_template("results.html", **page_context.build_page_context(flask.g.current_user))
 
 
 @app.route("/models")
@@ -1634,7 +1641,7 @@ def models_page():
       403:
         description: Authenticated user lacks permission to view the model catalog.
     """
-    return flask.render_template("models.html", **auth.build_page_context(flask.g.current_user))
+    return flask.render_template("models.html", **page_context.build_page_context(flask.g.current_user))
 
 
 @app.route("/api/config")
@@ -1717,7 +1724,7 @@ def api_get_dashboard_settings():
       403:
         description: Authenticated user lacks permission to view dashboard settings.
     """
-    return flask.jsonify(auth.get_dashboard_settings())
+    return flask.jsonify(dashboard_settings.get_dashboard_settings())
 
 
 @app.route("/api/dashboard-settings", methods=["PUT"])
@@ -1790,7 +1797,7 @@ def api_put_dashboard_settings():
     """
     payload = flask.request.get_json(silent=True) or {}
     try:
-        settings = auth.update_dashboard_settings(payload)
+        settings = dashboard_settings.update_dashboard_settings(payload)
     except (TypeError, ValueError) as exc:
         return flask.jsonify({"error": str(exc)}), 400
     return flask.jsonify(settings)
@@ -1831,7 +1838,7 @@ def api_get_roboflow_settings():
       403:
         description: Authenticated user is not an administrator.
     """
-    return flask.jsonify(auth.get_roboflow_settings())
+    return flask.jsonify(roboflow_settings.get_roboflow_settings())
 
 
 @app.route("/api/roboflow/settings", methods=["PUT"])
@@ -1874,8 +1881,8 @@ def api_put_roboflow_settings():
     """
     payload = flask.request.get_json(silent=True)
     try:
-        settings = auth.update_roboflow_settings(payload)
-    except auth.RoboflowStorageError as exc:
+        settings = roboflow_settings.update_roboflow_settings(payload)
+    except secret_store.SecretStorageError as exc:
         return flask.jsonify({"error": str(exc)}), 503
     except (TypeError, ValueError) as exc:
         return flask.jsonify({"error": str(exc)}), 400
@@ -1922,7 +1929,7 @@ def api_get_smtp_settings():
       403:
         description: Authenticated user cannot manage SMTP settings.
     """
-    return flask.jsonify(auth.get_smtp_settings())
+    return flask.jsonify(smtp_settings.get_smtp_settings())
 
 
 @app.route("/api/smtp/settings", methods=["PUT"])
@@ -1970,8 +1977,8 @@ def api_put_smtp_settings():
     """
     payload = flask.request.get_json(silent=True)
     try:
-        settings = auth.update_smtp_settings(payload)
-    except auth.RoboflowStorageError as exc:
+        settings = smtp_settings.update_smtp_settings(payload)
+    except secret_store.SecretStorageError as exc:
         return flask.jsonify({"error": str(exc)}), 503
     except (TypeError, ValueError) as exc:
         return flask.jsonify({"error": str(exc)}), 400
@@ -2030,8 +2037,8 @@ def api_test_smtp_settings():
     payload = flask.request.get_json(silent=True) or {}
 
     try:
-        settings = auth.resolve_smtp_settings(payload)
-    except auth.RoboflowStorageError as exc:
+        settings = smtp_settings.resolve_smtp_settings(payload)
+    except secret_store.SecretStorageError as exc:
         return flask.jsonify({"error": str(exc)}), 503
     except (TypeError, ValueError) as exc:
         return flask.jsonify({"error": str(exc)}), 400
@@ -2150,7 +2157,7 @@ def api_put_grid():
         update_payload["grid_score_threshold"] = payload.get("score_threshold")
     if update_payload:
         try:
-            auth.update_dashboard_settings(update_payload)
+            dashboard_settings.update_dashboard_settings(update_payload)
         except (TypeError, ValueError):
             pass
 
@@ -2987,7 +2994,7 @@ def _api_list_results(*, version):
         analysis_number = ""
         if version == 2:
             analysis_number = flask.request.args.get("analysis_number", "").strip()
-        results_list = auth.filter_results_for_user(
+        results_list = ownership.filter_results_for_user(
             flask.g.current_user,
             HQ_OUTPUT_DIR,
             _collect_results_metadata(
@@ -3005,7 +3012,7 @@ def _api_list_results(*, version):
             item.pop("csv_path", None)
             item.pop("video_path", None)
             if auth.can_view_all_results(flask.g.current_user):
-                item["owner_username"] = auth.get_result_owner_username(HQ_OUTPUT_DIR, item["id"])
+                item["owner_username"] = ownership.get_result_owner_username(HQ_OUTPUT_DIR, item["id"])
 
         return _json_response({"results": results_list}, deprecated=version == 1)
 
@@ -3081,8 +3088,8 @@ def api_upload_results_to_roboflow():
         return flask.jsonify({"error": str(exc)}), 400
 
     try:
-        settings = auth.get_roboflow_settings(include_api_token=True)
-    except auth.RoboflowStorageError as exc:
+        settings = roboflow_settings.get_roboflow_settings(include_api_token=True)
+    except secret_store.SecretStorageError as exc:
         return flask.jsonify({"error": str(exc)}), 503
     except (OSError, ValueError):
         return flask.jsonify({"error": "Stored Roboflow settings are invalid."}), 500
@@ -3165,7 +3172,7 @@ def api_email_result_images():
       503:
         description: SMTP is not configured or unavailable.
     """
-    if not auth.smtp_configured():
+    if not smtp_settings.smtp_configured():
         return flask.jsonify({"error": "Надсилання пошти не налаштоване."}), 503
 
     payload = flask.request.get_json(silent=True)
@@ -3204,7 +3211,7 @@ def api_email_result_images():
         return flask.jsonify({"error": "Оберіть знімки з одного аналізу."}), 400
 
     run_id = next(iter(run_ids))
-    if not auth.user_can_access_result(flask.g.current_user, HQ_OUTPUT_DIR, run_id):
+    if not ownership.user_can_access_result(flask.g.current_user, HQ_OUTPUT_DIR, run_id):
         return flask.jsonify({"error": "Forbidden"}), 403
 
     metadata = _build_result_metadata(run_id)
@@ -3286,7 +3293,7 @@ def api_search_results():
         results_list = []
         host_url = flask.request.host_url.rstrip('/')
 
-        visible_results = auth.filter_results_for_user(
+        visible_results = ownership.filter_results_for_user(
             flask.g.current_user,
             HQ_OUTPUT_DIR,
             _collect_results_metadata(
@@ -3483,7 +3490,7 @@ def _api_result_last_csv_row(pid, *, version):
     try:
         if not pid or ".." in pid or "/" in pid:
             return flask.jsonify({"error": "Invalid ID"}), 400
-        if not auth.user_can_access_result(flask.g.current_user, HQ_OUTPUT_DIR, pid):
+        if not ownership.user_can_access_result(flask.g.current_user, HQ_OUTPUT_DIR, pid):
             return flask.jsonify({"error": "Forbidden"}), 403
 
         csv_path = os.path.join(HQ_OUTPUT_DIR, pid, f"{pid}.csv")
@@ -3549,7 +3556,7 @@ def api_delete_result(pid):
                     rel_path = os.path.relpath(os.path.join(root, name), HQ_OUTPUT_DIR)
                     deleted_files.append(rel_path)
             shutil.rmtree(run_dir)
-        auth.delete_result_owner(pid)
+        ownership.delete_result_owner(pid)
 
         LOGGER.info(f"Deleted results for ID {pid}: {deleted_files}")
         return flask.jsonify({"success": True, "deleted": deleted_files})
@@ -3593,7 +3600,7 @@ def api_update_result_manual_count(pid):
     try:
         if not pid or ".." in pid or "/" in pid:
             return flask.jsonify({"error": "Invalid ID"}), 400
-        if not auth.user_can_access_result(flask.g.current_user, HQ_OUTPUT_DIR, pid):
+        if not ownership.user_can_access_result(flask.g.current_user, HQ_OUTPUT_DIR, pid):
             return flask.jsonify({"error": "Forbidden"}), 403
 
         run_path = os.path.join(HQ_OUTPUT_DIR, pid)
@@ -3657,7 +3664,7 @@ def api_prepare_result_process_source(pid):
         description: Failed to prepare the result video for processing.
     """
     try:
-        if not auth.user_can_access_result(flask.g.current_user, HQ_OUTPUT_DIR, pid):
+        if not ownership.user_can_access_result(flask.g.current_user, HQ_OUTPUT_DIR, pid):
             return flask.jsonify({"error": "Forbidden"}), 403
 
         if _build_result_metadata(pid) is None:
@@ -3671,7 +3678,7 @@ def api_prepare_result_process_source(pid):
         except FileNotFoundError as exc:
             return flask.jsonify({"error": str(exc)}), 404
 
-        auth.update_dashboard_settings(
+        dashboard_settings.update_dashboard_settings(
             {
                 "source_type": "file",
                 "uploaded_path": video_path,
@@ -3714,7 +3721,7 @@ def download_file(filename):
     """
     try:
         run_id = (filename or "").split("/", 1)[0]
-        if not run_id or not auth.user_can_access_result(flask.g.current_user, HQ_OUTPUT_DIR, run_id):
+        if not run_id or not ownership.user_can_access_result(flask.g.current_user, HQ_OUTPUT_DIR, run_id):
             return flask.jsonify({"error": "Forbidden"}), 403
         return flask.send_from_directory(HQ_OUTPUT_DIR, filename, as_attachment=True)
     except Exception as e:
@@ -3773,7 +3780,7 @@ def api_download_result(pid):
     try:
         if not pid or ".." in pid or "/" in pid:
             return flask.jsonify({"error": "Invalid ID"}), 400
-        if not auth.user_can_access_result(flask.g.current_user, HQ_OUTPUT_DIR, pid):
+        if not ownership.user_can_access_result(flask.g.current_user, HQ_OUTPUT_DIR, pid):
             return flask.jsonify({"error": "Forbidden"}), 403
 
         run_dir = os.path.join(HQ_OUTPUT_DIR, pid)
@@ -4034,7 +4041,10 @@ def api_start():
     try:
         raw_data = flask.request.get_json(silent=True) or {}
         try:
-            data = auth.resolve_dashboard_start_payload(raw_data, flask.g.current_user)
+            data = dashboard_settings.resolve_dashboard_start_payload(
+                raw_data,
+                can_configure=auth.user_has_permission(flask.g.current_user, "dashboard:configure"),
+            )
         except PermissionError as exc:
             return flask.jsonify({"error": str(exc)}), 403
         
@@ -4185,10 +4195,10 @@ def api_start():
                 "model_inference_height": runtime_model_settings.get("inference_height"),
             }
         _ensure_run_limit_watchdog()
-        auth.store_result_owner(pipeline_id, flask.g.current_user["id"])
+        ownership.store_result_owner(pipeline_id, flask.g.current_user["id"])
 
         if auth.user_has_permission(flask.g.current_user, "dashboard:configure"):
-            auth.update_dashboard_settings(
+            dashboard_settings.update_dashboard_settings(
                 {
                     "analysis_number": data.get("analysis_number", ""),
                     "source_type": source_type,
@@ -4303,7 +4313,7 @@ def api_upload():
     path = os.path.join(UPLOAD_DIR, filename)
     file.save(path)
     try:
-        auth.update_dashboard_settings({"uploaded_path": path})
+        dashboard_settings.update_dashboard_settings({"uploaded_path": path})
     except (TypeError, ValueError):
         pass
 
