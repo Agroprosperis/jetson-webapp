@@ -1,0 +1,14 @@
+---
+description: XY stage WMY-8050K on zhe-ai01. Read docs/stage/README.md before touching stage motion.
+alwaysApply: true
+---
+
+# Microscope stage
+
+The stage notes and manuals live in `docs/stage/`. Read `docs/stage/README.md` before changing stage motion.
+
+- The live bus is `/dev/ttyUSB0` on `zhe-ai01`, Modbus RTU 115200 8N1, slaves 1 and 2. Supply voltage reads about 27 V at holding register `0x0178`.
+- Do not send a move until `docs/stage/README.md` says a move command was verified on the hardware. `TILLETIA_STAGE_MOTION` stays off until then.
+- `s-lab-ai` cannot open the serial port. The `tilletia-app` container can, because it is privileged and mounts `/dev`.
+- An operator zero is not the mechanical end of travel. Do not allow an 80 mm or 50 mm move from that zero.
+- Saved routes are millimetres relative to the operator zero.

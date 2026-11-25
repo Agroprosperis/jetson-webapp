@@ -14,6 +14,7 @@ def build_page_context(user, **extra_context):
         "dashboard_settings_json": json.dumps(settings),
         "can_configure_dashboard": auth.user_has_permission(user, "dashboard:configure"),
         "can_run_pipeline": auth.user_has_permission(user, "pipeline:start"),
+        "can_move_stage": auth.user_has_permission(user, "stage:move"),
         "can_annotate_results": auth.user_has_permission(user, "results:annotate"),
         "can_delete_results": auth.user_has_permission(user, "results:delete"),
         "can_view_models": auth.user_has_permission(user, "models:view"),

@@ -41,6 +41,7 @@ from result_ids import generate_unique_result_run_id
 from routes import accounts, pages
 from routes import models as model_routes
 from routes import settings as settings_routes
+from routes import stage as stage_routes
 from routes.models import model_manager
 from s_value_model import calculate_s_value
 from stream_readers import FileReader, V4L2StreamReader
@@ -80,6 +81,7 @@ app.register_blueprint(accounts.bp)
 app.register_blueprint(pages.bp)
 app.register_blueprint(settings_routes.bp)
 app.register_blueprint(model_routes.bp)
+app.register_blueprint(stage_routes.bp)
 
 
 @app.after_request

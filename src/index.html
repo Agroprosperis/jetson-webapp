@@ -152,11 +152,50 @@ button[disabled] { opacity: .5; cursor: not-allowed; }
 
 .grid {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr) 300px;
   gap: 6px;
   flex: 1;
   position: relative;
   min-height: 0;
+}
+.stage-panel {
+  background: #1b1b1b;
+  border-left: 1px solid #333;
+  padding: 10px;
+  overflow: auto;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+.stage-panel h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.stage-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.stage-pad {
+  display: grid;
+  grid-template-columns: 40px 40px 40px;
+  grid-template-areas: ". up ." "left . right" ". down .";
+  gap: 4px;
+  justify-content: start;
+}
+.stage-pad button { height: 32px; }
+.stage-pad .up { grid-area: up; }
+.stage-pad .down { grid-area: down; }
+.stage-pad .left { grid-area: left; }
+.stage-pad .right { grid-area: right; }
+.stage-map { width: 100%; height: 150px; background: #111; border: 1px solid #333; }
+.stage-points {
+  white-space: pre;
+  font-family: ui-monospace, monospace;
+  max-height: 88px;
+  overflow: auto;
+  color: #ccc;
+  margin: 0;
+}
+.stage-panel input, .stage-panel select { background: #1a1a1a; color: #eee; border: 1px solid #444; }
+@media (max-width: 900px) {
+  .grid { grid-template-columns: 1fr; }
+  .stage-panel { border-left: 0; border-top: 1px solid #333; max-height: 46vh; }
 }
 
 .pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; }
@@ -337,6 +376,64 @@ select { border: 1px solid #444; }
       <video id='wf' playsinline autoplay muted controls></video>
     </div>
   </div>
+  <aside id="stagePanel" class="stage-panel" data-can-move="{{ 'true' if can_move_stage else 'false' }}">
+    <h2>Стіл</h2>
+    <div id="stageVolt">…</div>
+    <div id="stagePos">X 0.00   Y 0.00</div>
+    <div id="stageNote"></div>
+    <div class="stage-row">
+      <label>Швидкість <input id="stageSpeed" type="number" min="0.1" max="5" step="0.1" value="5" style="width:70px"> мм/с</label>
+      <label>Крок
+        <select id="stageStep">
+          <option value="0.1">0.1</option>
+          <option value="0.5" selected>0.5</option>
+          <option value="1">1</option>
+        </select>
+      </label>
+    </div>
+    <div class="stage-pad">
+      <button type="button" class="up btn-secondary" data-stage="jog" data-axis="y" data-sign="1">Y+</button>
+      <button type="button" class="left btn-secondary" data-stage="jog" data-axis="x" data-sign="-1">X−</button>
+      <button type="button" class="right btn-secondary" data-stage="jog" data-axis="x" data-sign="1">X+</button>
+      <button type="button" class="down btn-secondary" data-stage="jog" data-axis="y" data-sign="-1">Y−</button>
+    </div>
+    <div class="stage-row">
+      <button type="button" class="btn-danger" data-stage="stop">Стоп</button>
+      <button type="button" class="btn-secondary" data-stage="zero">Тут нуль</button>
+    </div>
+    <canvas id="stageMap" class="stage-map" width="276" height="150"></canvas>
+    <pre id="stagePoints" class="stage-points"></pre>
+    <div class="stage-row">
+      <button type="button" class="btn-secondary" data-stage="add">Додати точку</button>
+      <button type="button" class="btn-secondary" data-stage="pop">Прибрати останню</button>
+    </div>
+    <div class="stage-row">
+      <input id="stageRouteName" type="text" placeholder="Назва маршруту" style="flex:1">
+      <button type="button" class="btn-primary" data-stage="save">Зберегти</button>
+    </div>
+    <div class="stage-row">
+      <select id="stageRoutes" style="flex:1"></select>
+      <button type="button" class="btn-secondary" data-stage="load">Відкрити</button>
+      <button type="button" class="btn-primary" data-stage="run">Їхати</button>
+      <button type="button" class="btn-secondary" data-stage="delete">×</button>
+    </div>
+    <div class="stage-row">
+      <label>Крок сітки <input id="stageGridStep" type="number" min="0.05" max="3" step="0.05" value="0.6" style="width:64px"> мм</label>
+      <button type="button" class="btn-secondary" data-stage="goryaev">Сітка 3×3</button>
+    </div>
+    <div class="stage-row">
+      <label><input id="stageSecondGrid" type="checkbox"> друга сітка</label>
+      <input id="stageOffX" type="number" step="0.1" value="0" style="width:64px" title="Зсув X другої сітки">
+      <input id="stageOffY" type="number" step="0.1" value="0" style="width:64px" title="Зсув Y другої сітки">
+    </div>
+    <div class="stage-row">
+      Вікно мм
+      <input id="stageMinX" type="number" step="0.5" style="width:64px">
+      <input id="stageMaxX" type="number" step="0.5" style="width:64px">
+      <input id="stageMinY" type="number" step="0.5" style="width:64px">
+      <input id="stageMaxY" type="number" step="0.5" style="width:64px">
+    </div>
+  </aside>
 </div>
 
 <script src="/auth-client.js"></script>
@@ -1230,5 +1327,6 @@ window.addEventListener('load', async () => {
 
 window.addEventListener('beforeunload', () => { disconnectWHEP_wf(); });
 </script>
+<script src="/stage-panel.js"></script>
 </body>
 </html>
